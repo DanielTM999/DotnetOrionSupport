@@ -293,6 +293,41 @@ public final class DotnetBuild {
                 .build();
     }
 
+    public int buildForHotReload(Path project, Path dotnet, String configuration,
+                                 Path projectFile, String targetFramework,
+                                 Function<String, OutputPanelHandle> panelProvider) {
+        if (project == null || dotnet == null) {
+            return -1;
+        }
+        String config = configuration == null || configuration.isBlank() ? "Debug" : configuration;
+        OutputPanelHandle buildPanel = requestBuildPanel(panelProvider);
+        OutputStream out = buildPanel != null && buildPanel.getOutputStream() != null
+                ? buildPanel.getOutputStream()
+                : OutputStream.nullOutputStream();
+
+        List<String> buildCmd = new ArrayList<>(List.of(
+                dotnet.toString(), "build", "-c", config, "--nologo", "--no-restore"));
+        if (projectFile != null) {
+            buildCmd.add(projectFile.toString());
+        }
+        addFrameworkOption(buildCmd, targetFramework);
+
+        try {
+            writeLine(out, "[hot reload] Compilando alteracoes...");
+            writeLine(out, "> " + String.join(" ", buildCmd));
+            int exit = runAndStream(buildCmd, project, out, null, null);
+            writeLine(out, exit == 0
+                    ? System.lineSeparator() + "[hot reload] Build OK."
+                    : System.lineSeparator() + "[hot reload] Build falhou (codigo " + exit + ").");
+            return exit;
+        } catch (Exception e) {
+            safeWriteLine(out, "[hot reload] Falha: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return -1;
+        } finally {
+            flushQuietly(out);
+        }
+    }
+
     static Path resolveDebugTargetDll(Path project, Path projectFile, String configuration) {
         return resolveDebugTargetDll(project, projectFile, configuration, null);
     }

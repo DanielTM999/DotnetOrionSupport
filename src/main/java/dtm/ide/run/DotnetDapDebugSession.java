@@ -983,12 +983,14 @@ final class DotnetDapDebugSession {
             }
         }
         envNode.put("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
+        envNode.put("DOTNET_MODIFIABLE_ASSEMBLIES", "debug");
         launchEnv.forEach(envNode::put);
         sendRequest("launch", launch);
     }
 
     private void applyDotnetEnv(ProcessBuilder builder) {
         builder.environment().put("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
+        builder.environment().put("DOTNET_MODIFIABLE_ASSEMBLIES", "debug");
         Path root = dotnetRoot();
         if (root != null) {
             String value = root.toString();

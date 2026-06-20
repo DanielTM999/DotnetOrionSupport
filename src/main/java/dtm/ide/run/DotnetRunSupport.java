@@ -14,6 +14,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -41,6 +42,7 @@ public final class DotnetRunSupport {
     private volatile Supplier<String> activeTextSupplier;
     private volatile Function<String, OutputPanelHandle> outputPanels;
     private volatile Runnable runOutputFocus;
+    private volatile Consumer<Boolean> debugSessionStateListener;
 
     private final AtomicReference<DotnetDapDebugSession> debugSession = new AtomicReference<>();
     private volatile DotnetDebugView debugView;
@@ -75,6 +77,10 @@ public final class DotnetRunSupport {
 
     public void bindRunOutputFocus(Runnable runOutputFocus) {
         this.runOutputFocus = runOutputFocus;
+    }
+
+    public void bindDebugSessionStateListener(Consumer<Boolean> listener) {
+        this.debugSessionStateListener = listener;
     }
 
     public static boolean isCurrentFileType(RunConfigurationData data) {
@@ -253,11 +259,38 @@ public final class DotnetRunSupport {
 
         return build.buildThenDebug(project, dotnet.get(), netcoredbg, configuration, projectFile,
                 runnableTfm.orElse(null), breakpoints, debugView, outputPanels, runOutputFocus,
-                startupHook, debugSession::set);
+                startupHook, this::setDebugSession);
     }
 
     public boolean isDebugging() {
         return debugSession.get() != null;
+    }
+
+    public HotReloadResult hotReload(RunConfigurationData data) {
+        if (debugSession.get() == null) {
+            return HotReloadResult.failure("Nenhuma sessao de debug ativa para hot reload.");
+        }
+        Path project = projectPath;
+        if (project == null) {
+            return HotReloadResult.failure("Projeto invalido: nenhum diretorio de projeto disponivel.");
+        }
+        Optional<String> runnableTfm = TargetFramework.selectRunnableModernTfm(project);
+        if (runnableTfm.isEmpty()) {
+            return HotReloadResult.failure(debugBlockedMessage(project));
+        }
+        Optional<Path> dotnet = ensureDotnet();
+        if (dotnet.isEmpty()) {
+            return HotReloadResult.failure("dotnet nao encontrado para hot reload.");
+        }
+
+        String configuration = configurationOf(data);
+        Path projectFile = TargetFramework.findPrimaryProjectFile(project);
+        int exit = build.buildForHotReload(project, dotnet.get(), configuration, projectFile,
+                runnableTfm.orElse(null), outputPanels);
+        if (exit != 0) {
+            return HotReloadResult.failure("Hot reload falhou: build retornou codigo " + exit + ".");
+        }
+        return HotReloadResult.success("Hot reload concluido: build aplicado aos artefatos de Debug.");
     }
 
     public boolean sendDebugCommand(String command) {
@@ -322,6 +355,7 @@ public final class DotnetRunSupport {
 
     public void stop(RunConfigurationData data) {
         DotnetDapDebugSession session = debugSession.getAndSet(null);
+        notifyDebugSessionState(false);
         if (session != null) {
             session.terminate();
         }
@@ -330,6 +364,22 @@ public final class DotnetRunSupport {
             type = TYPE_RUN;
         }
         build.stop(type);
+    }
+
+    private void setDebugSession(DotnetDapDebugSession session) {
+        debugSession.set(session);
+        notifyDebugSessionState(session != null);
+    }
+
+    private void notifyDebugSessionState(boolean active) {
+        Consumer<Boolean> listener = debugSessionStateListener;
+        if (listener != null) {
+            try {
+                listener.accept(active);
+            } catch (Exception e) {
+                log.debug("Falha ao atualizar estado da sessao de debug: {}", e.getMessage());
+            }
+        }
     }
 
     private Optional<Path> ensureDotnet() {
@@ -388,5 +438,15 @@ public final class DotnetRunSupport {
         String target = tfms.isEmpty() ? ".NET Framework" : String.join(", ", tfms);
         return "Execução de .NET Framework (" + target + ") não é suportada neste sistema operacional — "
                 + "apenas build. Compile aqui e copie o binário de bin/ para o Windows para executar.";
+    }
+
+    public record HotReloadResult(boolean success, String message) {
+        public static HotReloadResult success(String message) {
+            return new HotReloadResult(true, message);
+        }
+
+        public static HotReloadResult failure(String message) {
+            return new HotReloadResult(false, message);
+        }
     }
 }

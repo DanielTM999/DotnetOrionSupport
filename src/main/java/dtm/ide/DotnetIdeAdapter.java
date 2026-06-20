@@ -256,6 +256,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runSupport.bindActiveText(() -> currentTextOf(activeFile));
         runSupport.bindOutputPanels(this::requestOutputPanel);
         runSupport.bindRunOutputFocus(this::requestShowRunOutput);
+        runSupport.bindDebugSessionStateListener(this::onDebugSessionStateChanged);
         if (projectPath != null) {
             boolean canRun = TargetFramework.canRunOnHost(projectPath);
             SwingUtilities.invokeLater(() -> {
@@ -1802,7 +1803,72 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public RunProcessHandle launchDebug(RunConfigurationData data, RunExecutionContext context) throws Exception {
         debugActive.set(true);
+        runOnUiThread(() -> {
+            requestSetHotReloadButtonVisible(true);
+            requestSetHotReloadButtonEnabled(false);
+        });
         return runSupport.launchDebug(data, context);
+    }
+
+    @Override
+    public void onHotReload(RunConfigurationData data) throws Exception {
+        if (!debugActive.get() || !runSupport.isDebugging()) {
+            setStatusBarText("Hot reload indisponivel: nenhuma sessao de debug ativa.");
+            runOnUiThread(() -> requestSetHotReloadButtonEnabled(false));
+            return;
+        }
+        runOnUiThread(() -> requestSetHotReloadButtonEnabled(false));
+        showProgress("dotnetHotReload", "Aplicando hot reload...");
+        try {
+            DotnetRunSupport.HotReloadResult result = runSupport.hotReload(data);
+            setStatusBarText(result.message());
+            if (!result.success()) {
+                createNotification(new dtm.ide.api.extension.NotificationContext(".NET Hot Reload", result.message()));
+                if (confirmRestartAfterHotReloadFailure(result.message())) {
+                    setStatusBarText("Reiniciando sessao de debug...");
+                    onDebugCommand("restart");
+                }
+            }
+        } finally {
+            hideProgress("dotnetHotReload");
+            runOnUiThread(() -> requestSetHotReloadButtonEnabled(debugActive.get() && runSupport.isDebugging()));
+        }
+    }
+
+    private boolean confirmRestartAfterHotReloadFailure(String failureMessage) {
+        String detail = failureMessage == null || failureMessage.isBlank()
+                ? "Hot Reload falhou."
+                : failureMessage;
+        String message = detail + System.lineSeparator()
+                + "Deseja reiniciar a sessao de debug agora?";
+        final int[] result = {-1};
+        Runnable show = () -> result[0] = createModernDialogBuilder()
+                .title("Hot Reload falhou")
+                .draggable(true)
+                .message(message)
+                .accentColor(new Color(220, 53, 69))
+                .option("Reiniciar", 0, new Color(59, 130, 246), Color.WHITE)
+                .option("Cancelar", 1, new Color(108, 117, 125), Color.WHITE)
+                .type(ModernDialog.Type.QUESTION)
+                .show();
+        try {
+            if (SwingUtilities.isEventDispatchThread()) {
+                show.run();
+            } else {
+                SwingUtilities.invokeAndWait(show);
+            }
+        } catch (Exception e) {
+            log.debug("Falha ao exibir dialogo de hot reload: {}", e.getMessage());
+            return false;
+        }
+        return result[0] == 0;
+    }
+
+    private void onDebugSessionStateChanged(boolean active) {
+        runOnUiThread(() -> {
+            requestSetHotReloadButtonVisible(active);
+            requestSetHotReloadButtonEnabled(active);
+        });
     }
 
     @Override
@@ -2042,6 +2108,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
         debugVariablesPanel.clearVariables();
         debugCallStackPanel.clear();
         debugWatchPanel.clearValues();
+        runOnUiThread(() -> {
+            requestSetHotReloadButtonVisible(false);
+            requestSetHotReloadButtonEnabled(false);
+        });
     }
 
     private void debugContinued() {
@@ -2068,6 +2138,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void stop(RunConfigurationData data) throws Exception {
+        runOnUiThread(() -> {
+            requestSetHotReloadButtonVisible(false);
+            requestSetHotReloadButtonEnabled(false);
+        });
         runSupport.stop(data);
     }
 
