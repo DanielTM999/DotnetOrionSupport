@@ -1,0 +1,193 @@
+# .NET / C# Orion Support
+
+Suporte completo para desenvolvimento **.NET / C#** dentro da Orion IDE: reconhecimento de
+projetos, editor C#, IntelliSense com OmniSharp, build/run/test via `dotnet`, depuração com
+`netcoredbg`, Hot Reload assistido, gerenciador NuGet, wizards de projeto e painéis de
+configuração.
+
+> Abra uma solução ou projeto C# e a Orion prepara a toolchain necessária. O plugin detecta
+> SDKs instalados e baixa componentes faltantes sob demanda.
+
+| | |
+|---|---|
+| **Coleção** | `dotnet-orion-support` |
+| **Versão** | 1.0.0 |
+| **Linguagem principal** | C# |
+| **IDE mínima** | 1.0.0 |
+| **Licença** | MIT |
+| **Plugins** | .NET / C# IDE Adapter · .NET / C# Project Wizard |
+| **Language server** | OmniSharp |
+| **Depurador** | netcoredbg (DAP) |
+
+---
+
+## Fluxo de trabalho
+
+1. Crie um projeto pelo wizard ou abra uma pasta `.NET`.
+2. O plugin reconhece `.sln`, `.slnx`, `.csproj`, `global.json`, `packages.config` e pastas C#.
+3. O SDK, OmniSharp e netcoredbg são resolvidos ou baixados automaticamente.
+4. O OmniSharp inicia e fornece autocomplete, diagnósticos, navegação e refactors.
+5. Use Run/Debug/Test, gerencie pacotes NuGet e edite configurações do projeto pela IDE.
+
+---
+
+## Recursos principais
+
+### Editor C#
+
+- Realce de sintaxe para `.cs`, `.csx`, `.cshtml` e `.razor`.
+- Comentário de linha com `//`.
+- Dobras para blocos `{}`, comentários `/* */` e `#region/#endregion`.
+- Dobra XML em `.csproj`, `.vbproj`, `.fsproj`, `.props`, `.targets` e `.config`.
+- Lâmpada de ações de código quando o OmniSharp retorna quick fixes/refactors.
+- F2 para rename do símbolo no editor ativo.
+
+### IntelliSense
+
+| Recurso | Descrição |
+|---|---|
+| Autocomplete | Sugestões do OmniSharp no editor |
+| Hover | Tipo, assinatura e documentação quando disponíveis |
+| Diagnósticos | Erros e avisos publicados pelo LSP |
+| Navegação | Ir para definição/implementação |
+| Find usages | Busca referências do símbolo |
+| Document symbols | Estrutura do arquivo |
+| Call hierarchy | Incoming/outgoing calls quando suportado |
+| Rename | Alteração multi-arquivo no workspace |
+| Formatting | Formatação manual ou ao salvar |
+| Code actions | Quick fix, refactor, organize imports e fix all |
+
+### Build, Run e Test
+
+Configurações disponíveis:
+
+- **.NET: Compilar**
+- **.NET: Compilar + Executar**
+- **.NET: Testar**
+- **Current File**, quando o arquivo C# tem `Main` ou top-level statements.
+
+O menu **Build** adiciona compilar Debug/Release, publicar Release, recompilar e limpar.
+No menu de contexto de `.sln`, `.slnx`, `.csproj`, `.vbproj` e `.fsproj`, o plugin oferece
+build, rebuild, clean e NuGet para o alvo selecionado.
+
+### Debug
+
+Depuração com `netcoredbg` inclui:
+
+- breakpoints sincronizados com a Orion;
+- painel **Debug** com Variáveis, Watch e Pilha de chamadas;
+- destaque da linha atual;
+- popup de exceção;
+- avaliação de expressão;
+- completions em expressões de debug;
+- restart, pause, continue, step over, step into e step out.
+
+Atalhos:
+
+| Atalho | Ação |
+|---|---|
+| `F5` | Continuar |
+| `Shift + F5` | Parar |
+| `Ctrl + Shift + F5` | Reiniciar |
+| `F6` | Pausar |
+| `F10` | Step over |
+| `F11` | Step into |
+| `Shift + F11` | Step out |
+
+### Hot Reload
+
+O botão **Hot Reload** aparece durante uma sessão de debug ativa. Ele:
+
+- habilita `DOTNET_MODIFIABLE_ASSEMBLIES=debug`;
+- recompila em background com `dotnet build --no-restore`;
+- escreve no buffer do painel **Build** sem puxar foco;
+- mostra progresso na barra de status;
+- em falha, abre um `ModernDialog` perguntando se deseja reiniciar a sessão.
+
+É um fluxo best-effort: quando o runtime/debugger não aceitar a alteração em execução, o
+restart fica a um clique.
+
+### NuGet
+
+O gerenciador NuGet possui:
+
+- abas Browse, Installed e Updates;
+- fontes configuráveis em `NuGet.Config`;
+- busca em `nuget.org` ou feeds personalizados;
+- seleção de versão;
+- opção de prerelease;
+- instalar, atualizar e desinstalar;
+- suporte a `PackageReference`;
+- suporte em melhor esforço a `packages.config`;
+- gerenciamento por solução ou projeto.
+
+### Projeto e árvore
+
+- Painel **Configuração do Projeto (.NET)** para editar `TargetFramework`, `OutputType`,
+  `LangVersion`, `Nullable`, `ImplicitUsings` e versão do SDK em `global.json`.
+- Criação de novos itens C#: Class, Interface, Record, Struct e Enum.
+- Gerenciador de referências de projeto via `dotnet add/remove reference`.
+- Ocultação de `bin`, `obj` e `.vs` na árvore.
+- Restore manual em **Window → Restaurar pacotes**.
+- Reinício manual do OmniSharp em **Window → Reiniciar OmniSharp**.
+
+---
+
+## Wizards
+
+Templates modernos:
+
+- Console App
+- Class Library
+- ASP.NET Core Empty
+- ASP.NET Core Web API
+- ASP.NET Core Web API (Controllers + Swagger)
+- ASP.NET Core MVC
+- Blazor Web App
+- Worker Service
+- xUnit Test Project
+- WPF App (Windows)
+- Windows Forms App (Windows)
+
+Templates .NET Framework:
+
+- Console App (.NET Framework)
+- Class Library (.NET Framework)
+
+Frameworks: `net10.0`, `net9.0`, `net8.0`, `net7.0`, `net6.0`, `net48`, `net472`, `net462`.
+
+---
+
+## Toolchain
+
+| Componente | Versão padrão |
+|---|---|
+| .NET SDK | 8.0.422 |
+| .NET SDK 10 | 10.0.301 |
+| .NET SDK 9 | 9.0.315 |
+| .NET SDK 7 | 7.0.410 |
+| .NET SDK 6 | 6.0.428 |
+| OmniSharp | 1.39.11 |
+| netcoredbg | 3.1.3-1062 |
+
+O plugin usa ferramentas instaladas quando compatíveis e baixa o que faltar para a área de
+recursos da coleção.
+
+---
+
+## Configurações
+
+Em **Settings → .NET / C#**:
+
+- formatar ao salvar via OmniSharp;
+- incluir versões prerelease no NuGet por padrão;
+- configuração padrão de build: Debug ou Release.
+
+---
+
+## Limitações
+
+- A experiência rica é focada em C#; VB.NET/F# são tratados principalmente como arquivos de projeto.
+- Hot Reload é best-effort e pode exigir restart dependendo da alteração.
+- Execução/depuração de .NET Framework fora do Windows é bloqueada quando não há runtime compatível.
+- Projetos legados recebem suporte em melhor esforço para pacotes e referências.
