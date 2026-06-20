@@ -1,0 +1,30 @@
+{
+  "pluginPackages": [
+    "dtm.ide"
+  ],
+  "pluginCollectionId": "dotnet-orion-support",
+  "pluginCollectionName": ".NET / C# Orion Support",
+  "pluginCollectionVersion": "1.0.0",
+  "pluginCollectionDescription": "Suporte ao desenvolvimento .NET / C# na Orion IDE, com gerenciador de pacotes NuGet e build de .NET Framework (compila no Linux, executa no Windows)",
+  "pluginCollectionAuthor": "DanielTM999",
+  "pluginCollectionAuthorEmail": "danielmelo101203@gmail.com",
+  "pluginCollectionWebsite": "https://github.com/DanielTM999/DotnetOrionSupport",
+  "pluginLicense": "MIT",
+  "pluginMinimumAppVersion": "1.0.0",
+  "plugins": [
+    {
+      "id": "dotnet-ide-adapter",
+      "name": ".NET / C# IDE Adapter",
+      "description": "Adapter de projetos .NET / C# para a Orion IDE com realce de sintaxe, IntelliSense, build e gerenciador NuGet",
+      "version": "1.0.0",
+      "website": "https://github.com/DanielTM999/DotnetOrionSupport"
+    },
+    {
+      "id": "dotnet-project-wizard",
+      "name": ".NET / C# Project Wizard",
+      "description": "Wizard para criação de novos projetos .NET / C# (incluindo .NET Framework)",
+      "version": "1.0.0",
+      "website": "https://github.com/DanielTM999/DotnetOrionSupport"
+    }
+  ]
+}
