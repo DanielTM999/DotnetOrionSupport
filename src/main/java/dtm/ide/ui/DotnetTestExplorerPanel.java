@@ -168,6 +168,14 @@ public final class DotnetTestExplorerPanel extends JPanel {
                 "Rodando " + testName + "...");
     }
 
+    public void runTest(String fullyQualifiedName) {
+        if (fullyQualifiedName == null || fullyQualifiedName.isBlank()) {
+            return;
+        }
+        runFilter("FullyQualifiedName~" + filterValue(fullyQualifiedName), List.of(fullyQualifiedName),
+                "Rodando " + fullyQualifiedName + "...");
+    }
+
     private void runFilter(String filter, List<String> scope, String message) {
         if (busy) {
             return;

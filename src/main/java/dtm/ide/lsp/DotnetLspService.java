@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import dtm.ide.api.extension.Resource;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
+import dtm.ide.api.project.editor.DocumentHighlight;
 import dtm.ide.api.project.editor.SemanticToken;
 import dtm.ide.sdk.DotnetSdkService;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
@@ -120,6 +121,8 @@ public final class DotnetLspService {
     private volatile boolean documentSymbolSupported;
     private volatile boolean renameSupported;
     private volatile boolean formattingSupported;
+    private volatile boolean rangeFormattingSupported;
+    private volatile boolean documentHighlightSupported;
     private volatile boolean callHierarchySupported;
     private volatile boolean codeActionSupported;
     private volatile boolean implementationSupported;
@@ -440,6 +443,42 @@ public final class DotnetLspService {
         }
     }
 
+    public List<DocumentHighlight> documentHighlights(Path filePath, String text, int line, int character) {
+        if (!canUseLsp(filePath) || !documentHighlightSupported) {
+            return Collections.emptyList();
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode result = client.sendRequest("textDocument/documentHighlight", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "position", LspJsonRpcClient.position(line, character)
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return parseDocumentHighlights(result);
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static List<DocumentHighlight> parseDocumentHighlights(JsonNode result) {
+        if (result == null || !result.isArray() || result.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<DocumentHighlight> out = new ArrayList<>(result.size());
+        for (JsonNode node : result) {
+            Range range = parseRange(node.get("range"));
+            if (range == null) {
+                continue;
+            }
+            out.add(switch (node.path("kind").asInt(1)) {
+                case 2 -> DocumentHighlight.read(range);
+                case 3 -> DocumentHighlight.write(range);
+                default -> DocumentHighlight.text(range);
+            });
+        }
+        return out;
+    }
+
     private List<Location> callSiteReferences(Path filePath, String text, int line, int character) {
         if (!canUseLsp(filePath) || !referencesSupported) {
             return Collections.emptyList();
@@ -682,6 +721,39 @@ public final class DotnetLspService {
             )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             List<TextEdit> edits = parseTextEdits(result);
             return edits.isEmpty() ? null : applyEdits(text == null ? "" : text, edits);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public String formatRange(Path filePath, String fullText, int startOffset, int endOffset, int tabSize, boolean insertSpaces) {
+        if (!canUseLsp(filePath) || !rangeFormattingSupported || fullText == null
+                || startOffset < 0 || endOffset < startOffset || endOffset > fullText.length()) {
+            return null;
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, fullText);
+            int[] lineStarts = lineStartOffsets(fullText);
+            Position start = positionOf(lineStarts, startOffset);
+            Position end = positionOf(lineStarts, endOffset);
+            JsonNode result = client.sendRequest("textDocument/rangeFormatting", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "range", Map.of(
+                            "start", LspJsonRpcClient.position(start.line(), start.col()),
+                            "end", LspJsonRpcClient.position(end.line(), end.col())),
+                    "options", Map.of("tabSize", tabSize, "insertSpaces", insertSpaces)
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            List<TextEdit> edits = parseTextEdits(result);
+            if (edits.isEmpty()) {
+                return null;
+            }
+            String formattedFull = applyEdits(fullText, edits);
+            int newEnd = endOffset + (formattedFull.length() - fullText.length());
+            if (newEnd < startOffset || newEnd > formattedFull.length()) {
+                return null;
+            }
+            return formattedFull.substring(startOffset, newEnd);
         } catch (Exception e) {
             return null;
         }
@@ -1382,6 +1454,8 @@ public final class DotnetLspService {
         documentSymbolSupported = false;
         renameSupported = false;
         formattingSupported = false;
+        rangeFormattingSupported = false;
+        documentHighlightSupported = false;
         callHierarchySupported = false;
         codeActionSupported = false;
         implementationSupported = false;
@@ -1438,6 +1512,8 @@ public final class DotnetLspService {
         documentSymbolSupported = supportsProvider(node(capabilities, "documentSymbolProvider"));
         renameSupported = supportsProvider(node(capabilities, "renameProvider"));
         formattingSupported = supportsProvider(node(capabilities, "documentFormattingProvider"));
+        rangeFormattingSupported = supportsProvider(node(capabilities, "documentRangeFormattingProvider"));
+        documentHighlightSupported = supportsProvider(node(capabilities, "documentHighlightProvider"));
         callHierarchySupported = supportsProvider(node(capabilities, "callHierarchyProvider"));
         codeActionSupported = supportsProvider(node(capabilities, "codeActionProvider"));
         implementationSupported = supportsProvider(node(capabilities, "implementationProvider"));

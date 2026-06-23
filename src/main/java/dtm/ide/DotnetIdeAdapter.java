@@ -687,6 +687,30 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     @Override
+    public boolean shouldAutoTriggerCompletion(IdeCompletionContext context) {
+        if (context == null || !isCSharpLike(context.filePath())) {
+            return false;
+        }
+        String line = context.currentLine();
+        int col = context.caretCol();
+        if (line == null || col <= 0 || col > line.length()) {
+            return false;
+        }
+        char typed = line.charAt(col - 1);
+        return typed == '.' || Character.isLetter(typed) || typed == '_';
+    }
+
+    @Override
+    public boolean isAutoCompletionOnTypingEnabled() {
+        return true;
+    }
+
+    @Override
+    public Set<Character> getCompletionTriggerCharacters() {
+        return Set.of('.');
+    }
+
+    @Override
     public HoverInfo getHover(IdeHoverContext context) {
         if (debugActive.get()) {
             return null;
@@ -999,7 +1023,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return context == null ? null : context.text();
         }
         if (context.formatScope() == IdeFormatScope.SELECTION) {
-            return context.text();
+            String selectionSource = context.fullText() == null ? context.text() : context.fullText();
+            String formattedSelection = service.formatRange(context.file(), selectionSource,
+                    context.startOffset(), context.endOffset(), context.tabSize(), context.useSpacesForTab());
+            return formattedSelection == null ? context.text() : formattedSelection;
         }
         String fullText = context.fullText() == null ? context.text() : context.fullText();
         String formatted = service.format(context.file(), fullText, context.tabSize(), context.useSpacesForTab());
@@ -1031,6 +1058,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     @Override
+    public List<DocumentHighlight> getDocumentHighlights(IdeDocumentHighlightContext context) {
+        if (debugActive.get()) {
+            return Collections.emptyList();
+        }
+        DotnetLspService service = lspService;
+        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+            return Collections.emptyList();
+        }
+        return service.documentHighlights(context.filePath(), context.text(), context.line(), context.col());
+    }
+
+    @Override
     public List<CodeLens> getCodeLenses(IdeCodeLensContext context) {
         DotnetLspService service = lspService;
         if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
@@ -1043,7 +1082,71 @@ public class DotnetIdeAdapter extends IdeAdapter {
         List<CodeLens> lenses = new ArrayList<>();
         int[] budget = {CODE_LENS_LIMIT};
         collectCodeLenses(service, symbols, context.filePath(), context.text(), lenses, budget);
+        String[] sourceLines = context.text() == null ? new String[0] : context.text().split("\n", -1);
+        collectTestLenses(symbols, "", sourceLines, lenses);
         return lenses;
+    }
+
+    private void collectTestLenses(List<DocumentSymbol> symbols, String container, String[] lines, List<CodeLens> out) {
+        for (DocumentSymbol symbol : symbols) {
+            if (symbol == null || symbol.name() == null) {
+                continue;
+            }
+            String qualified = container.isEmpty() ? symbol.name() : container + "." + symbol.name();
+            if (symbol.kind() == SymbolKind.METHOD && symbol.selectionRange() != null
+                    && symbol.selectionRange().start() != null
+                    && isTestMethod(lines, symbol.selectionRange().start().line())) {
+                String testId = stripSignature(qualified);
+                CodeLensItem run = CodeLensItem.builder()
+                        .text("▶ Run Test")
+                        .tooltip("Executar " + testId)
+                        .cursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
+                        .onClick(event -> runTestFromLens(testId))
+                        .build();
+                out.add(CodeLens.above(symbol.selectionRange().start().line(), run));
+            }
+            if (symbol.children() != null && !symbol.children().isEmpty()) {
+                collectTestLenses(symbol.children(), qualified, lines, out);
+            }
+        }
+    }
+
+    private static boolean isTestMethod(String[] lines, int methodLine0) {
+        if (lines == null || methodLine0 < 0 || methodLine0 >= lines.length) {
+            return false;
+        }
+        if (hasTestMarker(lines[methodLine0])) {
+            return true;
+        }
+        int scanned = 0;
+        for (int i = methodLine0 - 1; i >= 0 && scanned < 8; i--, scanned++) {
+            String stripped = lines[i].strip();
+            if (stripped.isEmpty()) {
+                continue;
+            }
+            if (stripped.startsWith("[")) {
+                if (hasTestMarker(stripped)) {
+                    return true;
+                }
+                continue;
+            }
+            break;
+        }
+        return false;
+    }
+
+    private static boolean hasTestMarker(String line) {
+        String lower = line.toLowerCase(Locale.ROOT);
+        return lower.contains("[fact") || lower.contains("[theory")
+                || lower.contains("[testmethod") || lower.contains("[testcase")
+                || lower.contains("[test]") || lower.contains("[test(");
+    }
+
+    private static String stripSignature(String qualified) {
+        int paren = qualified.indexOf('(');
+        String base = paren >= 0 ? qualified.substring(0, paren) : qualified;
+        int angle = base.indexOf('<');
+        return angle >= 0 ? base.substring(0, angle) : base;
     }
 
     private void collectCodeLenses(DotnetLspService service, List<DocumentSymbol> symbols, Path filePath,
@@ -2082,15 +2185,29 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void openTestExplorer() {
         runOnUiThread(() -> {
-            if (testPanel == null) {
-                testPanel = new DotnetTestExplorerPanel(() -> projectPath, this::ensureSdkService,
-                        () -> ensurePluginSettings().getDefaultConfiguration());
-                testToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Testes", ToolIconType.PLAY, testPanel);
-            }
+            ensureTestPanel();
             if (testToolPanelId != null && !testToolPanelId.isBlank()) {
                 requestOpenToolPanel(testToolPanelId);
             }
             testPanel.refresh();
+        });
+    }
+
+    private void ensureTestPanel() {
+        if (testPanel == null) {
+            testPanel = new DotnetTestExplorerPanel(() -> projectPath, this::ensureSdkService,
+                    () -> ensurePluginSettings().getDefaultConfiguration());
+            testToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Testes", ToolIconType.PLAY, testPanel);
+        }
+    }
+
+    private void runTestFromLens(String fullyQualifiedName) {
+        runOnUiThread(() -> {
+            ensureTestPanel();
+            if (testToolPanelId != null && !testToolPanelId.isBlank()) {
+                requestOpenToolPanel(testToolPanelId);
+            }
+            testPanel.runTest(fullyQualifiedName);
         });
     }
 
