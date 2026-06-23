@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -69,6 +70,99 @@ public final class DotnetBuild {
         command.add(configuration == null || configuration.isBlank() ? "Debug" : configuration);
         command.add("--nologo");
         return launchProcess(DotnetRunSupport.TYPE_TEST, command, project, false);
+    }
+
+    public List<String> listTests(Path project, Path dotnet, String configuration) {
+        List<String> command = new ArrayList<>();
+        command.add(dotnet.toAbsolutePath().toString());
+        command.add("test");
+        command.add("-c");
+        command.add(configuration == null || configuration.isBlank() ? "Debug" : configuration);
+        command.add("--nologo");
+        command.add("--list-tests");
+        return parseTestList(captureOutput(command, project, 240));
+    }
+
+    public Process launchTest(Path project, Path dotnet, String configuration, String filter) throws IOException {
+        List<String> command = new ArrayList<>();
+        command.add(dotnet.toAbsolutePath().toString());
+        command.add("test");
+        command.add("-c");
+        command.add(configuration == null || configuration.isBlank() ? "Debug" : configuration);
+        command.add("--nologo");
+        if (filter != null && !filter.isBlank()) {
+            command.add("--filter");
+            command.add(filter);
+        }
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.directory(project.toFile());
+        builder.redirectErrorStream(true);
+        applyDotnetEnv(builder, firstCommandPath(command));
+        Process process = builder.start();
+        registerProcess(DotnetRunSupport.TYPE_TEST, process);
+        return process;
+    }
+
+    public void stopTests() {
+        stop(DotnetRunSupport.TYPE_TEST);
+    }
+
+    private String captureOutput(List<String> command, Path workingDir, long timeoutSeconds) {
+        Process process = null;
+        try {
+            ProcessBuilder builder = new ProcessBuilder(command);
+            if (workingDir != null) {
+                builder.directory(workingDir.toFile());
+            }
+            builder.redirectErrorStream(true);
+            applyDotnetEnv(builder, firstCommandPath(command));
+            process = builder.start();
+            registerProcess(DotnetRunSupport.TYPE_TEST, process);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            Process started = process;
+            Thread reader = new Thread(() -> {
+                try {
+                    pump(started.getInputStream(), out);
+                } catch (IOException ignored) {
+                }
+            }, "dotnet-test-list");
+            reader.setDaemon(true);
+            reader.start();
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                destroyQuietly(process);
+            }
+            reader.join(2000);
+            return out.toString(StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            return "[erro] " + e.getMessage();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        } finally {
+            if (process != null) {
+                activeProcesses.remove(DotnetRunSupport.TYPE_TEST, process);
+            }
+        }
+    }
+
+    static List<String> parseTestList(String output) {
+        List<String> tests = new ArrayList<>();
+        if (output == null || output.isBlank()) {
+            return tests;
+        }
+        for (String raw : output.split("\\R")) {
+            if (raw.isEmpty() || !Character.isWhitespace(raw.charAt(0))) {
+                continue;
+            }
+            String line = raw.strip();
+            if (line.isEmpty() || line.indexOf('.') < 0 || !Character.isJavaIdentifierStart(line.charAt(0))) {
+                continue;
+            }
+            if (!tests.contains(line)) {
+                tests.add(line);
+            }
+        }
+        return tests;
     }
 
     private RunProcessHandle launchProcess(String type, List<String> command, Path project, boolean interactive) {

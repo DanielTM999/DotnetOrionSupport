@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import dtm.ide.api.extension.Resource;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
+import dtm.ide.api.project.editor.SemanticToken;
 import dtm.ide.sdk.DotnetSdkService;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
 import dtm.stools.component.panels.editor.code.api.Command;
@@ -17,6 +18,11 @@ import dtm.stools.component.panels.editor.code.autocomplete.AutoCompleteItem;
 import dtm.stools.component.panels.editor.code.diagnostics.Diagnostic;
 import dtm.stools.component.panels.editor.code.diagnostics.DiagnosticSeverity;
 import dtm.stools.component.panels.editor.code.hover.HoverInfo;
+import dtm.stools.component.panels.editor.code.inlay.InlayHint;
+import dtm.stools.component.panels.editor.code.inlay.InlayHintKind;
+import dtm.stools.component.panels.editor.code.signature.ParameterInformation;
+import dtm.stools.component.panels.editor.code.signature.SignatureHelp;
+import dtm.stools.component.panels.editor.code.signature.SignatureInformation;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.BufferedReader;
@@ -35,6 +41,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -47,6 +54,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -65,9 +74,19 @@ public final class DotnetLspService {
     private static final long COMPLETION_TIMEOUT_MS = 10000;
 
     private static final long INIT_TIMEOUT_MS = 120000;
+    private static final int SYNTHETIC_PROGRESS_CAP = 90;
 
     private static final Set<SymbolKind> CALLABLE_KINDS = EnumSet.of(
             SymbolKind.METHOD, SymbolKind.FUNCTION, SymbolKind.CONSTRUCTOR, SymbolKind.OPERATOR, SymbolKind.PROPERTY);
+
+    private static final List<String> CLIENT_TOKEN_TYPES = List.of(
+            "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter",
+            "variable", "property", "enumMember", "event", "function", "method", "macro", "keyword",
+            "modifier", "comment", "string", "number", "regexp", "operator", "decorator");
+
+    private static final List<String> CLIENT_TOKEN_MODIFIERS = List.of(
+            "declaration", "definition", "readonly", "static", "deprecated", "abstract", "async",
+            "modification", "documentation", "defaultLibrary");
 
     private static final Set<String> CSHARP_KEYWORDS = Set.of(
             "if", "else", "for", "foreach", "while", "do", "switch", "case", "catch", "return",
@@ -78,9 +97,15 @@ public final class DotnetLspService {
     private final DotnetSdkService sdkService;
     private final Resource resource;
     private final ExecutorService executor = Executors.newCachedThreadPool(daemonFactory("dotnet-lsp"));
+    private final ScheduledExecutorService progressExecutor =
+            Executors.newSingleThreadScheduledExecutor(daemonFactory("dotnet-lsp-progress"));
     private final Object processLock = new Object();
     private final AtomicBoolean intentionalStop = new AtomicBoolean(false);
     private final List<Consumer<String>> diagnosticsPublishedListeners = new ArrayList<>();
+    private final List<LoadProgressListener> loadProgressListeners = new ArrayList<>();
+    private volatile int analyzeMaxTotal;
+    private volatile int analyzeLastPercent;
+    private volatile ScheduledFuture<?> analyzeProgressTicker;
 
     private volatile State state = State.NOT_STARTED;
     private volatile String lastError;
@@ -97,6 +122,13 @@ public final class DotnetLspService {
     private volatile boolean formattingSupported;
     private volatile boolean callHierarchySupported;
     private volatile boolean codeActionSupported;
+    private volatile boolean implementationSupported;
+    private volatile boolean signatureHelpSupported;
+    private volatile boolean workspaceSymbolSupported;
+    private volatile boolean semanticTokensSupported;
+    private volatile boolean inlayHintSupported;
+    private volatile List<String> semanticTokenTypeLegend = List.of();
+    private volatile List<String> semanticTokenModifierLegend = List.of();
 
     private final Map<String, AtomicInteger> documentVersions = new ConcurrentHashMap<>();
     private final Map<String, String> openedContent = new ConcurrentHashMap<>();
@@ -124,12 +156,28 @@ public final class DotnetLspService {
         return p != null && p.isAlive() && state == State.READY;
     }
 
+    public boolean isSemanticTokensReady() {
+        return isRunning() && semanticTokensSupported;
+    }
+
     public void addDiagnosticsPublishedListener(Consumer<String> listener) {
         if (listener != null) {
             synchronized (diagnosticsPublishedListeners) {
                 diagnosticsPublishedListeners.add(listener);
             }
         }
+    }
+
+    public void addLoadProgressListener(LoadProgressListener listener) {
+        if (listener != null) {
+            synchronized (loadProgressListeners) {
+                loadProgressListeners.add(listener);
+            }
+        }
+    }
+
+    public interface LoadProgressListener {
+        void onProgress(int percent, boolean finished);
     }
 
     public void start() {
@@ -185,6 +233,23 @@ public final class DotnetLspService {
         }
     }
 
+    public SignatureHelp signatureHelp(Path filePath, String text, int line, int character) {
+        if (!canUseLsp(filePath) || !signatureHelpSupported) {
+            return null;
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode result = client.sendRequest("textDocument/signatureHelp", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "position", LspJsonRpcClient.position(line, character)
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return parseSignatureHelp(result);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public HoverInfo diagnosticHover(Path filePath, int line, int character) {
         Diagnostic diagnostic = diagnosticAt(filePath, line, character);
         if (diagnostic == null || diagnostic.message() == null || diagnostic.message().isBlank()) {
@@ -208,6 +273,23 @@ public final class DotnetLspService {
         try {
             syncDocument(uri, filePath, text);
             JsonNode result = client.sendRequest("textDocument/definition", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "position", LspJsonRpcClient.position(line, character)
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return resolveMetadataLocations(parseLocations(result));
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    public List<Location> implementations(Path filePath, String text, int line, int character) {
+        if (!canUseLsp(filePath) || !implementationSupported) {
+            return Collections.emptyList();
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode result = client.sendRequest("textDocument/implementation", Map.of(
                     "textDocument", Map.of("uri", uri),
                     "position", LspJsonRpcClient.position(line, character)
             )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
@@ -390,6 +472,178 @@ public final class DotnetLspService {
         } catch (Exception e) {
             return Collections.emptyList();
         }
+    }
+
+    public List<WorkspaceSymbol> workspaceSymbols(String query) {
+        if (!isRunning() || client == null || !workspaceSymbolSupported || query == null || query.isBlank()) {
+            return Collections.emptyList();
+        }
+        try {
+            JsonNode result = client.sendRequest("workspace/symbol", Map.of("query", query))
+                    .get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return parseWorkspaceSymbols(result);
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private List<WorkspaceSymbol> parseWorkspaceSymbols(JsonNode result) {
+        if (result == null || !result.isArray() || result.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<WorkspaceSymbol> out = new ArrayList<>(result.size());
+        for (JsonNode node : result) {
+            String name = textOrEmpty(node.get("name"));
+            if (name.isBlank()) {
+                continue;
+            }
+            Location location = parseLocation(node.get("location"));
+            if (location == null) {
+                continue;
+            }
+            out.add(new WorkspaceSymbol(name, textOrEmpty(node.get("containerName")), location));
+        }
+        return out;
+    }
+
+    public List<SemanticToken> semanticTokens(Path filePath, String text) {
+        if (!canUseLsp(filePath) || !semanticTokensSupported) {
+            return Collections.emptyList();
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode result = client.sendRequest("textDocument/semanticTokens/full", Map.of(
+                    "textDocument", Map.of("uri", uri)
+            )).get(COMPLETION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return decodeSemanticTokens(result);
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private List<SemanticToken> decodeSemanticTokens(JsonNode result) {
+        if (result == null || result.isNull()) {
+            return Collections.emptyList();
+        }
+        JsonNode data = result.get("data");
+        if (data == null || !data.isArray() || data.size() < 5) {
+            return Collections.emptyList();
+        }
+        List<String> types = semanticTokenTypeLegend;
+        List<String> modifiers = semanticTokenModifierLegend;
+        if (types.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<SemanticToken> out = new ArrayList<>(data.size() / 5);
+        int line = 0;
+        int col = 0;
+        for (int i = 0; i + 4 < data.size(); i += 5) {
+            int deltaLine = data.get(i).asInt();
+            int deltaStart = data.get(i + 1).asInt();
+            int length = data.get(i + 2).asInt();
+            int typeIndex = data.get(i + 3).asInt();
+            int modifierBits = data.get(i + 4).asInt();
+            if (deltaLine > 0) {
+                line += deltaLine;
+                col = deltaStart;
+            } else {
+                col += deltaStart;
+            }
+            if (length <= 0 || typeIndex < 0 || typeIndex >= types.size()) {
+                continue;
+            }
+            String type = types.get(typeIndex);
+            if (type == null || type.isBlank()) {
+                continue;
+            }
+            Range range = new Range(new Position(line, col), new Position(line, col + length));
+            out.add(new SemanticToken(range, type, decodeModifiers(modifierBits, modifiers)));
+        }
+        return out;
+    }
+
+    private static Set<String> decodeModifiers(int bits, List<String> legend) {
+        if (bits == 0 || legend.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> out = new HashSet<>();
+        for (int b = 0; b < legend.size(); b++) {
+            if ((bits & (1 << b)) != 0) {
+                String name = legend.get(b);
+                if (name != null && !name.isBlank()) {
+                    out.add(name);
+                }
+            }
+        }
+        return out;
+    }
+
+    public List<InlayHint> inlayHints(Path filePath, String text, int firstLine, int lastLine) {
+        if (!canUseLsp(filePath) || !inlayHintSupported) {
+            return Collections.emptyList();
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            int from = Math.max(0, firstLine);
+            int to = Math.max(from, lastLine) + 1;
+            JsonNode result = client.sendRequest("textDocument/inlayHint", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "range", Map.of(
+                            "start", LspJsonRpcClient.position(from, 0),
+                            "end", LspJsonRpcClient.position(to, 0))
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return parseInlayHints(result);
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static List<InlayHint> parseInlayHints(JsonNode result) {
+        if (result == null || !result.isArray() || result.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<InlayHint> out = new ArrayList<>(result.size());
+        for (JsonNode node : result) {
+            JsonNode position = node.get("position");
+            if (position == null) {
+                continue;
+            }
+            int line = position.path("line").asInt(-1);
+            int col = position.path("character").asInt(-1);
+            if (line < 0 || col < 0) {
+                continue;
+            }
+            String label = inlayLabel(node.get("label"));
+            if (label.isBlank()) {
+                continue;
+            }
+            InlayHintKind kind = switch (node.path("kind").asInt(0)) {
+                case 1 -> InlayHintKind.TYPE;
+                case 2 -> InlayHintKind.PARAMETER;
+                default -> InlayHintKind.OTHER;
+            };
+            out.add(new InlayHint(line, col, label, kind));
+        }
+        return out;
+    }
+
+    private static String inlayLabel(JsonNode labelNode) {
+        if (labelNode == null || labelNode.isNull()) {
+            return "";
+        }
+        if (labelNode.isTextual()) {
+            return labelNode.asText().trim();
+        }
+        if (labelNode.isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode part : labelNode) {
+                sb.append(textOrEmpty(part.get("value")));
+            }
+            return sb.toString().trim();
+        }
+        return "";
     }
 
     public List<TextEdit> rename(Path filePath, String text, int line, int character, String newName) {
@@ -1033,6 +1287,9 @@ public final class DotnetLspService {
         return disk == null ? "" : disk;
     }
 
+    public record WorkspaceSymbol(String name, String container, Location location) {
+    }
+
     private record CallSite(Position pos, Range range) {
     }
 
@@ -1055,6 +1312,7 @@ public final class DotnetLspService {
         }
         try {
             state = State.STARTING;
+            startAnalyzeProgress();
             List<String> command = new ArrayList<>();
             command.add(omnisharp.get().toAbsolutePath().toString());
             command.add("-lsp");
@@ -1126,6 +1384,14 @@ public final class DotnetLspService {
         formattingSupported = false;
         callHierarchySupported = false;
         codeActionSupported = false;
+        implementationSupported = false;
+        signatureHelpSupported = false;
+        workspaceSymbolSupported = false;
+        semanticTokensSupported = false;
+        inlayHintSupported = false;
+        semanticTokenTypeLegend = List.of();
+        semanticTokenModifierLegend = List.of();
+        finishAnalyzeProgress();
     }
 
     private void watchProcess() {
@@ -1174,11 +1440,44 @@ public final class DotnetLspService {
         formattingSupported = supportsProvider(node(capabilities, "documentFormattingProvider"));
         callHierarchySupported = supportsProvider(node(capabilities, "callHierarchyProvider"));
         codeActionSupported = supportsProvider(node(capabilities, "codeActionProvider"));
+        implementationSupported = supportsProvider(node(capabilities, "implementationProvider"));
+        signatureHelpSupported = supportsProvider(node(capabilities, "signatureHelpProvider"));
+        workspaceSymbolSupported = supportsProvider(node(capabilities, "workspaceSymbolProvider"));
+        inlayHintSupported = supportsProvider(node(capabilities, "inlayHintProvider"));
+        captureSemanticTokensLegend(node(capabilities, "semanticTokensProvider"));
         client.sendNotification("initialized", Map.of());
     }
 
     private static JsonNode node(JsonNode capabilities, String field) {
         return capabilities == null ? null : capabilities.get(field);
+    }
+
+    private void captureSemanticTokensLegend(JsonNode provider) {
+        semanticTokensSupported = false;
+        semanticTokenTypeLegend = List.of();
+        semanticTokenModifierLegend = List.of();
+        if (provider == null || !provider.isObject()) {
+            return;
+        }
+        JsonNode legend = provider.get("legend");
+        List<String> types = stringArray(legend == null ? null : legend.get("tokenTypes"));
+        if (types.isEmpty()) {
+            return;
+        }
+        semanticTokenTypeLegend = types;
+        semanticTokenModifierLegend = stringArray(legend == null ? null : legend.get("tokenModifiers"));
+        semanticTokensSupported = true;
+    }
+
+    private static List<String> stringArray(JsonNode node) {
+        if (node == null || !node.isArray() || node.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>(node.size());
+        for (JsonNode item : node) {
+            out.add(item.asText(""));
+        }
+        return out;
     }
 
     private Map<String, Object> clientCapabilities() {
@@ -1188,11 +1487,22 @@ public final class DotnetLspService {
                 Map.of("snippetSupport", true, "documentationFormat", List.of("plaintext"))));
         textDocument.put("hover", Map.of("contentFormat", List.of("markdown", "plaintext")));
         textDocument.put("definition", Map.of("dynamicRegistration", false, "linkSupport", true));
+        textDocument.put("implementation", Map.of("dynamicRegistration", false, "linkSupport", true));
+        textDocument.put("signatureHelp", Map.of("dynamicRegistration", false,
+                "signatureInformation", Map.of("documentationFormat", List.of("plaintext"),
+                        "parameterInformation", Map.of("labelOffsetSupport", true))));
         textDocument.put("references", Map.of("dynamicRegistration", false));
         textDocument.put("documentSymbol", Map.of("dynamicRegistration", false, "hierarchicalDocumentSymbolSupport", true));
         textDocument.put("rename", Map.of("dynamicRegistration", false, "prepareSupport", false));
         textDocument.put("formatting", Map.of("dynamicRegistration", false));
         textDocument.put("codeAction", Map.of("dynamicRegistration", false));
+        textDocument.put("semanticTokens", Map.of(
+                "dynamicRegistration", false,
+                "requests", Map.of("full", true),
+                "tokenTypes", CLIENT_TOKEN_TYPES,
+                "tokenModifiers", CLIENT_TOKEN_MODIFIERS,
+                "formats", List.of("relative")));
+        textDocument.put("inlayHint", Map.of("dynamicRegistration", false));
         textDocument.put("callHierarchy", Map.of("dynamicRegistration", false));
         textDocument.put("publishDiagnostics", Map.of("relatedInformation", false));
         Map<String, Object> workspace = Map.of("symbol", Map.of("dynamicRegistration", false));
@@ -1215,6 +1525,23 @@ public final class DotnetLspService {
 
             diagnosticsByUri.put(normalizeUriKey(uri), diagnostics);
             notifyDiagnosticsPublished(uri);
+        });
+        client.onNotification("o#/backgrounddiagnosticstatus", params -> {
+            if (params == null) {
+                return;
+            }
+            int total = intField(params, "NumberFilesTotal", "numberFilesTotal");
+            int remaining = intField(params, "NumberFilesRemaining", "numberFilesRemaining");
+            String status = textField(params, "Status", "status");
+            if (isLoadFinished(total, remaining, status)) {
+                finishAnalyzeProgress();
+                return;
+            }
+            if (total > analyzeMaxTotal) {
+                analyzeMaxTotal = total;
+            }
+            int percent = progressPercent(total, remaining, analyzeMaxTotal, analyzeLastPercent);
+            publishAnalyzeProgress(percent);
         });
         client.onNotification("window/logMessage", params -> {
         });
@@ -1359,6 +1686,64 @@ public final class DotnetLspService {
                 }
             }
             return sb.toString();
+        }
+        return "";
+    }
+
+    private static SignatureHelp parseSignatureHelp(JsonNode result) {
+        if (result == null || result.isNull()) {
+            return null;
+        }
+        JsonNode signaturesNode = result.get("signatures");
+        if (signaturesNode == null || !signaturesNode.isArray() || signaturesNode.isEmpty()) {
+            return null;
+        }
+        List<SignatureInformation> signatures = new ArrayList<>(signaturesNode.size());
+        for (JsonNode sig : signaturesNode) {
+            String label = textOrEmpty(sig.get("label"));
+            if (label.isBlank()) {
+                continue;
+            }
+            List<ParameterInformation> parameters = parseSignatureParameters(sig.get("parameters"), label);
+            int activeParameter = sig.path("activeParameter").asInt(-1);
+            signatures.add(new SignatureInformation(label,
+                    nullIfBlank(extractDocumentation(sig.get("documentation"))), parameters, activeParameter));
+        }
+        if (signatures.isEmpty()) {
+            return null;
+        }
+        return new SignatureHelp(signatures, result.path("activeSignature").asInt(0),
+                result.path("activeParameter").asInt(0));
+    }
+
+    private static List<ParameterInformation> parseSignatureParameters(JsonNode parametersNode, String signatureLabel) {
+        if (parametersNode == null || !parametersNode.isArray() || parametersNode.isEmpty()) {
+            return List.of();
+        }
+        List<ParameterInformation> parameters = new ArrayList<>(parametersNode.size());
+        for (JsonNode param : parametersNode) {
+            String label = parameterLabel(param.get("label"), signatureLabel);
+            if (!label.isBlank()) {
+                parameters.add(new ParameterInformation(label,
+                        nullIfBlank(extractDocumentation(param.get("documentation")))));
+            }
+        }
+        return parameters;
+    }
+
+    private static String parameterLabel(JsonNode labelNode, String signatureLabel) {
+        if (labelNode == null || labelNode.isNull()) {
+            return "";
+        }
+        if (labelNode.isTextual()) {
+            return labelNode.asText();
+        }
+        if (labelNode.isArray() && labelNode.size() == 2 && signatureLabel != null) {
+            int start = labelNode.get(0).asInt(-1);
+            int end = labelNode.get(1).asInt(-1);
+            if (start >= 0 && end >= start && end <= signatureLabel.length()) {
+                return signatureLabel.substring(start, end);
+            }
         }
         return "";
     }
@@ -1642,6 +2027,107 @@ public final class DotnetLspService {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    private void startAnalyzeProgress() {
+        cancelAnalyzeProgressTicker();
+        analyzeMaxTotal = 0;
+        analyzeLastPercent = 0;
+        notifyLoadProgress(0, false);
+        analyzeProgressTicker = progressExecutor.scheduleAtFixedRate(() -> {
+            int next = syntheticProgressPercent(analyzeLastPercent);
+            if (next > analyzeLastPercent) {
+                publishAnalyzeProgress(next);
+            }
+        }, 600, 600, TimeUnit.MILLISECONDS);
+    }
+
+    private void publishAnalyzeProgress(int percent) {
+        int clamped = Math.max(analyzeLastPercent, Math.max(0, Math.min(99, percent)));
+        if (clamped == analyzeLastPercent) {
+            return;
+        }
+        analyzeLastPercent = clamped;
+        notifyLoadProgress(clamped, false);
+    }
+
+    private void finishAnalyzeProgress() {
+        cancelAnalyzeProgressTicker();
+        analyzeLastPercent = 100;
+        notifyLoadProgress(100, true);
+    }
+
+    private void cancelAnalyzeProgressTicker() {
+        ScheduledFuture<?> ticker = analyzeProgressTicker;
+        if (ticker != null) {
+            ticker.cancel(false);
+            analyzeProgressTicker = null;
+        }
+    }
+
+    private void notifyLoadProgress(int percent, boolean finished) {
+        List<LoadProgressListener> listeners;
+        synchronized (loadProgressListeners) {
+            listeners = new ArrayList<>(loadProgressListeners);
+        }
+        for (LoadProgressListener listener : listeners) {
+            try {
+                listener.onProgress(percent, finished);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static int intField(JsonNode node, String primary, String fallback) {
+        JsonNode value = node.get(primary);
+        if (value == null || value.isNull()) {
+            value = node.get(fallback);
+        }
+        return value == null ? 0 : value.asInt(0);
+    }
+
+    static boolean isLoadFinished(int total, int remaining, String status) {
+        if (total > 0 && remaining <= 0) {
+            return true;
+        }
+        if (status == null || status.isBlank()) {
+            return false;
+        }
+        String normalized = status.trim().toLowerCase(Locale.ROOT);
+        return normalized.equals("ready")
+                || normalized.equals("finished")
+                || normalized.equals("complete")
+                || normalized.equals("completed")
+                || normalized.equals("idle");
+    }
+
+    static int progressPercent(int total, int remaining, int maxTotal, int lastPercent) {
+        int denominator = total > 0 ? total : maxTotal;
+        if (denominator <= 0) {
+            return Math.max(0, Math.min(99, lastPercent));
+        }
+        int safeRemaining = Math.max(0, Math.min(remaining, denominator));
+        int raw = (int) ((long) (denominator - safeRemaining) * 100L / denominator);
+        return Math.max(lastPercent, Math.max(0, Math.min(99, raw)));
+    }
+
+    static int syntheticProgressPercent(int lastPercent) {
+        int current = Math.max(0, Math.min(SYNTHETIC_PROGRESS_CAP, lastPercent));
+        if (current < 25) {
+            return Math.min(SYNTHETIC_PROGRESS_CAP, current + 5);
+        }
+        if (current < 60) {
+            return Math.min(SYNTHETIC_PROGRESS_CAP, current + 3);
+        }
+        return Math.min(SYNTHETIC_PROGRESS_CAP, current + 1);
+    }
+
+    private static String textField(JsonNode node, String primary, String fallback) {
+        JsonNode value = node.get(primary);
+        if (value == null || value.isNull()) {
+            value = node.get(fallback);
+        }
+        return value == null ? "" : value.asText("");
     }
 
     private void pumpStderr(InputStream stream) {

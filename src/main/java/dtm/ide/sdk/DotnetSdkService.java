@@ -50,6 +50,9 @@ public class DotnetSdkService {
     public static final String DEFAULT_OMNISHARP_VERSION = "1.39.11";
     public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062";
 
+    private static final int DOWNLOAD_MAX_ATTEMPTS = 3;
+    private static final long DOWNLOAD_RETRY_BASE_DELAY_MS = 1500;
+
     private static final String SDK_DIR = "sdk";
     private static final String DOTNET_DIR = "dotnet";
     private static final String OMNISHARP_DIR = "omnisharp";
@@ -440,18 +443,38 @@ public class DotnetSdkService {
             throw displayException("Não foi possível preparar a pasta do SDK: " + root, e);
         }
 
+        if (downloadObserver == null) {
+            throw displayException("Serviço de download não disponível.", null);
+        }
+
+        listener.onStart(artifact.progressId(), artifact.displayName());
         try {
-            listener.onStart(artifact.progressId(), artifact.displayName());
-            downloadToFile(artifact, target, listener);
-            listener.onProgress(artifact.progressId(), "Extraindo arquivos", -1);
-            installArchive(target, root);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw displayException("Download interrompido: " + artifact.fileName(), e);
-        } catch (DisplayException e) {
-            throw e;
-        } catch (Exception e) {
-            throw displayException("Falha ao baixar " + artifact.fileName(), e);
+            Exception lastError = null;
+            for (int attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+                try {
+                    downloadToFile(artifact, target, listener);
+                    listener.onProgress(artifact.progressId(), "Extraindo arquivos", -1);
+                    installArchive(target, root);
+                    return;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw displayException("Download interrompido: " + artifact.fileName(), e);
+                } catch (DisplayException e) {
+                    throw e;
+                } catch (Exception e) {
+                    lastError = e;
+                    deletePartialDownload(target);
+                    if (attempt < DOWNLOAD_MAX_ATTEMPTS) {
+                        log.warn("Falha ao baixar {} (tentativa {}/{}): {}. Tentando novamente...",
+                                artifact.fileName(), attempt, DOWNLOAD_MAX_ATTEMPTS, safeMessage(e));
+                        listener.onProgress(artifact.progressId(),
+                                artifact.displayName() + " — tentativa " + (attempt + 1) + "/" + DOWNLOAD_MAX_ATTEMPTS, -1);
+                        sleepBackoff(attempt);
+                    }
+                }
+            }
+            throw displayException("Falha ao baixar " + artifact.fileName()
+                    + " após " + DOWNLOAD_MAX_ATTEMPTS + " tentativas.", lastError);
         } finally {
             listener.onFinish(artifact.progressId());
         }
@@ -618,6 +641,32 @@ public class DotnetSdkService {
                     .forEach(path -> path.toFile().setExecutable(true, false));
         } catch (Exception ignored) {
         }
+    }
+
+    private static void deletePartialDownload(Path target) {
+        try {
+            Files.deleteIfExists(target);
+        } catch (Exception ignored) {
+        }
+        try {
+            Files.deleteIfExists(target.resolveSibling(target.getFileName() + ".part"));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void sleepBackoff(int attempt) {
+        try {
+            Thread.sleep(DOWNLOAD_RETRY_BASE_DELAY_MS * attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static String safeMessage(Throwable t) {
+        if (t == null) {
+            return "";
+        }
+        return t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
     }
 
     private static void closeQuietly(OutputStream output) {

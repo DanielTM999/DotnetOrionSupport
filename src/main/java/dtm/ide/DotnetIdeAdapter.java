@@ -4,6 +4,7 @@ import dtm.di.annotations.Singleton;
 import dtm.ide.api.annotations.PluginReference;
 import dtm.ide.api.context.IdeProjectContext;
 import dtm.ide.api.extension.IdeAdapter;
+import dtm.ide.api.extension.NotificationContext;
 import dtm.ide.api.extension.event.BreakpointChangedEvent;
 import dtm.ide.api.extension.event.KeyboardEvent;
 import dtm.ide.api.extension.menu.IdeMenuBarBuilder;
@@ -19,10 +20,14 @@ import dtm.ide.api.extension.runconfig.RunExecutionContext;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
 import dtm.ide.api.project.tree.ProjectTreeIgnoreRule;
 import dtm.ide.api.project.tree.ProjectTreeNode;
+import dtm.ide.api.search.GlobalSearchMatch;
+import dtm.ide.api.search.GlobalSearchQuery;
+import dtm.ide.api.search.GlobalSearchResult;
 import dtm.ide.api.theme.EditorTheme;
 import dtm.ide.editor.theme.DotnetEditorTheme;
 import dtm.ide.lsp.DotnetLspService;
 import dtm.ide.lsp.DotnetWorkspaceEdit;
+import dtm.ide.lsp.UsagesPopup;
 import dtm.ide.reference.ProjectReferenceService;
 import dtm.ide.run.DebugCallStackPanel;
 import dtm.ide.run.DebugCompletion;
@@ -44,6 +49,7 @@ import dtm.ide.sdk.DotnetSdkService;
 import dtm.ide.settings.DotnetPluginSettings;
 import dtm.ide.settings.DotnetSettingsPage;
 import dtm.ide.ui.DotnetProjectConfigPanel;
+import dtm.ide.ui.DotnetTestExplorerPanel;
 import dtm.ide.ui.NewCSharpItemPanel;
 import dtm.ide.ui.NuGetManagerPanel;
 import dtm.ide.ui.ProjectReferenceDialog;
@@ -52,12 +58,18 @@ import dtm.stools.component.menu.bar.tree.MenuNode;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
 import dtm.stools.component.panels.editor.code.api.DocumentSymbol;
 import dtm.stools.component.panels.editor.code.api.Location;
+import dtm.stools.component.panels.editor.code.api.Position;
+import dtm.stools.component.panels.editor.code.api.SymbolKind;
 import dtm.stools.component.panels.editor.code.api.TextEdit;
 import dtm.stools.component.panels.editor.code.autocomplete.AutoCompleteItem;
 import dtm.stools.component.panels.editor.code.diagnostics.Diagnostic;
 import dtm.stools.component.panels.editor.code.diagnostics.DiagnosticSeverity;
+import dtm.stools.component.panels.editor.code.codelens.CodeLens;
+import dtm.stools.component.panels.editor.code.codelens.CodeLensItem;
 import dtm.stools.component.panels.editor.code.hover.HoverInfo;
+import dtm.stools.component.panels.editor.code.inlay.InlayHint;
 import dtm.stools.component.panels.editor.code.prototype.folding.FoldRule;
+import dtm.stools.component.panels.editor.code.signature.SignatureHelp;
 import dtm.stools.component.panels.editor.code.provider.TokenizerCodeEditorProvider;
 import dtm.stools.component.panels.dock.DockRegion;
 import dtm.stools.component.popup.ModernDialog;
@@ -89,9 +101,11 @@ import java.awt.Graphics2D;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
+import java.awt.Window;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.KeyEvent;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Field;
@@ -133,6 +147,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile ExecutorService languageSetupExecutor;
     private volatile ExecutorService navigationExecutor;
     private volatile NuGetManagerPanel nugetPanel;
+    private volatile DotnetTestExplorerPanel testPanel;
+    private String testToolPanelId;
+    private static final int CODE_LENS_LIMIT = 100;
+    private final Set<Path> featureRefreshedFiles = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean analyzeProgressShown = new AtomicBoolean(false);
     private volatile DotnetProjectConfigPanel projectConfigPanel;
     private volatile DotnetPluginSettings pluginSettings;
     private final AtomicBoolean toolchainDeclined = new AtomicBoolean(false);
@@ -180,6 +199,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private static final String NUGET_TAB_ID = "dotnet.nuget";
     private static final String PROJECT_CONFIG_TAB_ID = "dotnet.projectConfig";
     private static final String LSP_PROGRESS_ID = "dotnetLspStartup";
+    private static final String LSP_ANALYZE_PROGRESS_ID = "dotnetLspAnalyze";
     private static final String NAV_PROGRESS_ID = "dotnetNavigate";
 
     @Override
@@ -314,23 +334,26 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 DotnetLspService service = ensureLspService(sdk);
                 service.bindProject(project);
 
-                SwingUtilities.invokeLater(() -> showProgress(LSP_PROGRESS_ID, "Iniciando Intellisense (C#)..."));
-                try {
-                    service.start();
-                } finally {
-                    SwingUtilities.invokeLater(() -> hideProgress(LSP_PROGRESS_ID));
-                }
+                analyzeProgressShown.set(true);
+                SwingUtilities.invokeLater(() -> {
+                    showProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C# (OmniSharp)");
+                    updateProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C# (OmniSharp)", 0);
+                });
+                service.start();
                 if (!isProjectCurrent(ticket, project)) {
                     service.stop();
                     return;
                 }
                 if (service.isRunning()) {
                     SwingUtilities.invokeLater(() -> {
-                        createNotification(new dtm.ide.api.extension.NotificationContext("C#", "IntelliSense ativo."));
+                        createNotification(new NotificationContext("C#", "IntelliSense ativo."));
                     });
 
-                    refreshOpenDiagnostics();
+                    refreshOpenEditors();
                 } else {
+                    if (analyzeProgressShown.compareAndSet(true, false)) {
+                        SwingUtilities.invokeLater(() -> hideProgress(LSP_ANALYZE_PROGRESS_ID));
+                    }
                     String error = service.getLastError();
                     SwingUtilities.invokeLater(() -> setStatusBarText("C#: falha ao iniciar Intellisense" + (error == null ? "." : " — " + error)));
                 }
@@ -424,10 +447,28 @@ public class DotnetIdeAdapter extends IdeAdapter {
         lspService = new DotnetLspService(getResource(), sdk);
         lspService.addDiagnosticsPublishedListener(uri -> {
             Path file = DotnetProjectConventions.pathFromUri(uri);
-            if (file != null) {
-                requestRefreshDiagnostics(file);
+            if (file == null) {
+                return;
+            }
+            requestRefreshDiagnostics(file);
+            Path normalized = normalizePath(file);
+            if (featureRefreshedFiles.add(normalized)) {
+                refreshEditorFeatures(normalized);
             }
         });
+        lspService.addLoadProgressListener((percent, finished) -> SwingUtilities.invokeLater(() -> {
+            if (finished) {
+                if (analyzeProgressShown.compareAndSet(true, false)) {
+                    hideProgress(LSP_ANALYZE_PROGRESS_ID);
+                }
+                return;
+            }
+            if (analyzeProgressShown.compareAndSet(false, true)) {
+                showProgress(LSP_ANALYZE_PROGRESS_ID, "Analisando projeto");
+            }
+            updateProgress(LSP_ANALYZE_PROGRESS_ID, "Analisando projeto", percent);
+            log.debug("Analisando projeto {}%", percent);
+        }));
         return lspService;
     }
 
@@ -594,12 +635,30 @@ public class DotnetIdeAdapter extends IdeAdapter {
         });
     }
 
-    private void refreshOpenDiagnostics() {
+    private void refreshOpenEditors() {
+        featureRefreshedFiles.clear();
         for (Path file : editorRegistry.regularOpenCsPaths()) {
-            IdeEditorContext context = editorRegistry.editorContext(normalizePath(file));
-            if (context != null) {
-                triggerDiagnostics(normalizePath(file), context.getText());
+            Path normalized = normalizePath(file);
+            IdeEditorContext context = editorRegistry.editorContext(normalized);
+            if (context == null) {
+                continue;
             }
+            triggerDiagnostics(normalized, context.getText());
+            refreshEditorFeatures(normalized);
+        }
+    }
+
+    private void refreshEditorFeatures(Path file) {
+        requestRefreshCodeLenses(file);
+        requestRefreshInlayHints(file);
+        IdeEditorContext context = editorRegistry.editorContext(file);
+        if (context != null) {
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    context.applySyntaxHighlight();
+                } catch (Exception ignored) {
+                }
+            });
         }
     }
 
@@ -666,6 +725,23 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     @Override
+    public SignatureHelp provideSignatureHelp(IdeSignatureHelpContext context) {
+        if (debugActive.get()) {
+            return null;
+        }
+        DotnetLspService service = lspService;
+        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+            return null;
+        }
+        return service.signatureHelp(context.filePath(), context.text(), context.caretLine(), context.caretCol());
+    }
+
+    @Override
+    public Set<Character> getSignatureTriggerCharacters() {
+        return Set.of('(', ',');
+    }
+
+    @Override
     public void contributeEditorMenu(IdeMenuBuilder menu, IdeEditorContext editorContext) {
         if (menu == null || editorContext == null || editorContext.filePath() == null
                 || !isCSharpLike(editorContext.filePath())) {
@@ -674,6 +750,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
         boolean enabled = debugActive.get();
         String expression = expressionAtEditorContext(editorContext);
         menu.separator()
+                .item("Go to Implementation", isImplementationAvailable(editorContext),
+                        e -> onGoToImplementation(editorContext))
                 .item("Rename Symbol...", isRenameAvailable(editorContext),
                         e -> showRenameSymbolDialog(editorContext))
                 .item("Evaluate Expression...", enabled, e -> showEvaluateDialog(editorContext, expression))
@@ -718,6 +796,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean isRenameAvailable(IdeEditorContext context) {
+        DotnetLspService service = lspService;
+        return service != null && service.isRunning()
+                && context != null
+                && context.filePath() != null
+                && isCSharpLike(context.filePath())
+                && identifierAt(context.getText(), context.getCaretOffset()) != null;
+    }
+
+    private boolean isImplementationAvailable(IdeEditorContext context) {
         DotnetLspService service = lspService;
         return service != null && service.isRunning()
                 && context != null
@@ -917,6 +1004,215 @@ public class DotnetIdeAdapter extends IdeAdapter {
         String fullText = context.fullText() == null ? context.text() : context.fullText();
         String formatted = service.format(context.file(), fullText, context.tabSize(), context.useSpacesForTab());
         return formatted == null ? fullText : formatted;
+    }
+
+    @Override
+    public boolean isSemanticTokensEnabled() {
+        DotnetLspService service = lspService;
+        return service != null && service.isSemanticTokensReady();
+    }
+
+    @Override
+    public List<SemanticToken> getSemanticTokens(IdeSemanticTokensContext context) {
+        DotnetLspService service = lspService;
+        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+            return Collections.emptyList();
+        }
+        return service.semanticTokens(context.filePath(), context.text());
+    }
+
+    @Override
+    public List<InlayHint> getInlayHints(IdeInlayHintContext context) {
+        DotnetLspService service = lspService;
+        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+            return Collections.emptyList();
+        }
+        return service.inlayHints(context.filePath(), context.text(), context.firstLine(), context.lastLine());
+    }
+
+    @Override
+    public List<CodeLens> getCodeLenses(IdeCodeLensContext context) {
+        DotnetLspService service = lspService;
+        if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+            return Collections.emptyList();
+        }
+        List<DocumentSymbol> symbols = service.documentSymbols(context.filePath(), context.text());
+        if (symbols.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<CodeLens> lenses = new ArrayList<>();
+        int[] budget = {CODE_LENS_LIMIT};
+        collectCodeLenses(service, symbols, context.filePath(), context.text(), lenses, budget);
+        return lenses;
+    }
+
+    private void collectCodeLenses(DotnetLspService service, List<DocumentSymbol> symbols, Path filePath,
+                                   String text, List<CodeLens> out, int[] budget) {
+        for (DocumentSymbol symbol : symbols) {
+            if (symbol == null || symbol.selectionRange() == null || symbol.selectionRange().start() == null) {
+                continue;
+            }
+            if (isLensableSymbol(symbol.kind()) && budget[0] > 0) {
+                budget[0]--;
+                Position pos = symbol.selectionRange().start();
+                List<Location> usages = normalizedReferences(filePath,
+                        service.references(filePath, text, pos.line(), pos.col()));
+                usages.removeIf(usage -> isDeclarationAt(usage, filePath, pos));
+                if (!usages.isEmpty()) {
+                    int count = usages.size();
+                    CodeLensItem item = CodeLensItem.builder()
+                            .text(count == 1 ? "1 usage" : count + " usages")
+                            .tooltip("Mostrar usos de " + symbol.name())
+                            .cursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
+                            .onClick(event -> {
+                                MouseEvent me = event.mouseEvent();
+                                Component comp = me != null ? me.getComponent() : null;
+                                Point screen = me != null ? me.getLocationOnScreen() : null;
+                                showUsagesPopup(usages, filePath, text, comp, screen);
+                            })
+                            .build();
+                    out.add(CodeLens.inline(pos.line(), item));
+                }
+            }
+            if (symbol.children() != null && !symbol.children().isEmpty()) {
+                collectCodeLenses(service, symbol.children(), filePath, text, out, budget);
+            }
+        }
+    }
+
+    private static boolean isLensableSymbol(SymbolKind kind) {
+        return kind == SymbolKind.CLASS
+                || kind == SymbolKind.INTERFACE
+                || kind == SymbolKind.STRUCT
+                || kind == SymbolKind.ENUM
+                || kind == SymbolKind.METHOD
+                || kind == SymbolKind.CONSTRUCTOR
+                || kind == SymbolKind.PROPERTY;
+    }
+
+    private boolean isDeclarationAt(Location usage, Path declFile, Position declPos) {
+        if (usage == null || usage.range() == null || usage.range().start() == null) {
+            return false;
+        }
+        Path usagePath = DotnetProjectConventions.pathFromUri(usage.uri());
+        return usagePath != null
+                && normalizePath(usagePath).equals(normalizePath(declFile))
+                && usage.range().start().line() == declPos.line()
+                && usage.range().start().col() == declPos.col();
+    }
+
+    private List<Location> normalizedReferences(Path searched, List<Location> refs) {
+        List<Location> usages = new ArrayList<>();
+        if (refs == null) {
+            return usages;
+        }
+        for (Location ref : refs) {
+            if (ref == null || ref.range() == null || ref.range().start() == null) {
+                continue;
+            }
+            Path path = ref.isLocal() ? searched : DotnetProjectConventions.pathFromUri(ref.uri());
+            if (path == null) {
+                continue;
+            }
+            usages.add(Location.of(path.toUri().toString(), ref.range()));
+        }
+        return usages;
+    }
+
+    private void showUsagesPopup(List<Location> usages, Path currentFile, String currentText,
+                                 Component invoker, Point screen) {
+        if (usages == null || usages.isEmpty()) {
+            return;
+        }
+        Window owner = invoker == null ? null : SwingUtilities.getWindowAncestor(invoker);
+        List<UsagesPopup.Item> items = buildUsageItems(usages, currentFile, currentText);
+        String header = items.size() == 1 ? "1 usage" : items.size() + " usages";
+        UsagesPopup.show(owner, screen, header, items);
+    }
+
+    private List<UsagesPopup.Item> buildUsageItems(List<Location> usages, Path currentFile, String currentText) {
+        List<UsagesPopup.Item> items = new ArrayList<>();
+        Map<Path, List<String>> cache = new java.util.HashMap<>();
+        Path root = projectPath;
+        for (Location usage : usages) {
+            Path path = DotnetProjectConventions.pathFromUri(usage.uri());
+            int line0 = usage.range().start().line();
+            String snippet = sourceLine(path, currentFile, currentText, line0, cache);
+            Path shown = (path != null && root != null && path.startsWith(root))
+                    ? root.relativize(path)
+                    : (path != null ? path.getFileName() : null);
+            String location = (shown == null ? usage.uri() : shown.toString()) + ":" + (line0 + 1);
+            items.add(new UsagesPopup.Item(snippet, location, () -> navigateToDefinition(usage)));
+        }
+        return items;
+    }
+
+    private String sourceLine(Path file, Path currentFile, String currentText, int line0,
+                              Map<Path, List<String>> cache) {
+        if (file == null || line0 < 0) {
+            return "";
+        }
+        List<String> lines;
+        if (currentText != null && currentFile != null && normalizePath(file).equals(normalizePath(currentFile))) {
+            lines = currentText.lines().toList();
+        } else {
+            lines = cache.computeIfAbsent(file, f -> {
+                try {
+                    return Files.readAllLines(f);
+                } catch (IOException ex) {
+                    return List.of();
+                }
+            });
+        }
+        return line0 < lines.size() ? lines.get(line0).strip() : "";
+    }
+
+    @Override
+    public GlobalSearchResult search(GlobalSearchQuery query, GlobalSearchResult current) {
+        DotnetLspService service = lspService;
+        if (service == null || query == null || !query.hasTerm()) {
+            return current;
+        }
+        String term = query.term() == null ? "" : query.term().trim();
+        if (term.length() < 2) {
+            return current;
+        }
+        List<DotnetLspService.WorkspaceSymbol> symbols = service.workspaceSymbols(term);
+        if (symbols.isEmpty()) {
+            return current;
+        }
+        int limit = query.maxResults() > 0 ? query.maxResults() : symbols.size();
+        List<GlobalSearchMatch> matches = new ArrayList<>();
+        for (DotnetLspService.WorkspaceSymbol symbol : symbols) {
+            if (matches.size() >= limit) {
+                break;
+            }
+            Location location = symbol.location();
+            if (location == null || location.range() == null || location.range().start() == null) {
+                continue;
+            }
+            Path file = DotnetProjectConventions.pathFromUri(location.uri());
+            if (file == null || !isCSharpLike(file) || !Files.isRegularFile(file)) {
+                continue;
+            }
+            int line = location.range().start().line();
+            int startCol = location.range().start().col();
+            int endCol = location.range().end() != null && location.range().end().line() == line
+                    ? location.range().end().col() : startCol;
+            matches.add(GlobalSearchMatch.content(file, line, startCol, endCol, symbolPreview(symbol)));
+        }
+        if (matches.isEmpty()) {
+            return current;
+        }
+        GlobalSearchResult symbolResult = GlobalSearchResult.of(matches);
+        return current == null ? symbolResult : current.merge(symbolResult);
+    }
+
+    private static String symbolPreview(DotnetLspService.WorkspaceSymbol symbol) {
+        String container = symbol.container();
+        return container == null || container.isBlank()
+                ? symbol.name()
+                : symbol.name() + "  —  " + container;
     }
 
     @Override
@@ -1564,7 +1860,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void onGoToImplementation(IdeEditorContext context) {
-        navigateFromEditor(context);
+        if (context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+            return;
+        }
+        navigateImplementationsAsync(context.getText(), context.filePath(),
+                context.getCaretLine(), context.getCaretCol());
     }
 
     @Override
@@ -1586,19 +1886,40 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void navigateAsync(String text, Path file, int line, int col, int offset) {
         DotnetLspService service = lspService;
+        if (service == null) return;
+        navigationExecutor().execute(() -> {
+            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, "Abrindo definição (descompilando se necessário)..."));
+            try {
+                List<Location> targets = service.definitions(file, text, line, col);
+                if (!targets.isEmpty()) {
+                    navigateToDefinition(targets.getFirst());
+                }
+            } catch (Exception e) {
+                log.debug("Falha ao navegar para definição: {}", e.getMessage());
+            } finally {
+                SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
+            }
+        });
+    }
+
+    private void navigateImplementationsAsync(String text, Path file, int line, int col) {
+        DotnetLspService service = lspService;
         if (service == null) {
             return;
         }
         navigationExecutor().execute(() -> {
             SwingUtilities.invokeLater(() ->
-                    showProgress(NAV_PROGRESS_ID, "Abrindo definição (descompilando se necessário)..."));
+                    showProgress(NAV_PROGRESS_ID, "Procurando implementações..."));
             try {
-                List<Location> targets = service.definitions(file, text, line, col);
+                List<Location> targets = service.implementations(file, text, line, col);
+                if (targets.isEmpty()) {
+                    targets = service.definitions(file, text, line, col);
+                }
                 if (!targets.isEmpty()) {
                     navigateToDefinition(targets.get(0));
                 }
             } catch (Exception e) {
-                log.debug("Falha ao navegar para definição: {}", e.getMessage());
+                log.debug("Falha ao navegar para implementação: {}", e.getMessage());
             } finally {
                 SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
             }
@@ -1621,6 +1942,19 @@ public class DotnetIdeAdapter extends IdeAdapter {
             if (targetPath != null) {
                 log.debug("Definição aponta para arquivo inexistente, ignorando: {}", targetPath);
             }
+            return;
+        }
+        openOrReuseEditor(targetPath, targetLine, targetCol);
+    }
+
+    private void openOrReuseEditor(Path targetPath, int targetLine, int targetCol) {
+        Path normalized = normalizePath(targetPath);
+        IdeEditorContext open = editorRegistry.editorContext(normalized);
+        if (open != null) {
+            runOnUiThread(() -> {
+                switchToCenterTab(normalized.toString());
+                open.setCaretPosition(targetLine, targetCol);
+            });
             return;
         }
         runOnUiThread(() -> requestOpenFile(targetPath));
@@ -1713,6 +2047,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
                                 .onClick(e -> openNuGetManager())
                 )
                 .add(
+                        MenuNode.item("dotnetTests", "Testes .NET")
+                                .tooltip("Descobrir e executar testes do projeto")
+                                .onClick(e -> openTestExplorer())
+                )
+                .add(
                         MenuNode.item("dotnetRestore", "Restaurar pacotes (dotnet restore)")
                                 .tooltip("Executa dotnet restore no projeto")
                                 .onClick(e -> restorePackages())
@@ -1739,6 +2078,20 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         openCenterTab(NUGET_TAB_ID, "NuGet", nugetPanel, true);
         switchToCenterTab(NUGET_TAB_ID);
+    }
+
+    private void openTestExplorer() {
+        runOnUiThread(() -> {
+            if (testPanel == null) {
+                testPanel = new DotnetTestExplorerPanel(() -> projectPath, this::ensureSdkService,
+                        () -> ensurePluginSettings().getDefaultConfiguration());
+                testToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Testes", ToolIconType.PLAY, testPanel);
+            }
+            if (testToolPanelId != null && !testToolPanelId.isBlank()) {
+                requestOpenToolPanel(testToolPanelId);
+            }
+            testPanel.refresh();
+        });
     }
 
     private void openProjectConfig() {
