@@ -18,6 +18,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
 
     private final JCheckBox formatOnSave = new JCheckBox("Formatar ao salvar (OmniSharp)");
     private final JCheckBox includePrerelease = new JCheckBox("Incluir versões prerelease no NuGet por padrão");
+    private final JCheckBox ghostText = new JCheckBox("Sugestões inline (ghost text) enquanto digita");
     private final JComboBox<String> defaultConfiguration = new JComboBox<>(new String[]{"Debug", "Release"});
 
     private JComponent view;
@@ -53,6 +54,8 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
         panel.add(Box.createVerticalStrut(6));
         panel.add(includePrerelease);
         panel.add(Box.createVerticalStrut(6));
+        panel.add(ghostText);
+        panel.add(Box.createVerticalStrut(6));
         panel.add(configRow);
         return panel;
     }
@@ -63,6 +66,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
         }
         formatOnSave.setSelected(settings.isFormatOnSave());
         includePrerelease.setSelected(settings.isIncludePrerelease());
+        ghostText.setSelected(settings.isGhostTextEnabled());
         defaultConfiguration.setSelectedItem(settings.getDefaultConfiguration());
     }
 
@@ -73,6 +77,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
         }
         settings.setFormatOnSave(formatOnSave.isSelected());
         settings.setIncludePrerelease(includePrerelease.isSelected());
+        settings.setGhostTextEnabled(ghostText.isSelected());
         settings.setDefaultConfiguration(String.valueOf(defaultConfiguration.getSelectedItem()));
         settings.save();
     }

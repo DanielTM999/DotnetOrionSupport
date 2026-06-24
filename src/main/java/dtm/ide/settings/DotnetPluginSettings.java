@@ -14,11 +14,13 @@ public final class DotnetPluginSettings {
     private static final String KEY_FORMAT_ON_SAVE = "formatOnSave";
     private static final String KEY_INCLUDE_PRERELEASE = "includePrerelease";
     private static final String KEY_DEFAULT_CONFIGURATION = "defaultConfiguration";
+    private static final String KEY_GHOST_TEXT = "ghostText";
 
     private final Path settingsFile;
 
     private boolean formatOnSave = false;
     private boolean includePrerelease = false;
+    private boolean ghostText = true;
     private String defaultConfiguration = "Debug";
 
     public DotnetPluginSettings(Path settingsDir) {
@@ -42,6 +44,14 @@ public final class DotnetPluginSettings {
         this.includePrerelease = includePrerelease;
     }
 
+    public boolean isGhostTextEnabled() {
+        return ghostText;
+    }
+
+    public void setGhostTextEnabled(boolean ghostText) {
+        this.ghostText = ghostText;
+    }
+
     public String getDefaultConfiguration() {
         return defaultConfiguration;
     }
@@ -54,6 +64,7 @@ public final class DotnetPluginSettings {
     public void restoreDefaults() {
         formatOnSave = false;
         includePrerelease = false;
+        ghostText = true;
         defaultConfiguration = "Debug";
     }
 
@@ -66,6 +77,7 @@ public final class DotnetPluginSettings {
             props.load(in);
             formatOnSave = Boolean.parseBoolean(props.getProperty(KEY_FORMAT_ON_SAVE, "false"));
             includePrerelease = Boolean.parseBoolean(props.getProperty(KEY_INCLUDE_PRERELEASE, "false"));
+            ghostText = Boolean.parseBoolean(props.getProperty(KEY_GHOST_TEXT, "true"));
             defaultConfiguration = props.getProperty(KEY_DEFAULT_CONFIGURATION, "Debug");
         } catch (Exception e) {
             log.debug("Falha ao carregar settings .NET: {}", e.getMessage());
@@ -79,6 +91,7 @@ public final class DotnetPluginSettings {
         Properties props = new Properties();
         props.setProperty(KEY_FORMAT_ON_SAVE, Boolean.toString(formatOnSave));
         props.setProperty(KEY_INCLUDE_PRERELEASE, Boolean.toString(includePrerelease));
+        props.setProperty(KEY_GHOST_TEXT, Boolean.toString(ghostText));
         props.setProperty(KEY_DEFAULT_CONFIGURATION, defaultConfiguration);
         try {
             Path parent = settingsFile.getParent();

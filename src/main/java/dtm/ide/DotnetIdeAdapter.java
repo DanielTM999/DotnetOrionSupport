@@ -711,6 +711,61 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     @Override
+    public String getGhostText(IdeGhostTextContext context) {
+        if (debugActive.get()) {
+            return null;
+        }
+        DotnetLspService service = lspService;
+
+        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+            return null;
+        }
+        DotnetPluginSettings settings = pluginSettings;
+        if (settings != null && !settings.isGhostTextEnabled()) {
+            return null;
+        }
+        boolean explicit = context.triggerKind() == IdeGhostTextTriggerKind.EXPLICIT;
+        String prefix = ghostTextPrefix(context.currentLine(), context.caretCol());
+        if (!explicit && prefix.isEmpty()) {
+            return null;
+        }
+        List<AutoCompleteItem> items = service.complete(
+                context.filePath(), context.text(), context.caretLine(), context.caretCol());
+        return ghostTextSuffix(items, prefix);
+    }
+
+    private static String ghostTextPrefix(String currentLine, int caretCol) {
+        if (currentLine == null || caretCol <= 0 || caretCol > currentLine.length()) {
+            return "";
+        }
+        int start = caretCol;
+        while (start > 0 && isIdentifierChar(currentLine.charAt(start - 1))) {
+            start--;
+        }
+        return currentLine.substring(start, caretCol);
+    }
+
+    private static String ghostTextSuffix(List<AutoCompleteItem> items, String prefix) {
+        if (items == null || items.isEmpty()) {
+            return null;
+        }
+        for (AutoCompleteItem item : items) {
+            if (item == null || item.isSnippet()) {
+                continue;
+            }
+            String insert = cleanCompletionInsertText(item.insertText(), item.label());
+            if (insert == null || insert.isBlank() || insert.indexOf('\n') >= 0) {
+                continue;
+            }
+            if (!insert.startsWith(prefix) || insert.length() <= prefix.length()) {
+                continue;
+            }
+            return insert.substring(prefix.length());
+        }
+        return null;
+    }
+
+    @Override
     public HoverInfo getHover(IdeHoverContext context) {
         if (debugActive.get()) {
             return null;
