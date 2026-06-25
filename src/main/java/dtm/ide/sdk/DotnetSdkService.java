@@ -48,7 +48,7 @@ public class DotnetSdkService {
     public static final String DOTNET_7_SDK_VERSION = "7.0.410";
     public static final String DOTNET_6_SDK_VERSION = "6.0.428";
     public static final String DEFAULT_OMNISHARP_VERSION = "1.39.11";
-    public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.1";
+    public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.2";
 
     private static final int DOWNLOAD_MAX_ATTEMPTS = 3;
     private static final long DOWNLOAD_RETRY_BASE_DELAY_MS = 1500;
