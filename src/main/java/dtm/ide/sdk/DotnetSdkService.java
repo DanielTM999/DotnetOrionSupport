@@ -48,7 +48,7 @@ public class DotnetSdkService {
     public static final String DOTNET_7_SDK_VERSION = "7.0.410";
     public static final String DOTNET_6_SDK_VERSION = "6.0.428";
     public static final String DEFAULT_OMNISHARP_VERSION = "1.39.11";
-    public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062";
+    public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.1";
 
     private static final int DOWNLOAD_MAX_ATTEMPTS = 3;
     private static final long DOWNLOAD_RETRY_BASE_DELAY_MS = 1500;
@@ -57,6 +57,7 @@ public class DotnetSdkService {
     private static final String DOTNET_DIR = "dotnet";
     private static final String OMNISHARP_DIR = "omnisharp";
     private static final String NETCOREDBG_DIR = "netcoredbg";
+    private static final String NETCOREDBG_RELEASE_REPOSITORY = "DanielTM999/netcoredbg";
     private static final Pattern SDK_LIST_VERSION = Pattern.compile("^\\s*(\\d+)\\.(\\d+)\\.[^\\s]+");
     private static final Pattern GLOBAL_JSON_SDK_VERSION =
             Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
@@ -423,7 +424,7 @@ public class DotnetSdkService {
         } else {
             fileName = "netcoredbg-linux-" + (p.isArm64() ? "arm64" : "amd64") + ".tar.gz";
         }
-        String url = "https://github.com/Samsung/netcoredbg/releases/download/"
+        String url = "https://github.com/" + NETCOREDBG_RELEASE_REPOSITORY + "/releases/download/"
                 + version + "/" + fileName;
         return new SdkArtifact(version, fileName, url, NETCOREDBG_PROGRESS_ID, "Baixando netcoredbg " + version);
     }
