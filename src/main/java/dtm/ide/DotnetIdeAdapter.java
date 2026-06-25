@@ -351,8 +351,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
                 analyzeProgressShown.set(true);
                 SwingUtilities.invokeLater(() -> {
-                    showProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C# (OmniSharp)");
-                    updateProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C# (OmniSharp)", 0);
+                    showProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C#");
+                    updateProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C#", 0);
                 });
                 service.start();
                 if (!isProjectCurrent(ticket, project)) {
