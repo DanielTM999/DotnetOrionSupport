@@ -11,9 +11,12 @@ import lombok.extern.slf4j.Slf4j;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -29,6 +32,7 @@ public final class DotnetRunSupport {
     public static final String TYPE_CURRENT_FILE = "current_file";
 
     public static final String PROP_CONFIGURATION = "configuration";
+    public static final String PROP_LAUNCH_PROFILE = "launchProfile";
 
     private static final Pattern MAIN_PATTERN = Pattern.compile(
             "\\bstatic\\s+(?:async\\s+)?[\\w<>\\[\\].,\\s]*?\\bMain\\s*\\(");
@@ -42,7 +46,9 @@ public final class DotnetRunSupport {
     private volatile Supplier<String> activeTextSupplier;
     private volatile Function<String, OutputPanelHandle> outputPanels;
     private volatile Runnable runOutputFocus;
+    private volatile BooleanSupplier breakOnAllExceptionsSupplier;
     private volatile Consumer<Boolean> debugSessionStateListener;
+    private volatile Consumer<DotnetHotReloadResult> hotReloadResultListener;
 
     private final AtomicReference<DotnetDapDebugSession> debugSession = new AtomicReference<>();
     private volatile DotnetDebugView debugView;
@@ -79,8 +85,16 @@ public final class DotnetRunSupport {
         this.runOutputFocus = runOutputFocus;
     }
 
+    public void bindBreakOnAllExceptions(BooleanSupplier supplier) {
+        this.breakOnAllExceptionsSupplier = supplier;
+    }
+
     public void bindDebugSessionStateListener(Consumer<Boolean> listener) {
         this.debugSessionStateListener = listener;
+    }
+
+    public void bindHotReloadResultListener(Consumer<DotnetHotReloadResult> listener) {
+        this.hotReloadResultListener = listener;
     }
 
     public static boolean isCurrentFileType(RunConfigurationData data) {
@@ -151,8 +165,12 @@ public final class DotnetRunSupport {
         }
         list.add(config(TYPE_BUILD, ".NET: Compilar"));
 
-        if (TargetFramework.canRunWithDotnet(project)) {
-            list.add(config(TYPE_RUN, ".NET: Compilar + Executar"));
+        if (TargetFramework.canRunAnyOnHost(project)) {
+            list.add(config(TYPE_RUN, ".NET: Executar"));
+            Path projectFile = TargetFramework.findPrimaryProjectFile(project);
+            for (LaunchSettings.Profile profile : LaunchSettings.runnableProfiles(projectFile)) {
+                list.add(runConfigWithProfile(profile.name()));
+            }
         }
         list.add(config(TYPE_TEST, ".NET: Testar"));
         return list;
@@ -162,6 +180,16 @@ public final class DotnetRunSupport {
         return RunConfigurationData.builder()
                 .type(type)
                 .title(title)
+                .build();
+    }
+
+    private static RunConfigurationData runConfigWithProfile(String profile) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put(PROP_LAUNCH_PROFILE, profile);
+        return RunConfigurationData.builder()
+                .type(TYPE_RUN)
+                .title(".NET: Executar — " + profile)
+                .properties(properties)
                 .build();
     }
 
@@ -178,7 +206,7 @@ public final class DotnetRunSupport {
             return launchCurrentFile(project, configuration);
         }
 
-        Optional<String> runnableTfm = TargetFramework.selectRunnableModernTfm(project);
+        Optional<String> runnableTfm = TargetFramework.selectRunnableTfm(project);
         if (TYPE_RUN.equals(type) && runnableTfm.isEmpty()) {
             return DotnetBuild.errorHandle(runBlockedMessage(project));
         }
@@ -188,13 +216,28 @@ public final class DotnetRunSupport {
             return DotnetBuild.errorHandle("dotnet não encontrado. Instale o .NET SDK ou aguarde o download automático.");
         }
 
+        String launchProfile = launchProfileOf(data);
+        Path projectFile = TargetFramework.findPrimaryProjectFile(project);
         return switch (type) {
-            case TYPE_RUN -> build.buildThenRun(project, dotnet.get(), configuration,
-                    TargetFramework.findPrimaryProjectFile(project), runnableTfm.orElse(null),
-                    outputPanels, runOutputFocus);
+            case TYPE_RUN -> launchRun(project, dotnet.get(), configuration, projectFile, launchProfile);
             case TYPE_TEST -> build.test(project, dotnet.get(), configuration);
             default -> build.build(project, dotnet.get(), configuration);
         };
+    }
+
+    private RunProcessHandle launchRun(Path project, Path dotnet, String configuration,
+                                       Path projectFile, String launchProfile) {
+        String targetFramework = TargetFramework.selectRunnableTfm(project).orElse(null);
+        return build.buildThenRun(project, dotnet, configuration,
+                projectFile, targetFramework, launchProfile, outputPanels, runOutputFocus, null);
+    }
+
+    private static String launchProfileOf(RunConfigurationData data) {
+        if (data == null || data.getProperties() == null) {
+            return null;
+        }
+        Object value = data.getProperties().get(PROP_LAUNCH_PROFILE);
+        return value == null ? null : value.toString();
     }
 
     private RunProcessHandle launchCurrentFile(Path project, String configuration) {
@@ -206,7 +249,7 @@ public final class DotnetRunSupport {
         if (!isEntryPointFile(text)) {
             return DotnetBuild.errorHandle("O arquivo atual (" + file.getFileName()
                     + ") não é o ponto de entrada do programa: não tem método Main nem top-level statements. "
-                    + "Abra o arquivo do Program (com Main/top-level) ou use \".NET: Compilar + Executar\".");
+                    + "Abra o arquivo do Program (com Main/top-level) ou use \".NET: Executar\".");
         }
         Optional<String> runnableTfm = TargetFramework.selectRunnableModernTfm(project);
         if (runnableTfm.isEmpty()) {
@@ -218,8 +261,8 @@ public final class DotnetRunSupport {
         }
 
         return build.buildThenRun(project, dotnet.get(), configuration,
-                TargetFramework.findPrimaryProjectFile(project), runnableTfm.orElse(null),
-                outputPanels, runOutputFocus);
+                TargetFramework.findPrimaryProjectFile(project), runnableTfm.orElse(null), null,
+                outputPanels, runOutputFocus, null);
     }
 
     public RunProcessHandle launchDebug(RunConfigurationData data, RunExecutionContext context) {
@@ -256,41 +299,30 @@ public final class DotnetRunSupport {
                 : context.getBreakpoints();
 
         Path startupHook = sdk.getDebugStartupHook().orElse(null);
+        sdk.getNcdbHook();
 
+        LaunchSettings.Profile profile = LaunchSettings.findProfile(projectFile, launchProfileOf(data));
+        List<String> programArgs = profile == null ? List.of() : profile.args();
+        Map<String, String> launchEnv = new LinkedHashMap<>(profile == null ? Map.of() : profile.effectiveEnv());
+        boolean breakOnAllExceptions = breakOnAllExceptionsSupplier != null
+                && breakOnAllExceptionsSupplier.getAsBoolean();
         return build.buildThenDebug(project, dotnet.get(), netcoredbg, configuration, projectFile,
                 runnableTfm.orElse(null), breakpoints, debugView, outputPanels, runOutputFocus,
-                startupHook, this::setDebugSession);
+                startupHook, this::setDebugSession, programArgs, launchEnv, breakOnAllExceptions);
     }
 
     public boolean isDebugging() {
         return debugSession.get() != null;
     }
 
-    public HotReloadResult hotReload(RunConfigurationData data) {
-        if (debugSession.get() == null) {
-            return HotReloadResult.failure("Nenhuma sessao de debug ativa para hot reload.");
-        }
-        Path project = projectPath;
-        if (project == null) {
-            return HotReloadResult.failure("Projeto invalido: nenhum diretorio de projeto disponivel.");
-        }
-        Optional<String> runnableTfm = TargetFramework.selectRunnableModernTfm(project);
-        if (runnableTfm.isEmpty()) {
-            return HotReloadResult.failure(debugBlockedMessage(project));
-        }
-        Optional<Path> dotnet = ensureDotnet();
-        if (dotnet.isEmpty()) {
-            return HotReloadResult.failure("dotnet nao encontrado para hot reload.");
-        }
 
-        String configuration = configurationOf(data);
-        Path projectFile = TargetFramework.findPrimaryProjectFile(project);
-        int exit = build.buildForHotReload(project, dotnet.get(), configuration, projectFile,
-                runnableTfm.orElse(null), outputPanels);
-        if (exit != 0) {
-            return HotReloadResult.failure("Hot reload falhou: build retornou codigo " + exit + ".");
+    public boolean applyHotReload(Path activeFile, String activeText) {
+        DotnetDapDebugSession session = debugSession.get();
+        if (session == null) {
+            return false;
         }
-        return HotReloadResult.success("Hot reload concluido: build aplicado aos artefatos de Debug.");
+        session.applyHotReload(activeFile, activeText, hotReloadResultListener);
+        return true;
     }
 
     public boolean sendDebugCommand(String command) {
@@ -305,6 +337,7 @@ public final class DotnetRunSupport {
             case "stepOut" -> session.stepOut();
             case "pause" -> session.pause();
             case "restart" -> session.restart();
+            case "hotReload" -> session.applyHotReload(null, null, hotReloadResultListener);
             default -> {
                 return false;
             }
@@ -355,10 +388,10 @@ public final class DotnetRunSupport {
 
     public void stop(RunConfigurationData data) {
         DotnetDapDebugSession session = debugSession.getAndSet(null);
-        notifyDebugSessionState(false);
         if (session != null) {
             session.terminate();
         }
+        notifyDebugSessionState(false);
         String type = data == null ? null : data.getType();
         if (TYPE_CURRENT_FILE.equals(type)) {
             type = TYPE_RUN;
@@ -373,12 +406,13 @@ public final class DotnetRunSupport {
 
     private void notifyDebugSessionState(boolean active) {
         Consumer<Boolean> listener = debugSessionStateListener;
-        if (listener != null) {
-            try {
-                listener.accept(active);
-            } catch (Exception e) {
-                log.debug("Falha ao atualizar estado da sessao de debug: {}", e.getMessage());
-            }
+        if (listener == null) {
+            return;
+        }
+        try {
+            listener.accept(active);
+        } catch (Exception e) {
+            log.debug("Falha ao atualizar estado da sessao de debug: {}", e.getMessage());
         }
     }
 
@@ -440,13 +474,4 @@ public final class DotnetRunSupport {
                 + "apenas build. Compile aqui e copie o binário de bin/ para o Windows para executar.";
     }
 
-    public record HotReloadResult(boolean success, String message) {
-        public static HotReloadResult success(String message) {
-            return new HotReloadResult(true, message);
-        }
-
-        public static HotReloadResult failure(String message) {
-            return new HotReloadResult(false, message);
-        }
-    }
 }

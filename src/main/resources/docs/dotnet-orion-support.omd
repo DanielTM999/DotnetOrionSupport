@@ -2,7 +2,7 @@
 
 Suporte completo para desenvolvimento **.NET / C#** dentro da Orion IDE: reconhecimento de
 projetos, editor C#, IntelliSense com OmniSharp, build/run/test via `dotnet`, depuração com
-`netcoredbg`, Hot Reload assistido, gerenciador NuGet, wizards de projeto e painéis de
+`netcoredbg`, gerenciador NuGet, wizards de projeto e painéis de
 configuração.
 
 > Abra uma solução ou projeto C# e a Orion prepara a toolchain necessária. O plugin detecta
@@ -62,7 +62,7 @@ configuração.
 Configurações disponíveis:
 
 - **.NET: Compilar**
-- **.NET: Compilar + Executar**
+- **.NET: Executar** (`dotnet run`)
 - **.NET: Testar**
 - **Current File**, quando o arquivo C# tem `Main` ou top-level statements.
 
@@ -93,19 +93,6 @@ Atalhos:
 | `F10` | Step over |
 | `F11` | Step into |
 | `Shift + F11` | Step out |
-
-### Hot Reload
-
-O botão **Hot Reload** aparece durante uma sessão de debug ativa. Ele:
-
-- habilita `DOTNET_MODIFIABLE_ASSEMBLIES=debug`;
-- recompila em background com `dotnet build --no-restore`;
-- escreve no buffer do painel **Build** sem puxar foco;
-- mostra progresso na barra de status;
-- em falha, abre um `ModernDialog` perguntando se deseja reiniciar a sessão.
-
-É um fluxo best-effort: quando o runtime/debugger não aceitar a alteração em execução, o
-restart fica a um clique.
 
 ### NuGet
 
@@ -188,6 +175,6 @@ Em **Settings → .NET / C#**:
 ## Limitações
 
 - A experiência rica é focada em C#; VB.NET/F# são tratados principalmente como arquivos de projeto.
-- Hot Reload é best-effort e pode exigir restart dependendo da alteração.
 - Execução/depuração de .NET Framework fora do Windows é bloqueada quando não há runtime compatível.
 - Projetos legados recebem suporte em melhor esforço para pacotes e referências.
+

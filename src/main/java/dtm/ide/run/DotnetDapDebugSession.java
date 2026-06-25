@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 @Slf4j
 final class DotnetDapDebugSession {
@@ -44,6 +45,9 @@ final class DotnetDapDebugSession {
     private final Path dotnet;
     private final Path program;
     private final Path cwd;
+    private final Path projectFile;
+    private final String targetFramework;
+    private final String configuration;
     private final List<String> programArgs;
     private final DotnetDebugView view;
     private final OutputStream programOut;
@@ -65,6 +69,7 @@ final class DotnetDapDebugSession {
     private volatile Process debuggee;
     private volatile OutputStream dapIn;
     private final Path startupHook;
+    private final long externalAttachPid;
     private volatile Path gateFile;
     private volatile int threadId;
     private volatile int frameId = -1;
@@ -72,24 +77,46 @@ final class DotnetDapDebugSession {
     private volatile Map<String, String> launchEnv = Map.of();
     private final AtomicLong stoppedTicket = new AtomicLong();
     private volatile List<String> exceptionBreakpointFilters = List.of();
+    private volatile boolean breakOnAllExceptions;
+    private volatile DotnetHotReloadAgent hotReloadAgent;
+    private final AtomicBoolean hotReloadInProgress = new AtomicBoolean(false);
 
-    DotnetDapDebugSession(Path netcoredbg, Path dotnet, Path program, Path cwd, List<String> programArgs,
+    DotnetDapDebugSession(Path netcoredbg, Path dotnet, Path program, Path cwd, Path projectFile,
+                          String targetFramework, String configuration, List<String> programArgs,
                           List<RunBreakpointData> breakpoints, DotnetDebugView view, OutputStream programOut,
                           DotnetBuild.DeferredOutputStream debuggeeStdin, Path startupHook) {
+        this(netcoredbg, dotnet, program, cwd, projectFile, targetFramework, configuration, programArgs,
+                breakpoints, view, programOut, debuggeeStdin, startupHook, 0L, null);
+    }
+
+    DotnetDapDebugSession(Path netcoredbg, Path dotnet, Path program, Path cwd, Path projectFile,
+                          String targetFramework, String configuration, List<String> programArgs,
+                          List<RunBreakpointData> breakpoints, DotnetDebugView view, OutputStream programOut,
+                          DotnetBuild.DeferredOutputStream debuggeeStdin, Path startupHook,
+                          long externalAttachPid, Path externalGateFile) {
         this.netcoredbg = netcoredbg;
         this.dotnet = dotnet;
         this.program = program;
         this.cwd = cwd;
+        this.projectFile = projectFile;
+        this.targetFramework = targetFramework;
+        this.configuration = configuration == null || configuration.isBlank() ? "Debug" : configuration;
         this.programArgs = programArgs == null ? List.of() : programArgs;
         this.view = view;
         this.programOut = programOut;
         this.debuggeeStdin = debuggeeStdin;
         this.startupHook = startupHook;
+        this.externalAttachPid = externalAttachPid;
+        this.gateFile = externalGateFile;
         seedBreakpoints(breakpoints);
     }
 
     void setLaunchEnv(Map<String, String> env) {
         this.launchEnv = env == null ? Map.of() : env;
+    }
+
+    void setBreakOnAllExceptions(boolean breakOnAllExceptions) {
+        this.breakOnAllExceptions = breakOnAllExceptions;
     }
 
     private void seedBreakpoints(List<RunBreakpointData> breakpoints) {
@@ -125,7 +152,7 @@ final class DotnetDapDebugSession {
         errReader.start();
         process.onExit().thenAccept(p -> dlog("[debug] netcoredbg encerrou (codigo " + p.exitValue() + ")."));
 
-        if (useAttach) {
+        if (useAttach && externalAttachPid <= 0) {
             startInferior();
         }
 
@@ -148,6 +175,20 @@ final class DotnetDapDebugSession {
         } else {
             sendLaunch();
         }
+        prewarmHotReload();
+    }
+
+    private void prewarmHotReload() {
+        if (program == null || projectFile == null) {
+            return;
+        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                hotReloadAgent().prewarm();
+            } catch (Exception e) {
+                log.debug("[hot reload] prewarm falhou: {}", e.getMessage());
+            }
+        });
     }
 
     void awaitTermination() throws InterruptedException {
@@ -157,7 +198,7 @@ final class DotnetDapDebugSession {
             dlog("[debug] netcoredbg encerrou (codigo " + p.exitValue() + ").");
         }
         Process d = debuggee;
-        if (d != null && !d.isAlive()) {
+        if (externalAttachPid <= 0 && d != null && !d.isAlive()) {
             dlog("[debug] programa encerrou (codigo " + d.exitValue() + ").");
         }
     }
@@ -186,6 +227,97 @@ final class DotnetDapDebugSession {
         sendRequest("restart", MAPPER.createObjectNode());
     }
 
+    void applyHotReload(Path activeFile, String activeText, Consumer<DotnetHotReloadResult> resultSink) {
+        if (!hotReloadInProgress.compareAndSet(false, true)) {
+            publishHotReloadResult(resultSink, DotnetHotReloadResult.blocked("Hot Reload ja esta em execucao."));
+            return;
+        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                DotnetHotReloadAgent agent = hotReloadAgent();
+                DotnetHotReloadResult generated = agent.apply(activeFile, activeText);
+                if (generated.status() == DotnetHotReloadResult.Status.NO_CHANGES) {
+                    publishHotReloadResult(resultSink, generated);
+                    return;
+                }
+                if (generated.status() != DotnetHotReloadResult.Status.APPLIED) {
+                    safeWriteProgram("[hot reload] " + generated.message() + System.lineSeparator());
+                    publishHotReloadResult(resultSink, generated);
+                    return;
+                }
+                Path deltaBase = Path.of(generated.message());
+                if (!hasHotReloadDeltaFiles(deltaBase)) {
+                    DotnetHotReloadResult error = DotnetHotReloadResult.error("Agente Roslyn nao produziu todos os arquivos de delta.");
+                    safeWriteProgram("[hot reload] " + error.message() + System.lineSeparator());
+                    publishHotReloadResult(resultSink, error);
+                    return;
+                }
+                DotnetHotReloadResult applied = applyGeneratedHotReload(deltaBase);
+                publishHotReloadResult(resultSink, applied);
+            } catch (Exception e) {
+                DotnetHotReloadResult error = DotnetHotReloadResult.error("Falha ao aplicar Hot Reload: " + e.getMessage());
+                safeWriteProgram("[hot reload] " + error.message() + System.lineSeparator());
+                publishHotReloadResult(resultSink, error);
+            } finally {
+                hotReloadInProgress.set(false);
+            }
+        });
+    }
+
+    void applyHotReload() {
+        applyHotReload(null, null, null);
+    }
+
+    private DotnetHotReloadResult applyGeneratedHotReload(Path deltaBase) {
+        ObjectNode args = MAPPER.createObjectNode();
+        args.put("assembly", program.getFileName().toString());
+        args.put("metadataDelta", deltaBase + ".metadata");
+        args.put("ilDelta", deltaBase + ".il");
+        args.put("pdbDelta", deltaBase + ".pdb");
+        args.put("lineUpdates", deltaBase + ".bin");
+        try {
+            sendRequestForResult("netcoredbg/applyHotReload", args).get(10, TimeUnit.SECONDS);
+            safeWriteProgram("[hot reload] alteracoes aplicadas." + System.lineSeparator());
+            return DotnetHotReloadResult.applied("Alteracoes aplicadas.");
+        } catch (Exception e) {
+            String message = "netcoredbg recusou os deltas: " + e.getMessage();
+            safeWriteProgram("[hot reload] " + message + System.lineSeparator());
+            return DotnetHotReloadResult.error(message);
+        }
+    }
+
+    private DotnetHotReloadAgent hotReloadAgent() {
+        DotnetHotReloadAgent existing = hotReloadAgent;
+        if (existing != null) {
+            return existing;
+        }
+        synchronized (this) {
+            if (hotReloadAgent == null) {
+                hotReloadAgent = new DotnetHotReloadAgent(dotnet, projectFile, program, cwd,
+                        targetFramework, configuration, programOut);
+            }
+            return hotReloadAgent;
+        }
+    }
+
+    private void publishHotReloadResult(Consumer<DotnetHotReloadResult> resultSink, DotnetHotReloadResult result) {
+        if (resultSink == null || result == null) {
+            return;
+        }
+        try {
+            resultSink.accept(result);
+        } catch (Exception e) {
+            log.debug("Falha ao publicar resultado de Hot Reload: {}", e.getMessage());
+        }
+    }
+
+    private static boolean hasHotReloadDeltaFiles(Path base) {
+        return base != null
+                && Files.isRegularFile(Path.of(base + ".metadata"))
+                && Files.isRegularFile(Path.of(base + ".il"))
+                && Files.isRegularFile(Path.of(base + ".pdb"))
+                && Files.isRegularFile(Path.of(base + ".bin"));
+    }
     void terminate() {
         if (closed.getAndSet(true)) {
             return;
@@ -197,7 +329,7 @@ final class DotnetDapDebugSession {
         } catch (Exception ignored) {
         }
         Process d = debuggee;
-        if (d != null) {
+        if (externalAttachPid <= 0 && d != null) {
             try {
                 d.descendants().forEach(ProcessHandle::destroyForcibly);
             } catch (Exception ignored) {
@@ -211,6 +343,11 @@ final class DotnetDapDebugSession {
             } catch (Exception ignored) {
             }
             p.destroyForcibly();
+        }
+        DotnetHotReloadAgent agent = hotReloadAgent;
+        hotReloadAgent = null;
+        if (agent != null) {
+            agent.close();
         }
         cleanupGate();
         terminated.countDown();
@@ -422,6 +559,9 @@ final class DotnetDapDebugSession {
 
     private List<String> preferredExceptionFilters() {
         List<String> supported = exceptionBreakpointFilters;
+        if (breakOnAllExceptions) {
+            return supported.isEmpty() ? List.of("all") : new ArrayList<>(supported);
+        }
         List<String> result = new ArrayList<>();
         for (String filter : supported) {
             String lower = filter.toLowerCase(Locale.ROOT);
@@ -599,8 +739,11 @@ final class DotnetDapDebugSession {
             dlog("<< " + command + " ok");
         }
         if ("attach".equals(command) || "launch".equals(command)) {
+            safeWriteProgram("[debug] debugger anexado; configurando breakpoints." + System.lineSeparator());
             debugStartAccepted.set(true);
             sendConfigurationIfReady();
+        } else if ("configurationDone".equals(command)) {
+            safeWriteProgram("[debug] configuracao de debug concluida." + System.lineSeparator());
         }
         if ("stackTrace".equals(command) && future == null) {
             JsonNode frames = msg.path("body").path("stackFrames");
@@ -902,9 +1045,14 @@ final class DotnetDapDebugSession {
             Files.deleteIfExists(gate);
             gateFile = gate;
             String hook = startupHook.toAbsolutePath().normalize().toString();
+            String chain = hook;
+            Path ncdbHook = startupHook.toAbsolutePath().normalize().getParent().resolve("ncdbhook.dll");
+            if (Files.isRegularFile(ncdbHook)) {
+                chain = hook + File.pathSeparator + ncdbHook;
+            }
             String existing = builder.environment().get("DOTNET_STARTUP_HOOKS");
             builder.environment().put("DOTNET_STARTUP_HOOKS",
-                    existing == null || existing.isBlank() ? hook : hook + File.pathSeparator + existing);
+                    existing == null || existing.isBlank() ? chain : chain + File.pathSeparator + existing);
             builder.environment().put("ORION_DEBUG_WAIT_FILE", gate.toString());
         } catch (IOException e) {
             log.debug("[debug] falha ao preparar gate de inicializacao: {}", e.getMessage());
@@ -941,15 +1089,24 @@ final class DotnetDapDebugSession {
     }
 
     private void sendAttach() {
-        Process child = debuggee;
-        if (child == null || !child.isAlive()) {
+        long pid = externalAttachPid;
+        if (pid <= 0) {
+            Process child = debuggee;
+            if (child == null || !child.isAlive()) {
+                safeWriteProgram("[debug] processo do programa não está ativo para anexar." + System.lineSeparator());
+                terminate();
+                return;
+            }
+            pid = child.pid();
+        } else if (ProcessHandle.of(pid).isEmpty() || !ProcessHandle.of(pid).get().isAlive()) {
             safeWriteProgram("[debug] processo do programa não está ativo para anexar." + System.lineSeparator());
             terminate();
             return;
         }
         ObjectNode attach = MAPPER.createObjectNode();
-        attach.put("processId", (int) child.pid());
-        dlog(">> attach pid=" + child.pid());
+        attach.put("processId", (int) pid);
+        attach.put("hotReload", true);
+        dlog(">> attach pid=" + pid);
         sendRequest("attach", attach);
     }
 
@@ -962,6 +1119,7 @@ final class DotnetDapDebugSession {
         launch.put("cwd", cwd.toAbsolutePath().normalize().toString());
         launch.put("stopAtEntry", false);
         launch.put("justMyCode", true);
+        launch.put("hotReload", true);
         launch.put("console", "internalConsole");
         if (!programArgs.isEmpty()) {
             ArrayNode args = launch.putArray("args");
@@ -1081,7 +1239,25 @@ final class DotnetDapDebugSession {
             bps.addObject().put("line", line + 1);
         }
         log.info("[debug] setBreakpoints arquivo={} linhas={}", file, snapshot);
-        return sendRequestForResult("setBreakpoints", args);
+        return sendRequestForResult("setBreakpoints", args)
+                .whenComplete((body, error) -> {
+                    if (error != null) {
+                        safeWriteProgram("[debug] falha ao enviar breakpoints em " + file.getFileName()
+                                + ": " + error.getMessage() + System.lineSeparator());
+                        return;
+                    }
+                    int accepted = 0;
+                    int total = 0;
+                    for (JsonNode breakpoint : body.path("breakpoints")) {
+                        total++;
+                        if (breakpoint.path("verified").asBoolean(false)) {
+                            accepted++;
+                        }
+                    }
+                    safeWriteProgram("[debug] breakpoints enviados em " + file.getFileName()
+                            + ": " + accepted + "/" + (total == 0 ? snapshot.size() : total)
+                            + " aceitos." + System.lineSeparator());
+                });
     }
 
     private void captureCallStack(JsonNode frames) {

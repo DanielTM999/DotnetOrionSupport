@@ -4,6 +4,7 @@ import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 import java.awt.Color;
 import java.awt.Cursor;
 import java.awt.Dimension;
@@ -15,7 +16,14 @@ import java.util.function.Consumer;
 
 public final class DebugToolbar extends JPanel {
 
+    private static final String HOT_RELOAD_TEXT = "Hot Reload";
+    private static final String HOT_RELOAD_SHORTCUT = "Ctrl+F5";
+
     private volatile Consumer<String> commandSink;
+    private JButton hotReloadButton;
+    private javax.swing.Timer hotReloadBusyTimer;
+    private int hotReloadBusyTick;
+    private boolean hotReloadBusy;
 
     public DebugToolbar() {
         super(new FlowLayout(FlowLayout.LEFT, 8, 6));
@@ -34,12 +42,73 @@ public final class DebugToolbar extends JPanel {
         add(button("Step In", "F11", "stepIn", DebugTheme.accentColor()));
         add(button("Step Out", "Shift+F11", "stepOut", DebugTheme.accentColor()));
         add(separator());
+        hotReloadButton = button(HOT_RELOAD_TEXT, HOT_RELOAD_SHORTCUT, "hotReload", DebugTheme.numberColor());
+        add(hotReloadButton);
+        add(separator());
         add(button("Restart", "Ctrl+Shift+F5", "restart", DebugTheme.accentColor()));
         add(button("Stop", "Shift+F5", "stop", DebugTheme.nullColor()));
     }
 
     public void bindCommandSink(Consumer<String> commandSink) {
         this.commandSink = commandSink;
+    }
+
+    public void setHotReloadEnabled(boolean enabled) {
+        onUiThread(() -> {
+            if (!hotReloadBusy && hotReloadButton != null) {
+                hotReloadButton.setEnabled(enabled);
+                hotReloadButton.setCursor(Cursor.getPredefinedCursor(
+                        enabled ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
+            }
+        });
+    }
+
+    public void startHotReloadBusy() {
+        onUiThread(() -> {
+            if (hotReloadButton == null) {
+                return;
+            }
+            hotReloadBusy = true;
+            hotReloadBusyTick = 0;
+            hotReloadButton.setEnabled(false);
+            hotReloadButton.setForeground(DebugTheme.accentColor());
+            hotReloadButton.setToolTipText("Aplicando Hot Reload...");
+            hotReloadButton.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+            updateHotReloadBusyText();
+            if (hotReloadBusyTimer != null) {
+                hotReloadBusyTimer.stop();
+            }
+            hotReloadBusyTimer = new javax.swing.Timer(280, e -> updateHotReloadBusyText());
+            hotReloadBusyTimer.start();
+        });
+    }
+
+    public void finishHotReloadBusy(boolean enabled) {
+        onUiThread(() -> {
+            hotReloadBusy = false;
+            if (hotReloadBusyTimer != null) {
+                hotReloadBusyTimer.stop();
+                hotReloadBusyTimer = null;
+            }
+            if (hotReloadButton == null) {
+                return;
+            }
+            hotReloadButton.setText(HOT_RELOAD_TEXT);
+            hotReloadButton.setToolTipText(HOT_RELOAD_TEXT + " (" + HOT_RELOAD_SHORTCUT + ")");
+            hotReloadButton.setForeground(DebugTheme.numberColor());
+            hotReloadButton.setEnabled(enabled);
+            hotReloadButton.setCursor(Cursor.getPredefinedCursor(
+                    enabled ? Cursor.HAND_CURSOR : Cursor.DEFAULT_CURSOR));
+        });
+    }
+
+    private void updateHotReloadBusyText() {
+        if (hotReloadButton == null) {
+            return;
+        }
+        String dots = ".".repeat(hotReloadBusyTick % 4);
+        hotReloadBusyTick++;
+        hotReloadButton.setText("Aplicando" + dots);
     }
 
     private JPanel separator() {
@@ -84,5 +153,13 @@ public final class DebugToolbar extends JPanel {
             }
         });
         return button;
+    }
+
+    private static void onUiThread(Runnable action) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            action.run();
+        } else {
+            SwingUtilities.invokeLater(action);
+        }
     }
 }

@@ -48,7 +48,7 @@ public class DotnetSdkService {
     public static final String DOTNET_7_SDK_VERSION = "7.0.410";
     public static final String DOTNET_6_SDK_VERSION = "6.0.428";
     public static final String DEFAULT_OMNISHARP_VERSION = "1.39.11";
-    public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.2";
+    public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.3";
 
     private static final int DOWNLOAD_MAX_ATTEMPTS = 3;
     private static final long DOWNLOAD_RETRY_BASE_DELAY_MS = 1500;
@@ -190,20 +190,43 @@ public class DotnetSdkService {
         }
         Path target = sdk.resolve("debug").resolve("OrionDebugStartupHook.dll");
         try {
-            if (Files.isRegularFile(target) && Files.size(target) > 0) {
-                return Optional.of(target);
-            }
             Files.createDirectories(target.getParent());
             try (InputStream in = DotnetSdkService.class.getResourceAsStream("/debug/OrionDebugStartupHook.dll")) {
                 if (in == null) {
                     log.debug("Recurso do startup hook de debug não encontrado no classpath.");
-                    return Optional.empty();
+                    return Files.isRegularFile(target) && Files.size(target) > 0
+                            ? Optional.of(target)
+                            : Optional.empty();
                 }
                 Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             }
             return Optional.of(target);
         } catch (Exception e) {
             log.debug("Falha ao provisionar startup hook de debug: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    public Optional<Path> getNcdbHook() {
+        Path sdk = sdkRoot();
+        if (sdk == null) {
+            return Optional.empty();
+        }
+        Path target = sdk.resolve("debug").resolve("ncdbhook.dll");
+        try {
+            Files.createDirectories(target.getParent());
+            try (InputStream in = DotnetSdkService.class.getResourceAsStream("/debug/ncdbhook.dll")) {
+                if (in == null) {
+                    log.debug("Recurso ncdbhook.dll não encontrado no classpath.");
+                    return Files.isRegularFile(target) && Files.size(target) > 0
+                            ? Optional.of(target)
+                            : Optional.empty();
+                }
+                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return Optional.of(target);
+        } catch (Exception e) {
+            log.debug("Falha ao provisionar ncdbhook.dll: {}", e.getMessage());
             return Optional.empty();
         }
     }

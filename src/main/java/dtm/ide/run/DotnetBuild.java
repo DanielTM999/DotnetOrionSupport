@@ -188,9 +188,9 @@ public final class DotnetBuild {
     }
 
     public RunProcessHandle buildThenRun(Path project, Path dotnet, String configuration,
-                                         Path projectFile, String targetFramework,
+                                         Path projectFile, String targetFramework, String launchProfile,
                                          Function<String, OutputPanelHandle> panelProvider,
-                                         Runnable showRunOutput) {
+                                         Runnable showRunOutput, Map<String, String> launchEnv) {
         String config = configuration == null || configuration.isBlank() ? "Debug" : configuration;
         PipedInputStream consoleIn;
         PipedOutputStream consoleOut;
@@ -222,6 +222,7 @@ public final class DotnetBuild {
             runCmd.add(projectFile.toString());
         }
         addFrameworkOption(runCmd, targetFramework);
+        addLaunchProfileOption(runCmd, launchProfile);
 
         Thread worker = new Thread(() -> {
             try (OutputStream out = consoleOut) {
@@ -248,6 +249,7 @@ public final class DotnetBuild {
                         .directory(project.toFile())
                         .redirectErrorStream(true);
                 applyDotnetEnv(runBuilder, dotnet);
+                mergeLaunchEnv(runBuilder, launchEnv);
                 Process process = runBuilder.start();
                 runProcess.set(process);
                 activeProcesses.put(DotnetRunSupport.TYPE_RUN, process);
@@ -289,7 +291,10 @@ public final class DotnetBuild {
                                            Function<String, OutputPanelHandle> panelProvider,
                                            Runnable showRunOutput,
                                            Path startupHook,
-                                           Consumer<DotnetDapDebugSession> sessionSink) {
+                                           Consumer<DotnetDapDebugSession> sessionSink,
+                                           List<String> programArgs,
+                                           Map<String, String> launchEnv,
+                                           boolean breakOnAllExceptions) {
         String config = configuration == null || configuration.isBlank() ? "Debug" : configuration;
         PipedInputStream consoleIn;
         PipedOutputStream consoleOut;
@@ -343,8 +348,11 @@ public final class DotnetBuild {
                 writeLine(out, "> netcoredbg " + dll.getFileName()
                         + " (DOTNET_ROOT=" + dotnet.toAbsolutePath().normalize().getParent() + ")");
                 DotnetDapDebugSession session = new DotnetDapDebugSession(
-                        netcoredbg, dotnet, dll, project, List.of(), breakpoints, view, out, stdinBridge,
+                        netcoredbg, dotnet, dll, project, projectFile, targetFramework, config,
+                        programArgs == null ? List.of() : programArgs, breakpoints, view, out, stdinBridge,
                         startupHook);
+                session.setLaunchEnv(launchEnv);
+                session.setBreakOnAllExceptions(breakOnAllExceptions);
                 sessionRef.set(session);
                 if (sessionSink != null) {
                     sessionSink.accept(session);
@@ -385,41 +393,6 @@ public final class DotnetBuild {
                 })
                 .stdinMode(RunProcessHandle.StdinMode.TERMINAL)
                 .build();
-    }
-
-    public int buildForHotReload(Path project, Path dotnet, String configuration,
-                                 Path projectFile, String targetFramework,
-                                 Function<String, OutputPanelHandle> panelProvider) {
-        if (project == null || dotnet == null) {
-            return -1;
-        }
-        String config = configuration == null || configuration.isBlank() ? "Debug" : configuration;
-        OutputPanelHandle buildPanel = requestBuildPanel(panelProvider);
-        OutputStream out = buildPanel != null && buildPanel.getOutputStream() != null
-                ? buildPanel.getOutputStream()
-                : OutputStream.nullOutputStream();
-
-        List<String> buildCmd = new ArrayList<>(List.of(
-                dotnet.toString(), "build", "-c", config, "--nologo", "--no-restore"));
-        if (projectFile != null) {
-            buildCmd.add(projectFile.toString());
-        }
-        addFrameworkOption(buildCmd, targetFramework);
-
-        try {
-            writeLine(out, "[hot reload] Compilando alteracoes...");
-            writeLine(out, "> " + String.join(" ", buildCmd));
-            int exit = runAndStream(buildCmd, project, out, null, null);
-            writeLine(out, exit == 0
-                    ? System.lineSeparator() + "[hot reload] Build OK."
-                    : System.lineSeparator() + "[hot reload] Build falhou (codigo " + exit + ").");
-            return exit;
-        } catch (Exception e) {
-            safeWriteLine(out, "[hot reload] Falha: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-            return -1;
-        } finally {
-            flushQuietly(out);
-        }
     }
 
     static Path resolveDebugTargetDll(Path project, Path projectFile, String configuration) {
@@ -565,6 +538,14 @@ public final class DotnetBuild {
         command.add(targetFramework.trim());
     }
 
+    private static void addLaunchProfileOption(List<String> command, String launchProfile) {
+        if (command == null || launchProfile == null || launchProfile.isBlank()) {
+            return;
+        }
+        command.add("--launch-profile");
+        command.add(launchProfile.trim());
+    }
+
     private static Path firstCommandPath(List<String> command) {
         if (command == null || command.isEmpty()) {
             return null;
@@ -573,6 +554,23 @@ public final class DotnetBuild {
             return Path.of(command.get(0));
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    static void mergeLaunchEnv(ProcessBuilder builder, Map<String, String> launchEnv) {
+        if (builder == null || launchEnv == null || launchEnv.isEmpty()) {
+            return;
+        }
+        Map<String, String> env = builder.environment();
+        for (Map.Entry<String, String> entry : launchEnv.entrySet()) {
+            if ("DOTNET_STARTUP_HOOKS".equalsIgnoreCase(entry.getKey())) {
+                String existing = env.get("DOTNET_STARTUP_HOOKS");
+                env.put("DOTNET_STARTUP_HOOKS", existing == null || existing.isBlank()
+                        ? entry.getValue()
+                        : entry.getValue() + java.io.File.pathSeparator + existing);
+            } else {
+                env.put(entry.getKey(), entry.getValue());
+            }
         }
     }
 
@@ -633,6 +631,13 @@ public final class DotnetBuild {
             return;
         }
         destroyProcessTree(process.toHandle());
+    }
+
+    private static void destroyQuietly(ProcessHandle process) {
+        if (process == null) {
+            return;
+        }
+        destroyProcessTree(process);
     }
 
     private static void destroyProcessTree(ProcessHandle root) {

@@ -2,6 +2,7 @@ package dtm.ide;
 
 import dtm.ide.api.project.editor.IdeEditorContext;
 import dtm.ide.editor.tokenizer.CSharpTokenizerProvider;
+import dtm.ide.editor.tokenizer.RazorTokenizerProvider;
 import dtm.stools.component.panels.editor.code.provider.TokenizerCodeEditorProvider;
 
 import java.nio.file.Files;
@@ -23,7 +24,9 @@ final class DotnetEditorRegistry {
             return null;
         }
         return tokenizers.computeIfAbsent(DotnetProjectConventions.normalizePath(filePath),
-                p -> new CSharpTokenizerProvider());
+                p -> DotnetProjectConventions.isRazorLike(p)
+                        ? new RazorTokenizerProvider()
+                        : new CSharpTokenizerProvider());
     }
 
     void trackEditor(Path normalizedPath, IdeEditorContext context) {

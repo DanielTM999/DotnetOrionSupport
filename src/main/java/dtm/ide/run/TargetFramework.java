@@ -133,6 +133,33 @@ public final class TargetFramework {
         return Optional.ofNullable(selected);
     }
 
+    public static Optional<String> selectRunnableTfm(Path projectRoot) {
+        return selectRunnableTfm(resolveTfms(projectRoot), isWindows());
+    }
+
+    static Optional<String> selectRunnableTfm(List<String> tfms, boolean windows) {
+        Optional<String> modern = selectRunnableModernTfm(tfms, windows);
+        if (modern.isPresent()) {
+            return modern;
+        }
+        if (tfms != null) {
+            for (String tfm : tfms) {
+                if (windows && isNetFramework(tfm)) {
+                    return Optional.of(tfm.trim());
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    public static boolean canRunAnyOnHost(Path projectRoot) {
+        List<String> tfms = resolveTfms(projectRoot);
+        if (tfms.isEmpty()) {
+            return true;
+        }
+        return selectRunnableTfm(tfms, isWindows()).isPresent();
+    }
+
     private static OptionalInt parseMajor(String value) {
         try {
             return OptionalInt.of(Integer.parseInt(value));

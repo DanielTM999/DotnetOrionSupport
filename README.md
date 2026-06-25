@@ -2,7 +2,7 @@
 
 Plugin de suporte a **.NET / C#** para a **Orion IDE**. Ele adiciona reconhecimento
 de projetos .NET, edição C#, IntelliSense via OmniSharp, build/run/test com `dotnet`,
-depuração com `netcoredbg`, Hot Reload assistido, gerenciador NuGet, criação de projetos
+depuração com `netcoredbg`, gerenciador NuGet, criação de projetos
 por wizard e utilitários de projeto integrados aos menus da IDE.
 
 O objetivo é abrir uma pasta .NET e trabalhar nela sem montar a toolchain manualmente:
@@ -18,7 +18,6 @@ baixa e usa cópias gerenciadas dentro da área de recursos da Orion.
 | IntelliSense | OmniSharp para completions, hover, diagnósticos, navegação, rename, formatting e símbolos |
 | Execução | Build, Run, Test, execução do arquivo atual e comandos de build no menu |
 | Depuração | `netcoredbg` com breakpoints, variáveis, call stack, watches, avaliação e atalhos |
-| Hot Reload | Recompilação em background durante debug, botão dedicado e popup de restart em falha |
 | NuGet | Busca, versões, instalados, updates, install/update/uninstall e gestão de fontes |
 | Wizard | Templates .NET modernos, ASP.NET Core, Blazor, Worker, xUnit, WPF, WinForms e .NET Framework |
 | Configuração | Painel para `.csproj`, `global.json`, format-on-save, prerelease e configuração padrão |
@@ -84,7 +83,7 @@ Recursos integrados:
 O plugin registra configurações estáticas de execução:
 
 - **.NET: Compilar**: executa `dotnet build`;
-- **.NET: Compilar + Executar**: compila e roda com `dotnet run --no-build`;
+- **.NET: Executar**: compila e executa o projeto com `dotnet`;
 - **.NET: Testar**: executa `dotnet test`;
 - **Current File** da Orion: habilitado para arquivo C# ativo com `Main` ou top-level statements.
 
@@ -133,21 +132,6 @@ Atalhos suportados durante debug:
 | `Shift + F11` | Step out |
 
 Breakpoints adicionados/removidos na Orion são enviados para a sessão DAP ativa.
-
-## Hot Reload
-
-O botão **Hot Reload** aparece quando uma sessão de debug .NET está ativa. O fluxo atual é
-experimental e conservador:
-
-- marca o processo debugado com `DOTNET_MODIFIABLE_ASSEMBLIES=debug`;
-- executa um build incremental em background com `dotnet build -c <config> --nologo --no-restore`;
-- escreve a saída no buffer do painel **Build** sem roubar foco;
-- mantém o botão desabilitado enquanto aplica a ação;
-- em falha, mostra um `ModernDialog` perguntando se a sessão de debug deve ser reiniciada;
-- ao confirmar, envia o comando `restart` para o debugger.
-
-Esse comportamento evita interromper o fluxo do editor. Alterações que o runtime/debugger não
-conseguir aplicar em execução continuam tendo fallback explícito para restart.
 
 ## Gerenciador NuGet
 
@@ -317,8 +301,8 @@ com OmniSharp e depuração com netcoredbg.
 
 - VB.NET e F# podem ser reconhecidos como arquivos de projeto, mas a experiência de edição
   rica é focada em C#.
-- Hot Reload é best-effort no fluxo atual: recompila durante debug e oferece restart em falha.
 - Projetos .NET Framework são tratados com cuidado fora do Windows: build/test podem funcionar,
   mas execução/depuração local exigem runtime/debugger compatíveis.
 - Inserção de referências e pacotes em projetos legados é feita em melhor esforço; revise o
   `.csproj` quando trabalhar com formatos antigos.
+

@@ -43,11 +43,13 @@ import dtm.ide.run.DebugVariablesPanel;
 import dtm.ide.run.DebugWatchPanel;
 import dtm.ide.run.DebugVar;
 import dtm.ide.run.DotnetDebugView;
+import dtm.ide.run.DotnetHotReloadResult;
 import dtm.ide.run.DotnetRunSupport;
 import dtm.ide.run.TargetFramework;
 import dtm.ide.sdk.DotnetSdkService;
 import dtm.ide.settings.DotnetPluginSettings;
 import dtm.ide.settings.DotnetSettingsPage;
+import dtm.ide.settings.TreeLayout;
 import dtm.ide.ui.DotnetProjectConfigPanel;
 import dtm.ide.ui.DotnetTestExplorerPanel;
 import dtm.ide.ui.NewCSharpItemPanel;
@@ -166,6 +168,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private final DebugExceptionPopup debugExceptionPopup = new DebugExceptionPopup();
     private final DebugToolbar debugToolbar = new DebugToolbar();
     private final AtomicBoolean debugActive = new AtomicBoolean(false);
+    private final AtomicBoolean hotReloadBusy = new AtomicBoolean(false);
+    private final AtomicLong hotReloadUiTicket = new AtomicLong();
     private volatile JTabbedPane debugTabs;
     private volatile String debugToolPanelId;
     private static final Color DEBUG_LINE_COLOR = new Color(227, 100, 100, 80);
@@ -201,6 +205,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private static final String LSP_PROGRESS_ID = "dotnetLspStartup";
     private static final String LSP_ANALYZE_PROGRESS_ID = "dotnetLspAnalyze";
     private static final String NAV_PROGRESS_ID = "dotnetNavigate";
+    private static final String HOT_RELOAD_PROGRESS_ID = "dotnetHotReload";
 
     @Override
     public boolean supports(Path path) {
@@ -244,6 +249,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
         this.selectedRunConfig = null;
         runSupport.bindProject(null);
         runSupport.bindSdk(null);
+        runSupport.bindDebugSessionStateListener(null);
+        runSupport.bindHotReloadResultListener(null);
+        runOnUiThread(() -> {
+            finishHotReloadUi();
+            requestSetHotReloadButtonEnabled(false);
+            requestSetHotReloadButtonVisible(false);
+        });
     }
 
     @Override
@@ -276,12 +288,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runSupport.bindActiveText(() -> currentTextOf(activeFile));
         runSupport.bindOutputPanels(this::requestOutputPanel);
         runSupport.bindRunOutputFocus(this::requestShowRunOutput);
-        runSupport.bindDebugSessionStateListener(this::onDebugSessionStateChanged);
+        runSupport.bindBreakOnAllExceptions(() -> ensurePluginSettings().isBreakOnAllExceptions());
+        runSupport.bindDebugSessionStateListener(active -> runOnUiThread(this::refreshHotReloadButton));
+        runSupport.bindHotReloadResultListener(result -> runOnUiThread(() -> handleHotReloadResult(result)));
         if (projectPath != null) {
             boolean canRun = TargetFramework.canRunOnHost(projectPath);
             SwingUtilities.invokeLater(() -> {
                 requestSetRunButtonEnabled(true);
                 requestSetDebugButtonEnabled(canRun);
+                refreshHotReloadButton();
             });
         }
     }
@@ -619,6 +634,97 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
 
         setActiveFile(editorContext.filePath());
+    }
+
+    @Override
+    public void onCodeEditorInsertText(IdeEditorContext editorContext, int offset, String inserted) {
+        if (editorContext == null || editorContext.filePath() == null
+                || inserted == null || inserted.isEmpty()
+                || !isCSharpLike(editorContext.filePath())) {
+            return;
+        }
+        if (!ensurePluginSettings().isOnTypeFormatting()) {
+            return;
+        }
+        DotnetLspService service = lspService;
+        if (service == null || !service.isOnTypeFormattingSupported()) {
+            return;
+        }
+        char trigger = inserted.charAt(inserted.length() - 1);
+        if (trigger == '\r') {
+            trigger = '\n';
+        }
+        if (!service.isOnTypeTrigger(trigger)) {
+            return;
+        }
+        applyOnTypeFormatting(editorContext, trigger);
+    }
+
+    private void applyOnTypeFormatting(IdeEditorContext context, char trigger) {
+        Path file = normalizePath(context.filePath());
+        String text = context.getText();
+        if (text == null) {
+            return;
+        }
+        int line = context.getCaretLine();
+        int col = context.getCaretCol();
+        int caretOffset = context.getCaretOffset();
+        navigationExecutor().execute(() -> {
+            DotnetLspService service = lspService;
+            if (service == null) {
+                return;
+            }
+            List<TextEdit> edits = service.onTypeFormatting(
+                    file, text, line, col, String.valueOf(trigger), 4, true);
+            if (edits == null || edits.isEmpty()) {
+                return;
+            }
+            String updated = applyTextEdits(text, edits);
+            if (updated.equals(text)) {
+                return;
+            }
+            int newCaret = shiftCaretOffset(text, edits, caretOffset);
+            SwingUtilities.invokeLater(() -> {
+                if (!Objects.equals(context.getText(), text)) {
+                    return;
+                }
+                context.setText(updated);
+                int[] lineCol = lineColOf(updated, newCaret);
+                context.setCaretPosition(lineCol[0], lineCol[1]);
+            });
+        });
+    }
+
+    private static int shiftCaretOffset(String text, List<TextEdit> edits, int caretOffset) {
+        int[] lineStarts = lineStartOffsets(text);
+        int delta = 0;
+        for (TextEdit edit : edits) {
+            if (edit == null || edit.range() == null) {
+                continue;
+            }
+            int start = offsetOf(lineStarts, text, edit.range().start().line(), edit.range().start().col());
+            int end = offsetOf(lineStarts, text, edit.range().end().line(), edit.range().end().col());
+            int newLen = edit.newText() == null ? 0 : edit.newText().length();
+            if (end <= caretOffset) {
+                delta += newLen - (end - start);
+            } else if (start < caretOffset) {
+                return Math.max(0, start + newLen);
+            }
+        }
+        return Math.max(0, caretOffset + delta);
+    }
+
+    private static int[] lineColOf(String text, int offset) {
+        int safe = Math.max(0, Math.min(offset, text.length()));
+        int line = 0;
+        int lineStart = 0;
+        for (int i = 0; i < safe; i++) {
+            if (text.charAt(i) == '\n') {
+                line++;
+                lineStart = i + 1;
+            }
+        }
+        return new int[]{line, safe - lineStart};
     }
 
     private void triggerDiagnostics(Path file, String text) {
@@ -2158,7 +2264,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<PluginSettingsPage> getSettingsPages() {
-        return List.of(new DotnetSettingsPage(ensurePluginSettings()));
+        return List.of(new DotnetSettingsPage(ensurePluginSettings(), this::requestProjectTreeViewRefresh));
     }
 
     private synchronized DotnetPluginSettings ensurePluginSettings() {
@@ -2328,72 +2434,37 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public RunProcessHandle launchDebug(RunConfigurationData data, RunExecutionContext context) throws Exception {
         debugActive.set(true);
-        runOnUiThread(() -> {
-            requestSetHotReloadButtonVisible(true);
-            requestSetHotReloadButtonEnabled(false);
-        });
-        return runSupport.launchDebug(data, context);
+        runOnUiThread(this::refreshHotReloadButton);
+        RunProcessHandle handle = runSupport.launchDebug(data, context);
+        runOnUiThread(this::refreshHotReloadButton);
+        return handle;
     }
 
     @Override
-    public void onHotReload(RunConfigurationData data) throws Exception {
-        if (!debugActive.get() || !runSupport.isDebugging()) {
-            setStatusBarText("Hot reload indisponivel: nenhuma sessao de debug ativa.");
-            runOnUiThread(() -> requestSetHotReloadButtonEnabled(false));
+    public void onHotReload(RunConfigurationData runConfiguration) throws Exception {
+        if (runConfiguration != null) {
+            selectedRunConfig = runConfiguration;
+        }
+        if (!hotReloadBusy.compareAndSet(false, true)) {
+            runOnUiThread(() -> setStatusBarText("Hot Reload ja esta em execucao."));
             return;
         }
-        runOnUiThread(() -> requestSetHotReloadButtonEnabled(false));
-        showProgress("dotnetHotReload", "Aplicando hot reload...");
-        try {
-            DotnetRunSupport.HotReloadResult result = runSupport.hotReload(data);
-            setStatusBarText(result.message());
-            if (!result.success()) {
-                createNotification(new dtm.ide.api.extension.NotificationContext(".NET Hot Reload", result.message()));
-                if (confirmRestartAfterHotReloadFailure(result.message())) {
-                    setStatusBarText("Reiniciando sessao de debug...");
-                    onDebugCommand("restart");
-                }
-            }
-        } finally {
-            hideProgress("dotnetHotReload");
-            runOnUiThread(() -> requestSetHotReloadButtonEnabled(debugActive.get() && runSupport.isDebugging()));
+        if (!runSupport.isDebugging()) {
+            hotReloadBusy.set(false);
+            runOnUiThread(() -> {
+                requestSetHotReloadButtonEnabled(false);
+                debugToolbar.finishHotReloadBusy(false);
+                setStatusBarText("Hot Reload disponivel apenas durante debug .NET.");
+            });
+            return;
         }
-    }
-
-    private boolean confirmRestartAfterHotReloadFailure(String failureMessage) {
-        String detail = failureMessage == null || failureMessage.isBlank()
-                ? "Hot Reload falhou."
-                : failureMessage;
-        String message = detail + System.lineSeparator()
-                + "Deseja reiniciar a sessao de debug agora?";
-        final int[] result = {-1};
-        Runnable show = () -> result[0] = createModernDialogBuilder()
-                .title("Hot Reload falhou")
-                .draggable(true)
-                .message(message)
-                .accentColor(new Color(220, 53, 69))
-                .option("Reiniciar", 0, new Color(59, 130, 246), Color.WHITE)
-                .option("Cancelar", 1, new Color(108, 117, 125), Color.WHITE)
-                .type(ModernDialog.Type.QUESTION)
-                .show();
-        try {
-            if (SwingUtilities.isEventDispatchThread()) {
-                show.run();
-            } else {
-                SwingUtilities.invokeAndWait(show);
-            }
-        } catch (Exception e) {
-            log.debug("Falha ao exibir dialogo de hot reload: {}", e.getMessage());
-            return false;
+        beginHotReloadUi();
+        boolean sent = runSupport.applyHotReload(activeFile, currentTextOf(activeFile));
+        if (!sent) {
+            finishHotReloadUi();
+            runOnUiThread(() ->
+                setStatusBarText("Hot Reload nao foi enviado: sessao de debug indisponivel."));
         }
-        return result[0] == 0;
-    }
-
-    private void onDebugSessionStateChanged(boolean active) {
-        runOnUiThread(() -> {
-            requestSetHotReloadButtonVisible(active);
-            requestSetHotReloadButtonEnabled(active);
-        });
     }
 
     @Override
@@ -2540,6 +2611,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
             return;
         }
+        if ("hotReload".equals(command)) {
+            try {
+                onHotReload(selectedRunConfig);
+            } catch (Exception e) {
+                finishHotReloadUi();
+                setStatusBarText("Falha ao iniciar Hot Reload: " + e.getMessage());
+            }
+            return;
+        }
         if (isResumeLikeDebugCommand(command)) {
             debugContinued();
         }
@@ -2627,16 +2707,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
         debugRefreshTicket.incrementAndGet();
         lastDebugStopFile = null;
         lastDebugStopLine = -1;
+        finishHotReloadUi();
         runOnUiThread(this::clearDebugLine);
         debugValuePopup.hide();
         debugExceptionPopup.hide();
         debugVariablesPanel.clearVariables();
         debugCallStackPanel.clear();
         debugWatchPanel.clearValues();
-        runOnUiThread(() -> {
-            requestSetHotReloadButtonVisible(false);
-            requestSetHotReloadButtonEnabled(false);
-        });
+        refreshHotReloadButton();
     }
 
     private void debugContinued() {
@@ -2649,6 +2727,89 @@ public class DotnetIdeAdapter extends IdeAdapter {
         debugVariablesPanel.clearVariables();
         debugCallStackPanel.clear();
         debugWatchPanel.clearValues();
+        refreshHotReloadButton();
+    }
+
+    private void handleHotReloadResult(DotnetHotReloadResult result) {
+        finishHotReloadUi();
+        if (result == null) {
+            return;
+        }
+        switch (result.status()) {
+            case APPLIED -> setStatusBarText("Hot Reload aplicado.");
+            case NO_CHANGES -> setStatusBarText("Hot Reload: sem alteracoes.");
+            case BLOCKED -> showHotReloadDialog("Hot Reload nao aplicado", result.message());
+            case ERROR -> showHotReloadDialog("Falha no Hot Reload", result.message());
+        }
+    }
+
+    private void showHotReloadDialog(String title, String message) {
+        createModernDialogBuilder()
+                .title(title)
+                .draggable(true)
+                .message(message == null || message.isBlank() ? "Nao foi possivel aplicar Hot Reload." : message)
+                .accentColor(new Color(220, 53, 69))
+                .option("OK", 0, new Color(59, 130, 246), Color.WHITE)
+                .type(ModernDialog.Type.ERROR)
+                .show();
+    }
+
+    private void beginHotReloadUi() {
+        long ticket = hotReloadUiTicket.incrementAndGet();
+        runOnUiThread(() -> {
+            debugToolbar.startHotReloadBusy();
+            requestSetHotReloadButtonEnabled(false);
+            showProgress(HOT_RELOAD_PROGRESS_ID, "Aplicando Hot Reload...");
+        });
+        debugRefreshDelayExecutor.schedule(() -> {
+            if (!hotReloadBusy.get() || hotReloadUiTicket.get() != ticket) {
+                return;
+            }
+            runOnUiThread(() -> {
+                if (!hotReloadBusy.compareAndSet(true, false)) {
+                    return;
+                }
+                hotReloadUiTicket.incrementAndGet();
+                debugToolbar.finishHotReloadBusy(isHotReloadButtonEnabledNow());
+                refreshHotReloadButton();
+                hideProgress(HOT_RELOAD_PROGRESS_ID);
+                setStatusBarText("Hot Reload: tempo esgotado aguardando resposta.");
+            });
+        }, 90, TimeUnit.SECONDS);
+    }
+
+    private void finishHotReloadUi() {
+        hotReloadUiTicket.incrementAndGet();
+        hotReloadBusy.set(false);
+        runOnUiThread(() -> {
+            hideProgress(HOT_RELOAD_PROGRESS_ID);
+            debugToolbar.finishHotReloadBusy(isHotReloadButtonEnabledNow());
+            refreshHotReloadButton();
+        });
+    }
+
+    private void refreshHotReloadButton() {
+        boolean visible = isHotReloadButtonVisible();
+        boolean enabled = isHotReloadButtonEnabledNow();
+        requestSetHotReloadButtonVisible(visible);
+        requestSetHotReloadButtonEnabled(enabled);
+        debugToolbar.setHotReloadEnabled(enabled);
+    }
+
+    private boolean isHotReloadButtonEnabledNow() {
+        return isHotReloadButtonVisible()
+                && debugActive.get()
+                && runSupport.isDebugging()
+                && !hotReloadBusy.get();
+    }
+
+    private boolean isHotReloadButtonVisible() {
+        Path project = projectPath;
+        if (project == null || !TargetFramework.canRunOnHost(project)) {
+            return false;
+        }
+        RunConfigurationData data = selectedRunConfig;
+        return data == null || DotnetRunSupport.isRunType(data) || DotnetRunSupport.isCurrentFileType(data);
     }
 
     private void clearDebugLine() {
@@ -2663,11 +2824,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void stop(RunConfigurationData data) throws Exception {
-        runOnUiThread(() -> {
-            requestSetHotReloadButtonVisible(false);
-            requestSetHotReloadButtonEnabled(false);
-        });
         runSupport.stop(data);
+        debugFinished();
     }
 
     @Override
@@ -2687,6 +2845,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
             requestSetRunButtonEnabled(true);
             requestSetDebugButtonEnabled(debuggable);
+            refreshHotReloadButton();
         });
     }
 
@@ -2701,6 +2860,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         SwingUtilities.invokeLater(() -> {
             requestSetRunButtonEnabled(ok);
             requestSetDebugButtonEnabled(ok);
+            refreshHotReloadButton();
         });
     }
 
@@ -2729,7 +2889,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public ProjectTreeNode resolveProjectTreeReorganization(ProjectTreeNode currentRoot) {
-        return DotnetProjectConventions.hideRootBuildArtifacts(currentRoot);
+        return DotnetProjectConventions.applyTreeLayout(currentRoot, currentTreeLayout());
     }
 
     @Override
@@ -2739,7 +2899,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (DotnetProjectConventions.isInsideHiddenArtifact(projectPath, changed)) {
             return null;
         }
+        if (currentTreeLayout() == TreeLayout.VISUAL_STUDIO) {
+            return DotnetProjectConventions.buildFilesystemTree(projectPath);
+        }
         return DotnetProjectConventions.hideRootBuildArtifacts(partialNode);
+    }
+
+    private TreeLayout currentTreeLayout() {
+        DotnetPluginSettings settings = ensurePluginSettings();
+        return settings != null ? settings.getTreeLayout() : TreeLayout.DEFAULT;
     }
 
     @Override
@@ -2757,29 +2925,50 @@ public class DotnetIdeAdapter extends IdeAdapter {
         Path selected = selectedPaths.get(0);
         if (selected == null) return;
 
+        Path buildTarget = resolveMenuBuildTarget(selected);
+
         if (Files.isDirectory(selected)) {
             menu.into("tree.new").item("C# Class / Interface...", newCSharpItemIcon(), e -> openNewCSharpItem(selected));
+        } else if (buildTarget != null && !isSolution(buildTarget)) {
+            Path projectDir = buildTarget.getParent();
+            if (projectDir != null) {
+                menu.into("tree.new").item("C# Class / Interface...", newCSharpItemIcon(), e -> openNewCSharpItem(projectDir));
+            }
         }
-        if (!isBuildTarget(selected)) {
+
+        if (buildTarget == null) {
             return;
         }
 
-        boolean solution = isSolution(selected);
+        boolean solution = isSolution(buildTarget);
         String suffix = solution ? " Solução" : " Projeto";
         menu.separator();
         menu.item(solution ? "Gerenciar pacotes NuGet da Solução" : "Gerenciar pacotes NuGet",
-                e -> openNuGetManager(selected));
+                e -> openNuGetManager(buildTarget));
         if (!solution) {
             menu.item("Adicionar referência de projeto...",
-                    e -> openProjectReferenceManager(selected));
+                    e -> openProjectReferenceManager(buildTarget));
         }
         menu.separator();
         menu.item("Compilar" + suffix,
-                e -> runDotnetOnTarget(selected, "Compilar", List.of("build")));
+                e -> runDotnetOnTarget(buildTarget, "Compilar", List.of("build")));
         menu.item("Recompilar" + suffix,
-                e -> runDotnetOnTarget(selected, "Recompilar", List.of("build", "--no-incremental")));
+                e -> runDotnetOnTarget(buildTarget, "Recompilar", List.of("build", "--no-incremental")));
         menu.item("Limpar" + suffix,
-                e -> runDotnetOnTarget(selected, "Limpar", List.of("clean")));
+                e -> runDotnetOnTarget(buildTarget, "Limpar", List.of("clean")));
+    }
+
+    private Path resolveMenuBuildTarget(Path selected) {
+        if (selected == null) {
+            return null;
+        }
+        if (isBuildTarget(selected)) {
+            return selected;
+        }
+        if (currentTreeLayout() == TreeLayout.VISUAL_STUDIO && Files.isDirectory(selected)) {
+            return DotnetProjectConventions.findSolutionOrProjectFile(selected);
+        }
+        return null;
     }
 
     private Icon newCSharpItemIcon() {

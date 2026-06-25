@@ -130,6 +130,8 @@ public final class DotnetLspService {
     private volatile boolean workspaceSymbolSupported;
     private volatile boolean semanticTokensSupported;
     private volatile boolean inlayHintSupported;
+    private volatile boolean onTypeFormattingSupported;
+    private volatile Set<Character> onTypeTriggerCharacters = Set.of();
     private volatile List<String> semanticTokenTypeLegend = List.of();
     private volatile List<String> semanticTokenModifierLegend = List.of();
 
@@ -756,6 +758,34 @@ public final class DotnetLspService {
             return formattedFull.substring(startOffset, newEnd);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    public boolean isOnTypeFormattingSupported() {
+        return isRunning() && onTypeFormattingSupported;
+    }
+
+    public boolean isOnTypeTrigger(char ch) {
+        return onTypeTriggerCharacters.contains(ch);
+    }
+
+    public List<TextEdit> onTypeFormatting(Path filePath, String text, int line, int character,
+                                           String ch, int tabSize, boolean insertSpaces) {
+        if (!canUseLsp(filePath) || !onTypeFormattingSupported || ch == null || ch.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode result = client.sendRequest("textDocument/onTypeFormatting", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "position", LspJsonRpcClient.position(line, character),
+                    "ch", ch,
+                    "options", Map.of("tabSize", tabSize, "insertSpaces", insertSpaces)
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return parseTextEdits(result);
+        } catch (Exception e) {
+            return Collections.emptyList();
         }
     }
 
@@ -1520,12 +1550,39 @@ public final class DotnetLspService {
         signatureHelpSupported = supportsProvider(node(capabilities, "signatureHelpProvider"));
         workspaceSymbolSupported = supportsProvider(node(capabilities, "workspaceSymbolProvider"));
         inlayHintSupported = supportsProvider(node(capabilities, "inlayHintProvider"));
+        captureOnTypeFormatting(node(capabilities, "documentOnTypeFormattingProvider"));
         captureSemanticTokensLegend(node(capabilities, "semanticTokensProvider"));
         client.sendNotification("initialized", Map.of());
     }
 
     private static JsonNode node(JsonNode capabilities, String field) {
         return capabilities == null ? null : capabilities.get(field);
+    }
+
+    private void captureOnTypeFormatting(JsonNode provider) {
+        onTypeFormattingSupported = false;
+        onTypeTriggerCharacters = Set.of();
+        if (provider == null || !provider.isObject()) {
+            return;
+        }
+        Set<Character> triggers = new HashSet<>();
+        String first = provider.path("firstTriggerCharacter").asText("");
+        if (!first.isEmpty()) {
+            triggers.add(first.charAt(0));
+        }
+        JsonNode more = provider.get("moreTriggerCharacter");
+        if (more != null && more.isArray()) {
+            for (JsonNode ch : more) {
+                String value = ch.asText("");
+                if (!value.isEmpty()) {
+                    triggers.add(value.charAt(0));
+                }
+            }
+        }
+        if (!triggers.isEmpty()) {
+            onTypeFormattingSupported = true;
+            onTypeTriggerCharacters = Set.copyOf(triggers);
+        }
     }
 
     private void captureSemanticTokensLegend(JsonNode provider) {
@@ -1571,6 +1628,7 @@ public final class DotnetLspService {
         textDocument.put("documentSymbol", Map.of("dynamicRegistration", false, "hierarchicalDocumentSymbolSupport", true));
         textDocument.put("rename", Map.of("dynamicRegistration", false, "prepareSupport", false));
         textDocument.put("formatting", Map.of("dynamicRegistration", false));
+        textDocument.put("onTypeFormatting", Map.of("dynamicRegistration", false));
         textDocument.put("codeAction", Map.of("dynamicRegistration", false));
         textDocument.put("semanticTokens", Map.of(
                 "dynamicRegistration", false,

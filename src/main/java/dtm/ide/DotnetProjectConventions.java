@@ -2,12 +2,18 @@ package dtm.ide;
 
 import dtm.ide.api.project.tree.ProjectTreeNode;
 import dtm.ide.run.TargetFramework;
+import dtm.ide.settings.TreeLayout;
 import dtm.stools.component.panels.editor.code.prototype.folding.FoldRule;
+import dtm.stools.utils.ImageUtils;
 
+import javax.swing.Icon;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -33,7 +39,11 @@ final class DotnetProjectConventions {
     );
 
     static final Set<String> CSHARP_EXTENSIONS = Set.of(
-            ".cs", ".csx", ".cshtml", ".razor"
+            ".cs", ".csx"
+    );
+
+    static final Set<String> RAZOR_EXTENSIONS = Set.of(
+            ".cshtml", ".razor"
     );
 
     static final Set<String> PROJECT_XML_EXTENSIONS = Set.of(
@@ -53,6 +63,35 @@ final class DotnetProjectConventions {
             "obj",
             ".vs"
     );
+
+    private static final Set<String> VISUAL_STUDIO_HIDDEN = Set.of(
+            "bin",
+            "obj",
+            ".vs",
+            ".orion",
+            ".git",
+            ".idea"
+    );
+
+    private static final Set<String> SOLUTION_EXTENSIONS = Set.of(".sln", ".slnx");
+
+    private static final Set<String> VS_PROJECT_EXTENSIONS = Set.of(".csproj", ".vbproj", ".fsproj");
+
+    private static final Set<String> SOLUTION_LEVEL_FILES = Set.of(
+            ".gitignore",
+            ".gitattributes",
+            ".gitmodules",
+            ".editorconfig",
+            ".dockerignore",
+            "global.json",
+            "nuget.config",
+            "directory.build.props",
+            "directory.build.targets",
+            "directory.packages.props"
+    );
+
+    private static volatile Icon solutionIcon;
+    private static volatile Icon projectIcon;
 
     private DotnetProjectConventions() {
     }
@@ -194,12 +233,359 @@ final class DotnetProjectConventions {
         return node;
     }
 
+    static ProjectTreeNode applyTreeLayout(ProjectTreeNode root, TreeLayout layout) {
+        if (root == null) {
+            return null;
+        }
+        if (layout == TreeLayout.VISUAL_STUDIO) {
+            ProjectTreeNode reorganized = buildVisualStudioLayout(root);
+            return reorganized != null ? reorganized : hideRootBuildArtifacts(root);
+        }
+        return hideRootBuildArtifacts(root);
+    }
+
+    static ProjectTreeNode buildFilesystemTree(Path path) {
+        if (path == null) {
+            return null;
+        }
+        Path normalized = path.toAbsolutePath().normalize();
+        ProjectTreeNode node = ProjectTreeNode.of(normalized);
+        if (!Files.isDirectory(normalized)) {
+            return node;
+        }
+        List<ProjectTreeNode> children = new ArrayList<>();
+        try (Stream<Path> entries = Files.list(normalized)) {
+            for (Path entry : (Iterable<Path>) entries::iterator) {
+                if (!isVisibleFilesystemPath(entry)) {
+                    continue;
+                }
+                ProjectTreeNode child = buildFilesystemTree(entry);
+                if (child != null) {
+                    children.add(child);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        node.children(children);
+        return node;
+    }
+
+    private static boolean isVisibleFilesystemPath(Path path) {
+        if (path == null || path.getFileName() == null) {
+            return false;
+        }
+        if (VISUAL_STUDIO_HIDDEN.contains(path.getFileName().toString())) {
+            return false;
+        }
+        try {
+            return !Files.isHidden(path);
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    static Path findSolutionOrProjectFile(Path directory) {
+        if (directory == null || !Files.isDirectory(directory)) {
+            return null;
+        }
+        Path projectFile = null;
+        try (Stream<Path> entries = Files.list(directory)) {
+            for (Path entry : (Iterable<Path>) entries::iterator) {
+                if (!Files.isRegularFile(entry)) {
+                    continue;
+                }
+                if (hasExtension(entry, SOLUTION_EXTENSIONS)) {
+                    return entry;
+                }
+                if (projectFile == null && hasExtension(entry, VS_PROJECT_EXTENSIONS)) {
+                    projectFile = entry;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return projectFile;
+    }
+
+    private static ProjectTreeNode buildVisualStudioLayout(ProjectTreeNode root) {
+        Path rootPath = root.getPath();
+        if (rootPath == null) {
+            return null;
+        }
+
+        deepHide(root, VISUAL_STUDIO_HIDDEN);
+
+        if (!containsProject(root)) {
+            return hideRootBuildArtifacts(root);
+        }
+
+        Path solutionFile = findSolutionFile(root);
+        Path rootProjectFile = findProjectFile(root);
+
+        if (rootProjectFile != null) {
+            if (solutionFile == null) {
+                return buildRootProjectNode(root, rootPath, rootProjectFile);
+            }
+            return buildSolutionWithRootProject(root, rootPath, rootProjectFile, solutionFile);
+        }
+
+        ProjectTreeNode newRoot = ProjectTreeNode.of(
+                rootPath,
+                solutionFile != null ? labelOf(solutionFile) : labelOf(rootPath)
+        );
+        if (solutionFile != null) {
+            applyLayoutIcon(newRoot, solutionIcon());
+        }
+
+        List<ProjectTreeNode> children = new ArrayList<>();
+        for (ProjectTreeNode child : root.getChildren()) {
+            Path childPath = child.getPath();
+            if (childPath == null || childPath.getFileName() == null) {
+                continue;
+            }
+            if (Files.isDirectory(childPath)) {
+                List<ProjectTreeNode> projects = new ArrayList<>();
+                collectTopmostProjects(child, projects);
+                if (projects.isEmpty()) {
+                    children.add(child);
+                } else {
+                    for (ProjectTreeNode project : projects) {
+                        children.add(buildProjectNode(project, findProjectFile(project), solutionFile));
+                    }
+                }
+            } else {
+                if (solutionFile != null && samePath(childPath, solutionFile)) {
+                    continue;
+                }
+                children.add(child);
+            }
+        }
+
+        sortNodes(children);
+        newRoot.children(children);
+        return newRoot;
+    }
+
+    private static ProjectTreeNode buildSolutionWithRootProject(ProjectTreeNode root, Path rootPath,
+                                                               Path projectFile, Path solutionFile) {
+        ProjectTreeNode newRoot = ProjectTreeNode.of(rootPath, labelOf(solutionFile));
+        applyLayoutIcon(newRoot, solutionIcon());
+
+        List<ProjectTreeNode> projectChildren = new ArrayList<>();
+        List<ProjectTreeNode> solutionChildren = new ArrayList<>();
+        for (ProjectTreeNode child : root.getChildren()) {
+            Path childPath = child.getPath();
+            if (childPath == null) {
+                continue;
+            }
+            if (samePath(childPath, projectFile) || samePath(childPath, solutionFile)) {
+                continue;
+            }
+            if (isSolutionLevelFile(childPath)) {
+                solutionChildren.add(child);
+            } else {
+                projectChildren.add(child);
+            }
+        }
+
+        sortNodes(projectChildren);
+        ProjectTreeNode projectNode = ProjectTreeNode.of(projectFile, labelOf(projectFile));
+        projectNode.children(projectChildren);
+
+        solutionChildren.add(projectNode);
+        sortNodes(solutionChildren);
+        newRoot.children(solutionChildren);
+        return newRoot;
+    }
+
+    private static boolean isSolutionLevelFile(Path path) {
+        if (path == null || path.getFileName() == null || !Files.isRegularFile(path)) {
+            return false;
+        }
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (SOLUTION_LEVEL_FILES.contains(name)) {
+            return true;
+        }
+        return name.startsWith("readme") || name.startsWith("license") || name.startsWith("licence");
+    }
+
+    private static ProjectTreeNode buildRootProjectNode(ProjectTreeNode root, Path rootPath, Path projectFile) {
+        ProjectTreeNode node = ProjectTreeNode.of(rootPath, labelOf(projectFile));
+        applyLayoutIcon(node, projectIcon());
+        List<ProjectTreeNode> children = new ArrayList<>(root.getChildren());
+        sortNodes(children);
+        node.children(children);
+        return node;
+    }
+
+    private static ProjectTreeNode buildProjectNode(ProjectTreeNode projectFolder, Path projectFile, Path solutionFile) {
+        Path nodePath = projectFile != null ? projectFile : projectFolder.getPath();
+        ProjectTreeNode node = ProjectTreeNode.of(nodePath, labelOf(nodePath));
+
+        List<ProjectTreeNode> children = new ArrayList<>();
+        for (ProjectTreeNode child : projectFolder.getChildren()) {
+            Path childPath = child.getPath();
+            if (childPath == null) {
+                continue;
+            }
+            if (projectFile != null && samePath(childPath, projectFile)) {
+                continue;
+            }
+            if (solutionFile != null && samePath(childPath, solutionFile)) {
+                continue;
+            }
+            children.add(child);
+        }
+
+        sortNodes(children);
+        node.children(children);
+        return node;
+    }
+
+    private static void collectTopmostProjects(ProjectTreeNode node, List<ProjectTreeNode> out) {
+        if (node == null) {
+            return;
+        }
+        if (isProjectFolder(node)) {
+            out.add(node);
+            return;
+        }
+        for (ProjectTreeNode child : node.getChildren()) {
+            if (child != null && child.getPath() != null && Files.isDirectory(child.getPath())) {
+                collectTopmostProjects(child, out);
+            }
+        }
+    }
+
+    private static boolean containsProject(ProjectTreeNode node) {
+        if (node == null) {
+            return false;
+        }
+        if (isProjectFolder(node)) {
+            return true;
+        }
+        for (ProjectTreeNode child : node.getChildren()) {
+            if (child != null && child.getPath() != null && Files.isDirectory(child.getPath())
+                    && containsProject(child)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isProjectFolder(ProjectTreeNode node) {
+        return findProjectFile(node) != null;
+    }
+
+    private static Path findProjectFile(ProjectTreeNode node) {
+        if (node == null) {
+            return null;
+        }
+        for (ProjectTreeNode child : node.getChildren()) {
+            Path path = child.getPath();
+            if (path != null && Files.isRegularFile(path) && hasExtension(path, VS_PROJECT_EXTENSIONS)) {
+                return path;
+            }
+        }
+        return null;
+    }
+
+    private static Path findSolutionFile(ProjectTreeNode root) {
+        for (ProjectTreeNode child : root.getChildren()) {
+            Path path = child.getPath();
+            if (path != null && Files.isRegularFile(path) && hasExtension(path, SOLUTION_EXTENSIONS)) {
+                return path;
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasExtension(Path path, Set<String> extensions) {
+        String extension = extensionOf(path);
+        return extension != null && extensions.contains(extension);
+    }
+
+    private static void deepHide(ProjectTreeNode node, Set<String> names) {
+        if (node == null) {
+            return;
+        }
+        node.removeIf(child -> {
+            Path path = child.getPath();
+            return path != null && path.getFileName() != null
+                    && names.contains(path.getFileName().toString());
+        }, true);
+    }
+
+    private static void sortNodes(List<ProjectTreeNode> nodes) {
+        nodes.sort(Comparator
+                .comparing((ProjectTreeNode node) -> !isContainerNode(node))
+                .thenComparing(node -> labelOf(node.getPath()), String.CASE_INSENSITIVE_ORDER));
+    }
+
+    private static boolean isContainerNode(ProjectTreeNode node) {
+        if (node == null) {
+            return false;
+        }
+        if (node.hasCustomChildren()) {
+            return true;
+        }
+        Path path = node.getPath();
+        return path != null && Files.isDirectory(path);
+    }
+
+    private static void applyLayoutIcon(ProjectTreeNode node, Icon icon) {
+        if (icon != null) {
+            node.icon(icon);
+        }
+    }
+
+    private static Icon solutionIcon() {
+        Icon icon = solutionIcon;
+        if (icon == null) {
+            icon = loadBundledIcon("imgs/dotnet/slnSlnx.svg");
+            solutionIcon = icon;
+        }
+        return icon;
+    }
+
+    private static Icon projectIcon() {
+        Icon icon = projectIcon;
+        if (icon == null) {
+            icon = loadBundledIcon("imgs/dotnet/csProj.svg");
+            projectIcon = icon;
+        }
+        return icon;
+    }
+
+    private static Icon loadBundledIcon(String resource) {
+        try {
+            return ImageUtils.getIconByResource(DotnetProjectConventions.class, resource)
+                    .map(icon -> ImageUtils.resizeIcon(icon, 20, 20))
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String labelOf(Path path) {
+        if (path == null) {
+            return "";
+        }
+        Path fileName = path.getFileName();
+        return fileName == null ? path.toString() : fileName.toString();
+    }
+
     static Collection<FoldRule> foldRules(Path filePath) {
         if (isCSharpLike(filePath)) {
             return List.of(
                     FoldRule.pair('{', '}'),
                     FoldRule.pair("/*", "*/"),
                     FoldRule.pair("#region", "#endregion")
+            );
+        }
+        if (isRazorLike(filePath)) {
+            return List.of(
+                    FoldRule.xmlTags(),
+                    FoldRule.pair('{', '}')
             );
         }
         if (isProjectXmlLike(filePath)) {
@@ -213,13 +599,18 @@ final class DotnetProjectConventions {
         return extension != null && CSHARP_EXTENSIONS.contains(extension);
     }
 
+    static boolean isRazorLike(Path filePath) {
+        String extension = extensionOf(filePath);
+        return extension != null && RAZOR_EXTENSIONS.contains(extension);
+    }
+
     static boolean isProjectXmlLike(Path filePath) {
         String extension = extensionOf(filePath);
         return extension != null && PROJECT_XML_EXTENSIONS.contains(extension);
     }
 
     static boolean isHighlightable(Path filePath) {
-        return isCSharpLike(filePath);
+        return isCSharpLike(filePath) || isRazorLike(filePath);
     }
 
     static String lineCommentPrefix(Path filePath) {
