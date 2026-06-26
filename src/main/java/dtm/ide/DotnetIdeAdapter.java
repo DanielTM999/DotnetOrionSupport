@@ -15,6 +15,7 @@ import dtm.ide.api.extension.settings.PluginSettingsPage;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
 import dtm.ide.api.project.editor.*;
+import dtm.ide.api.extension.runconfig.RunConfigurationContribution;
 import dtm.ide.api.extension.runconfig.RunConfigurationData;
 import dtm.ide.api.extension.runconfig.RunExecutionContext;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
@@ -44,6 +45,7 @@ import dtm.ide.run.DebugWatchPanel;
 import dtm.ide.run.DebugVar;
 import dtm.ide.run.DotnetDebugView;
 import dtm.ide.run.DotnetHotReloadResult;
+import dtm.ide.run.DotnetRunConfigurationContribution;
 import dtm.ide.run.DotnetRunSupport;
 import dtm.ide.run.TargetFramework;
 import dtm.ide.sdk.DotnetSdkService;
@@ -55,6 +57,7 @@ import dtm.ide.ui.DotnetTestExplorerPanel;
 import dtm.ide.ui.NewCSharpItemPanel;
 import dtm.ide.ui.NuGetManagerPanel;
 import dtm.ide.ui.ProjectReferenceDialog;
+import dtm.ide.ui.RunProjectChooserPanel;
 import dtm.ide.ui.SolutionReferenceDialog;
 import dtm.ide.wizard.NewSolutionProjectPanel;
 import dtm.request_actions.http.download.core.DownloadObserver;
@@ -79,7 +82,6 @@ import dtm.stools.component.panels.dock.DockRegion;
 import dtm.stools.component.popup.ModernDialog;
 import dtm.stools.utils.ImageUtils;
 import lombok.extern.slf4j.Slf4j;
-
 import javax.swing.Icon;
 import javax.swing.JButton;
 import javax.swing.JComponent;
@@ -170,6 +172,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private final DebugExceptionPopup debugExceptionPopup = new DebugExceptionPopup();
     private final DebugToolbar debugToolbar = new DebugToolbar();
     private final AtomicBoolean debugActive = new AtomicBoolean(false);
+    private final AtomicBoolean runActive = new AtomicBoolean(false);
+    private final AtomicLong runWatchTicket = new AtomicLong();
     private final AtomicBoolean hotReloadBusy = new AtomicBoolean(false);
     private final AtomicLong hotReloadUiTicket = new AtomicLong();
     private volatile JTabbedPane debugTabs;
@@ -294,6 +298,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runSupport.bindBreakOnAllExceptions(() -> ensurePluginSettings().isBreakOnAllExceptions());
         runSupport.bindDebugSessionStateListener(active -> runOnUiThread(this::refreshHotReloadButton));
         runSupport.bindHotReloadResultListener(result -> runOnUiThread(() -> handleHotReloadResult(result)));
+        runSupport.bindRunnableProjectChooser(this::chooseRunnableProject);
         if (projectPath != null) {
             boolean canRun = TargetFramework.canRunOnHost(projectPath);
             SwingUtilities.invokeLater(() -> {
@@ -804,7 +809,34 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
-        return service.complete(context.filePath(), context.text(), context.caretLine(), context.caretCol());
+        List<AutoCompleteItem> items = service.complete(
+                context.filePath(), context.text(), context.caretLine(), context.caretCol());
+        return filterCompletionsByPrefix(items, context.prefix());
+    }
+
+    private static List<AutoCompleteItem> filterCompletionsByPrefix(List<AutoCompleteItem> items, String prefix) {
+        if (items == null || items.isEmpty() || prefix == null || prefix.isBlank()) {
+            return items == null ? Collections.emptyList() : items;
+        }
+        String needle = prefix.toLowerCase(Locale.ROOT);
+        List<AutoCompleteItem> starts = new ArrayList<>();
+        List<AutoCompleteItem> contains = new ArrayList<>();
+        for (AutoCompleteItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            String label = item.label() == null ? "" : item.label().toLowerCase(Locale.ROOT);
+            if (label.startsWith(needle)) {
+                starts.add(item);
+            } else if (label.contains(needle)) {
+                contains.add(item);
+            }
+        }
+        if (starts.isEmpty() && contains.isEmpty()) {
+            return items;
+        }
+        starts.addAll(contains);
+        return starts;
     }
 
     @Override
@@ -2456,8 +2488,75 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     @Override
+    public List<RunConfigurationContribution> getRunConfigurationContributions() {
+        return List.of(new DotnetRunConfigurationContribution(() -> projectPath));
+    }
+
+    @Override
     public RunProcessHandle launch(RunConfigurationData data, RunExecutionContext context) throws Exception {
-        return runSupport.launch(data, context);
+        RunProcessHandle handle = runSupport.launch(data, context);
+        trackRunProcess(data, handle);
+        return handle;
+    }
+
+    private Path chooseRunnableProject(List<Path> projects) {
+        if (projects == null || projects.isEmpty()) {
+            return null;
+        }
+        if (projects.size() == 1) {
+            return projects.get(0);
+        }
+        Path[] result = new Path[1];
+        Runnable prompt = () -> {
+            RunProjectChooserPanel panel = new RunProjectChooserPanel(projects);
+            result[0] = createModernComponentDialogBuilder(Path.class)
+                    .title("Selecionar projeto para executar")
+                    .draggable(true)
+                    .showIcon(false)
+                    .accentColor(new Color(59, 130, 246))
+                    .confirmText("Executar")
+                    .cancelText("Cancelar")
+                    .enterConfirms(true)
+                    .component(panel)
+                    .result(ctx -> panel.getSelected())
+                    .show();
+        };
+        try {
+            if (SwingUtilities.isEventDispatchThread()) {
+                prompt.run();
+            } else {
+                SwingUtilities.invokeAndWait(prompt);
+            }
+        } catch (Exception e) {
+            log.debug("Falha ao escolher projeto de execução: {}", e.getMessage());
+            return null;
+        }
+        return result[0];
+    }
+
+    private void trackRunProcess(RunConfigurationData data, RunProcessHandle handle) {
+        boolean runnable = DotnetRunSupport.isRunType(data) || DotnetRunSupport.isCurrentFileType(data);
+        if (!runnable || handle == null || !handle.isAlive()) {
+            return;
+        }
+        runActive.set(true);
+        long ticket = runWatchTicket.incrementAndGet();
+        runOnUiThread(this::refreshHotReloadButton);
+        Thread watcher = new Thread(() -> {
+            try {
+                while (handle.isAlive()) {
+                    Thread.sleep(400);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (runWatchTicket.get() == ticket) {
+                runActive.set(false);
+                runOnUiThread(this::refreshHotReloadButton);
+            }
+        }, "dotnet-run-watch");
+        watcher.setDaemon(true);
+        watcher.start();
     }
 
     @Override
@@ -2833,6 +2932,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean isHotReloadButtonVisible() {
+        if (!runActive.get() && !debugActive.get()) {
+            return false;
+        }
         Path project = projectPath;
         if (project == null || !TargetFramework.canRunOnHost(project)) {
             return false;
@@ -2854,6 +2956,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public void stop(RunConfigurationData data) throws Exception {
         runSupport.stop(data);
+        runWatchTicket.incrementAndGet();
+        runActive.set(false);
         debugFinished();
     }
 

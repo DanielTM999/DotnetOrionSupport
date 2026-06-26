@@ -33,6 +33,7 @@ public final class DotnetRunSupport {
 
     public static final String PROP_CONFIGURATION = "configuration";
     public static final String PROP_LAUNCH_PROFILE = "launchProfile";
+    public static final String PROP_PROJECT = "projectFile";
 
     private static final Pattern MAIN_PATTERN = Pattern.compile(
             "\\bstatic\\s+(?:async\\s+)?[\\w<>\\[\\].,\\s]*?\\bMain\\s*\\(");
@@ -49,6 +50,7 @@ public final class DotnetRunSupport {
     private volatile BooleanSupplier breakOnAllExceptionsSupplier;
     private volatile Consumer<Boolean> debugSessionStateListener;
     private volatile Consumer<DotnetHotReloadResult> hotReloadResultListener;
+    private volatile Function<List<Path>, Path> runnableProjectChooser;
 
     private final AtomicReference<DotnetDapDebugSession> debugSession = new AtomicReference<>();
     private volatile DotnetDebugView debugView;
@@ -95,6 +97,10 @@ public final class DotnetRunSupport {
 
     public void bindHotReloadResultListener(Consumer<DotnetHotReloadResult> listener) {
         this.hotReloadResultListener = listener;
+    }
+
+    public void bindRunnableProjectChooser(Function<List<Path>, Path> chooser) {
+        this.runnableProjectChooser = chooser;
     }
 
     public static boolean isCurrentFileType(RunConfigurationData data) {
@@ -167,13 +173,39 @@ public final class DotnetRunSupport {
 
         if (TargetFramework.canRunAnyOnHost(project)) {
             list.add(config(TYPE_RUN, ".NET: Executar"));
-            Path projectFile = TargetFramework.findPrimaryProjectFile(project);
-            for (LaunchSettings.Profile profile : LaunchSettings.runnableProfiles(projectFile)) {
-                list.add(runConfigWithProfile(profile.name()));
+            List<Path> runnable = TargetFramework.findRunnableProjectFiles(project);
+            if (runnable.size() > 1) {
+                for (Path projectFile : runnable) {
+                    list.add(runConfigForProject(projectFile));
+                }
+            } else {
+                Path projectFile = runnable.size() == 1
+                        ? runnable.get(0)
+                        : TargetFramework.findPrimaryProjectFile(project);
+                for (LaunchSettings.Profile profile : LaunchSettings.runnableProfiles(projectFile)) {
+                    list.add(runConfigWithProfile(profile.name()));
+                }
             }
         }
         list.add(config(TYPE_TEST, ".NET: Testar"));
         return list;
+    }
+
+    private static RunConfigurationData runConfigForProject(Path projectFile) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put(PROP_PROJECT, projectFile.toString());
+        return RunConfigurationData.builder()
+                .type(TYPE_RUN)
+                .title(".NET: Executar — " + projectDisplayName(projectFile))
+                .properties(properties)
+                .build();
+    }
+
+    private static String projectDisplayName(Path projectFile) {
+        if (projectFile == null || projectFile.getFileName() == null) {
+            return "projeto";
+        }
+        return projectFile.getFileName().toString().replaceFirst("(?i)\\.(csproj|vbproj|fsproj)$", "");
     }
 
     private static RunConfigurationData config(String type, String title) {
@@ -206,30 +238,89 @@ public final class DotnetRunSupport {
             return launchCurrentFile(project, configuration);
         }
 
-        Optional<String> runnableTfm = TargetFramework.selectRunnableTfm(project);
-        if (TYPE_RUN.equals(type) && runnableTfm.isEmpty()) {
-            return DotnetBuild.errorHandle(runBlockedMessage(project));
-        }
-
         Optional<Path> dotnet = ensureDotnet();
         if (dotnet.isEmpty()) {
             return DotnetBuild.errorHandle("dotnet não encontrado. Instale o .NET SDK ou aguarde o download automático.");
         }
 
         String launchProfile = launchProfileOf(data);
-        Path projectFile = TargetFramework.findPrimaryProjectFile(project);
         return switch (type) {
-            case TYPE_RUN -> launchRun(project, dotnet.get(), configuration, projectFile, launchProfile);
+            case TYPE_RUN -> {
+                Path projectFile = resolveTargetProjectFile(data, project);
+                if (projectFile == null) {
+                    yield DotnetBuild.errorHandle(runBlockedMessage(project));
+                }
+                Path runDir = parentOr(projectFile, project);
+                Optional<String> runnableTfm = runnableTfmOf(projectFile);
+                if (runnableTfm.isEmpty()) {
+                    yield DotnetBuild.errorHandle(runBlockedMessage(runDir));
+                }
+                yield launchRun(runDir, dotnet.get(), configuration, projectFile, launchProfile,
+                        runnableTfm.orElse(null));
+            }
             case TYPE_TEST -> build.test(project, dotnet.get(), configuration);
             default -> build.build(project, dotnet.get(), configuration);
         };
     }
 
     private RunProcessHandle launchRun(Path project, Path dotnet, String configuration,
-                                       Path projectFile, String launchProfile) {
-        String targetFramework = TargetFramework.selectRunnableTfm(project).orElse(null);
+                                       Path projectFile, String launchProfile, String targetFramework) {
         return build.buildThenRun(project, dotnet, configuration,
                 projectFile, targetFramework, launchProfile, outputPanels, runOutputFocus, null);
+    }
+
+    private Path resolveTargetProjectFile(RunConfigurationData data, Path projectDir) {
+        if (isCurrentFileType(data)) {
+            Path file = activeFileSupplier == null ? null : activeFileSupplier.get();
+            Path owner = TargetFramework.findProjectFileForSource(file, projectDir);
+            if (owner != null) {
+                return owner;
+            }
+        }
+        Path explicit = projectFileOf(data);
+        if (explicit != null && java.nio.file.Files.isRegularFile(explicit)) {
+            return explicit;
+        }
+        List<Path> runnable = TargetFramework.findRunnableProjectFiles(projectDir);
+        if (runnable.size() == 1) {
+            return runnable.get(0);
+        }
+        if (runnable.size() > 1) {
+            Function<List<Path>, Path> chooser = runnableProjectChooser;
+            Path chosen = chooser == null ? null : chooser.apply(runnable);
+            return chosen != null ? chosen : runnable.get(0);
+        }
+        return TargetFramework.findPrimaryProjectFile(projectDir);
+    }
+
+    private static Path parentOr(Path projectFile, Path fallback) {
+        if (projectFile != null && projectFile.getParent() != null) {
+            return projectFile.getParent();
+        }
+        return fallback;
+    }
+
+    private static Optional<String> runnableTfmOf(Path projectFile) {
+        return TargetFramework.selectRunnableTfm(TargetFramework.readTfms(projectFile), TargetFramework.isWindows());
+    }
+
+    private static Optional<String> runnableModernTfmOf(Path projectFile) {
+        return TargetFramework.selectRunnableModernTfm(TargetFramework.readTfms(projectFile), TargetFramework.isWindows());
+    }
+
+    private static Path projectFileOf(RunConfigurationData data) {
+        if (data == null || data.getProperties() == null) {
+            return null;
+        }
+        Object value = data.getProperties().get(PROP_PROJECT);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Path.of(value.toString()).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static String launchProfileOf(RunConfigurationData data) {
@@ -251,17 +342,22 @@ public final class DotnetRunSupport {
                     + ") não é o ponto de entrada do programa: não tem método Main nem top-level statements. "
                     + "Abra o arquivo do Program (com Main/top-level) ou use \".NET: Executar\".");
         }
-        Optional<String> runnableTfm = TargetFramework.selectRunnableModernTfm(project);
+        Path projectFile = TargetFramework.findProjectFileForSource(file, project);
+        if (projectFile == null) {
+            projectFile = TargetFramework.findPrimaryProjectFile(project);
+        }
+        Path runDir = parentOr(projectFile, project);
+        Optional<String> runnableTfm = runnableModernTfmOf(projectFile);
         if (runnableTfm.isEmpty()) {
-            return DotnetBuild.errorHandle(runBlockedMessage(project));
+            return DotnetBuild.errorHandle(runBlockedMessage(runDir));
         }
         Optional<Path> dotnet = ensureDotnet();
         if (dotnet.isEmpty()) {
             return DotnetBuild.errorHandle("dotnet não encontrado. Instale o .NET SDK ou aguarde o download automático.");
         }
 
-        return build.buildThenRun(project, dotnet.get(), configuration,
-                TargetFramework.findPrimaryProjectFile(project), runnableTfm.orElse(null), null,
+        return build.buildThenRun(runDir, dotnet.get(), configuration,
+                projectFile, runnableTfm.orElse(null), null,
                 outputPanels, runOutputFocus, null);
     }
 
@@ -270,9 +366,14 @@ public final class DotnetRunSupport {
         if (project == null) {
             return DotnetBuild.errorHandle("Projeto inválido: nenhum diretório de projeto disponível.");
         }
-        Optional<String> runnableTfm = TargetFramework.selectRunnableModernTfm(project);
-        if (runnableTfm.isEmpty()) {
+        Path projectFile = resolveTargetProjectFile(data, project);
+        if (projectFile == null) {
             return DotnetBuild.errorHandle(debugBlockedMessage(project));
+        }
+        Path runDir = parentOr(projectFile, project);
+        Optional<String> runnableTfm = runnableModernTfmOf(projectFile);
+        if (runnableTfm.isEmpty()) {
+            return DotnetBuild.errorHandle(debugBlockedMessage(runDir));
         }
         Optional<Path> dotnet = ensureDotnet();
         if (dotnet.isEmpty()) {
@@ -293,7 +394,6 @@ public final class DotnetRunSupport {
         }
 
         String configuration = configurationOf(data);
-        Path projectFile = TargetFramework.findPrimaryProjectFile(project);
         List<RunBreakpointData> breakpoints = context == null || context.getBreakpoints() == null
                 ? List.of()
                 : context.getBreakpoints();
@@ -306,7 +406,7 @@ public final class DotnetRunSupport {
         Map<String, String> launchEnv = new LinkedHashMap<>(profile == null ? Map.of() : profile.effectiveEnv());
         boolean breakOnAllExceptions = breakOnAllExceptionsSupplier != null
                 && breakOnAllExceptionsSupplier.getAsBoolean();
-        return build.buildThenDebug(project, dotnet.get(), netcoredbg, configuration, projectFile,
+        return build.buildThenDebug(runDir, dotnet.get(), netcoredbg, configuration, projectFile,
                 runnableTfm.orElse(null), breakpoints, debugView, outputPanels, runOutputFocus,
                 startupHook, this::setDebugSession, programArgs, launchEnv, breakOnAllExceptions);
     }

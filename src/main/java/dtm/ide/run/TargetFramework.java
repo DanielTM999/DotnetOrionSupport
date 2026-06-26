@@ -32,6 +32,11 @@ public final class TargetFramework {
     private static final Pattern SLNX_PROJECT = Pattern.compile(
             "<Project\\s+[^>]*Path\\s*=\\s*\"([^\"]+)\"", Pattern.CASE_INSENSITIVE);
 
+    private static final Pattern OUTPUT_TYPE =
+            Pattern.compile("<OutputType>\\s*([^<\\s]+)\\s*</OutputType>", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PROJECT_SDK =
+            Pattern.compile("<Project\\s+[^>]*Sdk\\s*=\\s*\"([^\"]+)\"", Pattern.CASE_INSENSITIVE);
+
     private static final Set<String> PROJECT_EXTENSIONS = Set.of(".csproj", ".vbproj", ".fsproj");
 
     private TargetFramework() {
@@ -197,6 +202,64 @@ public final class TargetFramework {
             tfms.add(legacy.group(1).trim());
         }
         return tfms;
+    }
+
+    public static boolean isExecutableProjectFile(Path projectFile) {
+        if (projectFile == null || !Files.isRegularFile(projectFile)) {
+            return false;
+        }
+        String content;
+        try {
+            content = Files.readString(projectFile);
+        } catch (Exception e) {
+            return false;
+        }
+        Matcher outputType = OUTPUT_TYPE.matcher(content);
+        if (outputType.find()) {
+            String type = outputType.group(1).trim().toLowerCase(Locale.ROOT);
+            return type.equals("exe") || type.equals("winexe");
+        }
+        Matcher sdk = PROJECT_SDK.matcher(content);
+        if (sdk.find()) {
+            String value = sdk.group(1).toLowerCase(Locale.ROOT);
+            return value.contains(".web") || value.contains(".worker");
+        }
+        return false;
+    }
+
+    public static List<Path> findRunnableProjectFiles(Path projectRoot) {
+        List<Path> result = new ArrayList<>();
+        for (Path projectFile : findProjectFiles(projectRoot)) {
+            if (isExecutableProjectFile(projectFile)
+                    && selectRunnableTfm(readTfms(projectFile), isWindows()).isPresent()) {
+                result.add(projectFile);
+            }
+        }
+        return result;
+    }
+
+    public static Path findProjectFileForSource(Path sourceFile, Path projectRoot) {
+        if (sourceFile == null) {
+            return null;
+        }
+        Path file = sourceFile.toAbsolutePath().normalize();
+        Path best = null;
+        int bestDepth = -1;
+        for (Path projectFile : findProjectFiles(projectRoot)) {
+            Path dir = projectFile.getParent();
+            if (dir == null) {
+                continue;
+            }
+            Path normalized = dir.toAbsolutePath().normalize();
+            if (file.startsWith(normalized)) {
+                int depth = normalized.getNameCount();
+                if (depth > bestDepth) {
+                    bestDepth = depth;
+                    best = projectFile;
+                }
+            }
+        }
+        return best;
     }
 
     public static Path findPrimaryProjectFile(Path projectRoot) {
