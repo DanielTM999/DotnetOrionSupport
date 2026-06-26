@@ -41,6 +41,22 @@ final class DotnetProjectScaffolder {
         return rootDir;
     }
 
+    Path createProjectOnly(DotnetTemplate template, Path projectDir, String name, String framework)
+            throws Exception {
+        Files.createDirectories(projectDir);
+        Path csproj = projectDir.resolve(name + ".csproj");
+        writeString(csproj, renderCsproj(template, framework));
+        for (SourceFile file : renderSources(template, name)) {
+            Path target = projectDir.resolve(file.path());
+            Path parent = target.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            writeString(target, file.content());
+        }
+        return csproj;
+    }
+
     private static void writeString(Path path, String content) throws Exception {
         Files.writeString(path, content, StandardCharsets.UTF_8);
     }

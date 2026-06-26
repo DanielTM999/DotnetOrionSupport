@@ -246,6 +246,13 @@ public final class TargetFramework {
         return new ArrayList<>(result);
     }
 
+    public static List<Path> findProjectFilesInSolution(Path solution) {
+        if (solution == null || !isSolutionFile(solution)) {
+            return List.of();
+        }
+        return parseSolutionProjects(solution);
+    }
+
     private static List<Path> solutionsIn(Path dir) {
         try (Stream<Path> list = Files.list(dir)) {
             return list.filter(Files::isRegularFile)

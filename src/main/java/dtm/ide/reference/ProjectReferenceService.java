@@ -53,6 +53,11 @@ public final class ProjectReferenceService {
                 List.of("remove", targetCsproj.toString(), "reference", refCsproj.toString()), log);
     }
 
+    public static int addProjectToSolution(Path dotnet, Path solution, Path csproj, OutputStream log) {
+        return runDotnet(dotnet, solution,
+                List.of("sln", solution.toString(), "add", csproj.toString()), log);
+    }
+
     private static int runDotnet(Path dotnet, Path target, List<String> args, OutputStream log) {
         if (dotnet == null || target == null) {
             writeLine(log, "[erro] dotnet ou projeto alvo indisponível.");

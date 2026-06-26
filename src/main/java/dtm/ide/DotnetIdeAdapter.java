@@ -55,6 +55,8 @@ import dtm.ide.ui.DotnetTestExplorerPanel;
 import dtm.ide.ui.NewCSharpItemPanel;
 import dtm.ide.ui.NuGetManagerPanel;
 import dtm.ide.ui.ProjectReferenceDialog;
+import dtm.ide.ui.SolutionReferenceDialog;
+import dtm.ide.wizard.NewSolutionProjectPanel;
 import dtm.request_actions.http.download.core.DownloadObserver;
 import dtm.stools.component.menu.bar.tree.MenuNode;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
@@ -203,6 +205,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private static final String NUGET_TAB_ID = "dotnet.nuget";
     private static final String PROJECT_CONFIG_TAB_ID = "dotnet.projectConfig";
     private static final String LSP_PROGRESS_ID = "dotnetLspStartup";
+    private static final long RESTORE_TIMEOUT_SECONDS = 180;
     private static final String LSP_ANALYZE_PROGRESS_ID = "dotnetLspAnalyze";
     private static final String NAV_PROGRESS_ID = "dotnetNavigate";
     private static final String HOT_RELOAD_PROGRESS_ID = "dotnetHotReload";
@@ -391,17 +394,29 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         SwingUtilities.invokeLater(() -> showProgress(LSP_PROGRESS_ID, "Restaurando pacotes (dotnet restore)..."));
+        Process process = null;
         try {
-            Process process = new ProcessBuilder(dotnet.toAbsolutePath().toString(), "restore")
+            process = new ProcessBuilder(dotnet.toAbsolutePath().toString(), "restore")
                     .directory(project.toFile())
                     .redirectErrorStream(true)
                     .start();
-            drainQuietly(process.getInputStream());
-            process.waitFor();
+            Process started = process;
+            Thread drain = new Thread(() -> drainQuietly(started.getInputStream()), "dotnet-restore-drain");
+            drain.setDaemon(true);
+            drain.start();
+            if (!process.waitFor(RESTORE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                log.warn("dotnet restore excedeu {}s e foi abortado.", RESTORE_TIMEOUT_SECONDS);
+                process.destroyForcibly();
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {
             log.debug("Falha ao restaurar pacotes do projeto: {}", e.getMessage());
+        } finally {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
+            SwingUtilities.invokeLater(() -> hideProgress(LSP_PROGRESS_ID));
         }
     }
 
@@ -2404,18 +2419,32 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 return;
             }
             SwingUtilities.invokeLater(() -> showProgress("dotnetRestore", "dotnet restore..."));
+            Process process = null;
             try {
-                Process process = new ProcessBuilder(
+                process = new ProcessBuilder(
                         sdk.ensureDotnet(project, progressListener()).toString(), "restore")
                         .directory(project.toFile())
                         .redirectErrorStream(true)
                         .start();
-                int code = process.waitFor();
-                SwingUtilities.invokeLater(() -> setStatusBarText(
-                        code == 0 ? "Pacotes restaurados." : "dotnet restore falhou (código " + code + ")."));
+                Process started = process;
+                Thread drain = new Thread(() -> drainQuietly(started.getInputStream()), "dotnet-restore-drain");
+                drain.setDaemon(true);
+                drain.start();
+                if (process.waitFor(RESTORE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    int code = process.exitValue();
+                    SwingUtilities.invokeLater(() -> setStatusBarText(
+                            code == 0 ? "Pacotes restaurados." : "dotnet restore falhou (código " + code + ")."));
+                } else {
+                    process.destroyForcibly();
+                    SwingUtilities.invokeLater(() -> setStatusBarText(
+                            "dotnet restore excedeu o tempo limite e foi abortado."));
+                }
             } catch (Exception e) {
                 SwingUtilities.invokeLater(() -> setStatusBarText("Falha no restore: " + e.getMessage()));
             } finally {
+                if (process != null && process.isAlive()) {
+                    process.destroyForcibly();
+                }
                 SwingUtilities.invokeLater(() -> hideProgress("dotnetRestore"));
             }
         });
@@ -2936,6 +2965,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
         }
 
+        if (buildTarget != null && isSolution(buildTarget)) {
+            menu.into("tree.new").item("Projeto .NET...", newProjectIcon(), e -> openNewSolutionProject(buildTarget));
+        }
+
         if (buildTarget == null) {
             return;
         }
@@ -2943,12 +2976,19 @@ public class DotnetIdeAdapter extends IdeAdapter {
         boolean solution = isSolution(buildTarget);
         String suffix = solution ? " Solução" : " Projeto";
         menu.separator();
+        if (solution) {
+            menu.item("Abrir arquivo da solução", e -> requestOpenFile(buildTarget));
+        }
         menu.item(solution ? "Gerenciar pacotes NuGet da Solução" : "Gerenciar pacotes NuGet",
                 e -> openNuGetManager(buildTarget));
-        if (!solution) {
-            menu.item("Adicionar referência de projeto...",
-                    e -> openProjectReferenceManager(buildTarget));
-        }
+        menu.item("Adicionar referência de projeto...",
+                e -> {
+                    if (solution) {
+                        openSolutionReferenceManager(buildTarget);
+                    } else {
+                        openProjectReferenceManager(buildTarget);
+                    }
+                });
         menu.separator();
         menu.item("Compilar" + suffix,
                 e -> runDotnetOnTarget(buildTarget, "Compilar", List.of("build")));
@@ -2975,6 +3015,115 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return ImageUtils.getIconByResource(DotnetIdeAdapter.class, "imgs/csharpNew.svg")
                 .map(icon -> ImageUtils.resizeIcon(icon, 16, 16))
                 .orElse(null);
+    }
+
+    private Icon newProjectIcon() {
+        return ImageUtils.getIconByResource(DotnetIdeAdapter.class, "imgs/dotnet/csProj.svg")
+                .map(icon -> ImageUtils.resizeIcon(icon, 16, 16))
+                .orElse(null);
+    }
+
+    private void openNewSolutionProject(Path solution) {
+        Path solutionDir = solution.getParent() != null ? solution.getParent() : projectPath;
+        if (solutionDir == null) {
+            setStatusBarText("Pasta da solução indisponível.");
+            return;
+        }
+        runOnUiThread(() -> {
+            NewSolutionProjectPanel panel = new NewSolutionProjectPanel(solutionDir);
+            NewSolutionProjectPanel.Spec spec = createModernComponentDialogBuilder(NewSolutionProjectPanel.Spec.class)
+                    .title("Novo projeto .NET na solução")
+                    .draggable(true)
+                    .showIcon(false)
+                    .accentColor(new Color(59, 130, 246))
+                    .confirmText("Criar")
+                    .cancelText("Cancelar")
+                    .enterConfirms(true)
+                    .component(panel)
+                    .result(ctx -> panel.getSpec())
+                    .show();
+            if (spec != null) {
+                createSolutionProject(solution, spec);
+            }
+        });
+    }
+
+    private void createSolutionProject(Path solution, NewSolutionProjectPanel.Spec spec) {
+        Thread thread = new Thread(() -> {
+            OutputPanelHandle panel = requestOutputPanel("dotnet");
+            SwingUtilities.invokeLater(() -> {
+                panel.clear();
+                panel.show();
+            });
+            OutputStream out = panel.getOutputStream();
+            Path csproj;
+            try {
+                csproj = spec.scaffold();
+                writeLine(out, "Projeto criado em " + csproj);
+            } catch (Exception e) {
+                writeLine(out, "[erro] Falha ao criar projeto: " + e.getMessage());
+                SwingUtilities.invokeLater(() -> setStatusBarText("Falha ao criar projeto: " + e.getMessage()));
+                return;
+            }
+            DotnetSdkService sdk = ensureSdkService();
+            Path dotnet;
+            try {
+                dotnet = sdk == null ? null : sdk.ensureDotnet(solution, progressListener());
+            } catch (Exception e) {
+                dotnet = null;
+            }
+            int code = -1;
+            if (dotnet != null) {
+                code = ProjectReferenceService.addProjectToSolution(dotnet, solution, csproj, out);
+            } else {
+                writeLine(out, "[erro] dotnet não encontrado para adicionar o projeto à solução.");
+            }
+            int result = code;
+            Path created = csproj;
+            SwingUtilities.invokeLater(() -> {
+                requestProjectTreeViewRefresh();
+                requestOpenFile(created);
+                if (result == 0) {
+                    setStatusBarText("Projeto adicionado à solução.");
+                } else {
+                    setStatusBarText("Projeto criado, mas falhou ao adicionar à solução.");
+                }
+            });
+        }, "dotnet-solution-new-project");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void openSolutionReferenceManager(Path solution) {
+        List<Path> projects = TargetFramework.findProjectFilesInSolution(solution).stream()
+                .map(p -> p.toAbsolutePath().normalize())
+                .distinct()
+                .toList();
+        if (projects.size() < 2) {
+            setStatusBarText("A solução precisa de pelo menos dois projetos para configurar referências.");
+            return;
+        }
+        runOnUiThread(() -> {
+            SolutionReferenceDialog panel = new SolutionReferenceDialog(projects);
+            Boolean ok = createModernComponentDialogBuilder(Boolean.class)
+                    .title("Gerenciar referências de projeto da solução")
+                    .draggable(true)
+                    .showIcon(false)
+                    .accentColor(new Color(59, 130, 246))
+                    .confirmText("Aplicar")
+                    .cancelText("Cancelar")
+                    .component(panel)
+                    .result(ctx -> Boolean.TRUE)
+                    .show();
+            if (ok != null) {
+                Path source = panel.getSourceProject();
+                if (source == null) {
+                    return;
+                }
+                Set<Path> before = new HashSet<>(ProjectReferenceService.listProjectReferences(source));
+                applyProjectReferences(source, panel.getCandidates(), before, panel.getSelected());
+            }
+        });
     }
 
     private void openNewCSharpItem(Path dir) {
