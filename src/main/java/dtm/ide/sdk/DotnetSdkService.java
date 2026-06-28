@@ -47,7 +47,7 @@ public class DotnetSdkService {
     public static final String DOTNET_9_SDK_VERSION = "9.0.315";
     public static final String DOTNET_7_SDK_VERSION = "7.0.410";
     public static final String DOTNET_6_SDK_VERSION = "6.0.428";
-    public static final String DEFAULT_OMNISHARP_VERSION = "1.39.11";
+    public static final String DEFAULT_OMNISHARP_VERSION = "1.39.15";
     public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.3";
 
     private static final int DOWNLOAD_MAX_ATTEMPTS = 3;

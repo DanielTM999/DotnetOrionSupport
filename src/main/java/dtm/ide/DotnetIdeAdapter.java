@@ -96,6 +96,7 @@ import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
+import javax.swing.text.JTextComponent;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
@@ -111,6 +112,7 @@ import java.awt.Window;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.KeyEvent;
+import java.awt.geom.Rectangle2D;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -809,34 +811,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
-        List<AutoCompleteItem> items = service.complete(
-                context.filePath(), context.text(), context.caretLine(), context.caretCol());
-        return filterCompletionsByPrefix(items, context.prefix());
-    }
-
-    private static List<AutoCompleteItem> filterCompletionsByPrefix(List<AutoCompleteItem> items, String prefix) {
-        if (items == null || items.isEmpty() || prefix == null || prefix.isBlank()) {
-            return items == null ? Collections.emptyList() : items;
-        }
-        String needle = prefix.toLowerCase(Locale.ROOT);
-        List<AutoCompleteItem> starts = new ArrayList<>();
-        List<AutoCompleteItem> contains = new ArrayList<>();
-        for (AutoCompleteItem item : items) {
-            if (item == null) {
-                continue;
-            }
-            String label = item.label() == null ? "" : item.label().toLowerCase(Locale.ROOT);
-            if (label.startsWith(needle)) {
-                starts.add(item);
-            } else if (label.contains(needle)) {
-                contains.add(item);
-            }
-        }
-        if (starts.isEmpty() && contains.isEmpty()) {
-            return items;
-        }
-        starts.addAll(contains);
-        return starts;
+        return service.completeForEditor(
+                context.filePath(), context.text(), context.caretLine(), context.caretCol(), context.prefix());
     }
 
     @Override
@@ -1661,9 +1637,25 @@ public class DotnetIdeAdapter extends IdeAdapter {
         Point screenLocation = editorComponent.getLocationOnScreen();
         int editorHeight = editorComponent.getHeight();
         int x = -lampSize.width + 2;
-        int y = Math.max(0, Math.min(context.mouseY() - lampSize.height / 2,
+        int anchorY = caretLineCenterY(editorComponent, context);
+        int y = Math.max(0, Math.min(anchorY - lampSize.height / 2,
                 Math.max(0, editorHeight - lampSize.height)));
         return new Point(screenLocation.x + x, screenLocation.y + y);
+    }
+
+    private int caretLineCenterY(Component editorComponent, IdeWordCaretContext context) {
+        if (editorComponent instanceof JTextComponent textComponent) {
+            try {
+                int offset = Math.max(0, Math.min(context.startOffset(), textComponent.getDocument().getLength()));
+                Rectangle2D rect = textComponent.modelToView2D(offset);
+                if (rect != null) {
+                    return (int) Math.round(rect.getY() + rect.getHeight() / 2.0);
+                }
+            } catch (Exception e) {
+                log.debug("Falha ao posicionar lâmpada na linha do caret: {}", e.getMessage());
+            }
+        }
+        return context.mouseY();
     }
 
     private void hideCodeActionLamp() {
@@ -3062,15 +3054,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
         if (Files.isDirectory(selected)) {
             menu.into("tree.new").item("C# Class / Interface...", newCSharpItemIcon(), e -> openNewCSharpItem(selected));
-        } else if (buildTarget != null && !isSolution(buildTarget)) {
-            Path projectDir = buildTarget.getParent();
-            if (projectDir != null) {
-                menu.into("tree.new").item("C# Class / Interface...", newCSharpItemIcon(), e -> openNewCSharpItem(projectDir));
-            }
-        }
-
-        if (buildTarget != null && isSolution(buildTarget)) {
-            menu.into("tree.new").item("Projeto .NET...", newProjectIcon(), e -> openNewSolutionProject(buildTarget));
+        } else if (buildTarget != null) {
+            contributeBuildTargetNewMenu(menu, buildTarget);
         }
 
         if (buildTarget == null) {
@@ -3100,6 +3085,89 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 e -> runDotnetOnTarget(buildTarget, "Recompilar", List.of("build", "--no-incremental")));
         menu.item("Limpar" + suffix,
                 e -> runDotnetOnTarget(buildTarget, "Limpar", List.of("clean")));
+    }
+
+    private void contributeBuildTargetNewMenu(IdeMenuBuilder menu, Path buildTarget) {
+        boolean solution = isSolution(buildTarget);
+        Path projectDir = buildTarget.getParent();
+        menu.submenu("New", newCSharpItemIcon(), sub -> {
+            if (solution) {
+                sub.item("Projeto .NET...", newProjectIcon(), e -> openNewSolutionProject(buildTarget));
+            } else if (projectDir != null) {
+                sub.item("Classe / Interface C#...", newCSharpItemIcon(), e -> openNewCSharpItem(projectDir));
+                sub.item("Arquivo...", e -> openNewPlainFile(projectDir));
+                sub.item("Pasta...", e -> openNewFolder(projectDir));
+                sub.separator();
+                sub.item("Pacote NuGet...", e -> openNuGetManager(buildTarget));
+            }
+        });
+    }
+
+    private void openNewPlainFile(Path dir) {
+        runOnUiThread(() -> {
+            JTextField field = new JTextField(24);
+            String value = createModernInputDialogBuilder()
+                    .title("Novo arquivo")
+                    .message("Nome do arquivo (com extensão)")
+                    .input(field)
+                    .confirmText("Criar")
+                    .cancelText("Cancelar")
+                    .draggable(true)
+                    .enterConfirms(true)
+                    .show();
+            String name = value == null ? "" : value.trim();
+            if (name.isEmpty()) {
+                return;
+            }
+            Path file = dir.resolve(name);
+            if (Files.exists(file)) {
+                setStatusBarText("Já existe " + file.getFileName());
+                requestOpenFile(file);
+                return;
+            }
+            try {
+                if (file.getParent() != null) {
+                    Files.createDirectories(file.getParent());
+                }
+                Files.writeString(file, "", StandardCharsets.UTF_8);
+                requestProjectTreeViewRefresh();
+                requestOpenFile(file);
+                setStatusBarText("Criado " + file.getFileName());
+            } catch (Exception e) {
+                setStatusBarText("Falha ao criar arquivo: " + e.getMessage());
+            }
+        });
+    }
+
+    private void openNewFolder(Path dir) {
+        runOnUiThread(() -> {
+            JTextField field = new JTextField(24);
+            String value = createModernInputDialogBuilder()
+                    .title("Nova pasta")
+                    .message("Nome da pasta")
+                    .input(field)
+                    .confirmText("Criar")
+                    .cancelText("Cancelar")
+                    .draggable(true)
+                    .enterConfirms(true)
+                    .show();
+            String name = value == null ? "" : value.trim();
+            if (name.isEmpty()) {
+                return;
+            }
+            Path folder = dir.resolve(name);
+            if (Files.exists(folder)) {
+                setStatusBarText("Já existe " + folder.getFileName());
+                return;
+            }
+            try {
+                Files.createDirectories(folder);
+                requestProjectTreeViewRefresh();
+                setStatusBarText("Criada pasta " + folder.getFileName());
+            } catch (Exception e) {
+                setStatusBarText("Falha ao criar pasta: " + e.getMessage());
+            }
+        });
     }
 
     private Path resolveMenuBuildTarget(Path selected) {
@@ -3251,13 +3319,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void createCSharpFile(Path dir, String name, NewCSharpItemPanel.Kind kind) {
-        Path file = dir.resolve(name + ".cs");
+        String typeName = effectiveTypeName(name, kind);
+        Path file = dir.resolve(typeName + ".cs");
         if (Files.exists(file)) {
             setStatusBarText("Já existe " + file.getFileName());
             requestOpenFile(file);
             return;
         }
-        String content = renderCSharpTemplate(deriveNamespace(dir), name, kind);
+        String content = renderCSharpTemplate(deriveNamespace(dir), typeName, kind);
         try {
             Files.writeString(file, content, StandardCharsets.UTF_8);
             requestProjectTreeViewRefresh();
@@ -3268,7 +3337,21 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
     }
 
+    private static String effectiveTypeName(String name, NewCSharpItemPanel.Kind kind) {
+        if (kind == NewCSharpItemPanel.Kind.ATTRIBUTE && !name.endsWith("Attribute")) {
+            return name + "Attribute";
+        }
+        return name;
+    }
+
     private static String renderCSharpTemplate(String namespaceName, String name, NewCSharpItemPanel.Kind kind) {
+        if (kind == NewCSharpItemPanel.Kind.ATTRIBUTE) {
+            return "using System;\n\n"
+                    + "namespace " + namespaceName + "\n{\n"
+                    + "    [AttributeUsage(AttributeTargets.All, AllowMultiple = false, Inherited = true)]\n"
+                    + "    public sealed class " + name + " : Attribute\n"
+                    + "    {\n    }\n}\n";
+        }
         String member = switch (kind) {
             case INTERFACE -> "public interface " + name;
             case RECORD -> "public record " + name;
@@ -3280,12 +3363,20 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private String deriveNamespace(Path dir) {
-        String root = projectRootNamespace();
-        if (projectPath == null || dir == null) {
+        Path csproj = owningProjectFile(dir);
+        String root = projectFileNamespace(csproj);
+        Path projectDir = csproj != null && csproj.getParent() != null
+                ? csproj.getParent().toAbsolutePath().normalize()
+                : (projectPath != null ? projectPath.toAbsolutePath().normalize() : null);
+        if (projectDir == null || dir == null) {
             return root;
         }
         try {
-            Path relative = projectPath.relativize(dir.toAbsolutePath().normalize());
+            Path target = dir.toAbsolutePath().normalize();
+            if (!target.startsWith(projectDir)) {
+                return root;
+            }
+            Path relative = projectDir.relativize(target);
             StringBuilder ns = new StringBuilder(root);
             for (Path part : relative) {
                 String p = part.toString();
@@ -3300,8 +3391,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
     }
 
-    private String projectRootNamespace() {
-        Path csproj = TargetFramework.findPrimaryProjectFile(projectPath);
+    private Path owningProjectFile(Path dir) {
+        Path csproj = TargetFramework.findProjectFileForSource(dir, projectPath);
+        if (csproj != null) {
+            return csproj;
+        }
+        return TargetFramework.findPrimaryProjectFile(projectPath);
+    }
+
+    private String projectFileNamespace(Path csproj) {
         String base;
         if (csproj != null && csproj.getFileName() != null) {
             base = csproj.getFileName().toString().replaceFirst("(?i)\\.(csproj|vbproj|fsproj)$", "");

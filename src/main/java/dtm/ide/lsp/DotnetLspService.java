@@ -73,6 +73,14 @@ public final class DotnetLspService {
 
     private static final long REQUEST_TIMEOUT_MS = 4000;
     private static final long COMPLETION_TIMEOUT_MS = 10000;
+    private static final long COMPLETION_RESOLVE_BUDGET_MS = 2500;
+    private static final int MAX_COMPLETION_ITEMS = 50;
+    private static final int COMPLETION_WARMUP_RETRIES = 4;
+    private static final long COMPLETION_WARMUP_DELAY_MS = 150;
+    private static final int IMPORT_WARMUP_ATTEMPTS = 12;
+    private static final long IMPORT_WARMUP_DELAY_MS = 400;
+    private static final int IMPORT_COMPLETION_MIN_PREFIX = 2;
+    private static final int MAX_IMPORT_CANDIDATES = 25;
 
     private static final long INIT_TIMEOUT_MS = 120000;
     private static final int SYNTHETIC_PROGRESS_CAP = 90;
@@ -131,6 +139,9 @@ public final class DotnetLspService {
     private volatile boolean semanticTokensSupported;
     private volatile boolean inlayHintSupported;
     private volatile boolean onTypeFormattingSupported;
+    private volatile boolean completionResolveSupported;
+    private final AtomicBoolean importCompletionWarm = new AtomicBoolean(false);
+    private final Set<String> importWarmupInFlight = ConcurrentHashMap.newKeySet();
     private volatile Set<Character> onTypeTriggerCharacters = Set.of();
     private volatile List<String> semanticTokenTypeLegend = List.of();
     private volatile List<String> semanticTokenModifierLegend = List.of();
@@ -219,6 +230,342 @@ public final class DotnetLspService {
         } catch (Exception e) {
             return Collections.emptyList();
         }
+    }
+
+    public List<AutoCompleteItem> completeForEditor(Path filePath, String text, int line, int character, String prefix) {
+        if (!canUseLsp(filePath)) {
+            return Collections.emptyList();
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode best = requestCompletion(uri, line, character);
+            int bestSize = completionItemCount(best);
+            int attempts = 0;
+            while (isIncompleteCompletion(best) && attempts < COMPLETION_WARMUP_RETRIES) {
+                Thread.sleep(COMPLETION_WARMUP_DELAY_MS);
+                JsonNode next = requestCompletion(uri, line, character);
+                int size = completionItemCount(next);
+                if (size >= bestSize) {
+                    best = next;
+                    bestSize = size;
+                }
+                attempts++;
+            }
+            if (isIncompleteCompletion(best)) {
+                warmImportCompletionAsync(uri, line, character);
+            }
+            List<AutoCompleteItem> items = parseAndResolveCompletions(best, prefix);
+            List<AutoCompleteItem> merged = mergeImportCandidates(items, text, prefix);
+            return prioritizeByPrefix(merged, prefix);
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static List<AutoCompleteItem> prioritizeByPrefix(List<AutoCompleteItem> items, String prefix) {
+        String needle = prefix == null ? "" : prefix.trim().toLowerCase(Locale.ROOT);
+        if (items.isEmpty() || needle.isEmpty()) {
+            return items;
+        }
+        List<AutoCompleteItem> starts = new ArrayList<>();
+        List<AutoCompleteItem> contains = new ArrayList<>();
+        for (AutoCompleteItem item : items) {
+            String label = item == null || item.label() == null ? "" : item.label().toLowerCase(Locale.ROOT);
+            if (label.startsWith(needle)) {
+                starts.add(item);
+            } else if (label.contains(needle)) {
+                contains.add(item);
+            }
+        }
+        if (starts.isEmpty() && contains.isEmpty()) {
+            return items;
+        }
+        starts.addAll(contains);
+        return starts;
+    }
+
+    private JsonNode requestCompletion(String uri, int line, int character) throws Exception {
+        return client.sendRequest("textDocument/completion", Map.of(
+                "textDocument", Map.of("uri", uri),
+                "position", LspJsonRpcClient.position(line, character),
+                "context", Map.of("triggerKind", 1)
+        )).get(COMPLETION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private static boolean isIncompleteCompletion(JsonNode result) {
+        return result != null && result.isObject() && result.path("isIncomplete").asBoolean(false);
+    }
+
+    private static int completionItemCount(JsonNode result) {
+        if (result == null || result.isNull()) {
+            return 0;
+        }
+        JsonNode items = result.isArray() ? result : result.get("items");
+        return items != null && items.isArray() ? items.size() : 0;
+    }
+
+    private void warmImportCompletionAsync(String uri, int line, int character) {
+        if (importCompletionWarm.get() || !importWarmupInFlight.add(uri)) {
+            return;
+        }
+        executor.submit(() -> {
+            try {
+                int previous = -1;
+                int stable = 0;
+                for (int i = 0; i < IMPORT_WARMUP_ATTEMPTS && isRunning(); i++) {
+                    Thread.sleep(IMPORT_WARMUP_DELAY_MS);
+                    JsonNode result = requestCompletion(uri, line, character);
+                    int size = completionItemCount(result);
+                    if (size > previous) {
+                        previous = size;
+                        stable = 0;
+                    } else if (size == previous && size > 0) {
+                        if (++stable >= 2) {
+                            importCompletionWarm.set(true);
+                            return;
+                        }
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception ignored) {
+                // best-effort warm-up; failures fall back to the next user trigger
+            } finally {
+                importWarmupInFlight.remove(uri);
+            }
+        });
+    }
+
+    private List<AutoCompleteItem> mergeImportCandidates(List<AutoCompleteItem> items, String text, String prefix) {
+        String trimmed = prefix == null ? "" : prefix.trim();
+        if (trimmed.length() < IMPORT_COMPLETION_MIN_PREFIX || !workspaceSymbolSupported) {
+            return items;
+        }
+        List<WorkspaceSymbol> symbols = workspaceSymbols(trimmed);
+        if (symbols.isEmpty()) {
+            return items;
+        }
+        Set<String> existingLabels = new HashSet<>();
+        for (AutoCompleteItem item : items) {
+            if (item != null && item.label() != null) {
+                existingLabels.add(item.label());
+            }
+        }
+        Set<String> imported = importedNamespaces(text);
+        String newline = dominantNewline(text);
+        Position insertPos = usingInsertPosition(text);
+        String needle = trimmed.toLowerCase(Locale.ROOT);
+        Map<String, String> textCache = new HashMap<>();
+        List<AutoCompleteItem> extras = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (WorkspaceSymbol symbol : symbols) {
+            if (!isImportableTypeKind(symbol.kind())) {
+                continue;
+            }
+            String simple = simpleTypeName(symbol.name());
+            if (simple.isBlank() || !simple.toLowerCase(Locale.ROOT).startsWith(needle)) {
+                continue;
+            }
+            String ns = resolveSymbolNamespace(symbol, textCache);
+            if (!isLikelyNamespace(ns) || imported.contains(ns)) {
+                continue;
+            }
+            if (existingLabels.contains(simple) || !seen.add(simple + '|' + ns)) {
+                continue;
+            }
+            TextEdit usingEdit = TextEdit.insert(insertPos, "using " + ns + ";" + newline);
+            extras.add(new AutoCompleteItem(simple, simple, ns, "using " + ns + ";",
+                    null, AutoCompleteItem.Kind.TEXT, List.of(usingEdit)));
+            if (extras.size() >= MAX_IMPORT_CANDIDATES) {
+                break;
+            }
+        }
+        if (extras.isEmpty()) {
+            return items;
+        }
+        List<AutoCompleteItem> merged = new ArrayList<>(items.size() + extras.size());
+        merged.addAll(items);
+        merged.addAll(extras);
+        return merged;
+    }
+
+    private static boolean isImportableTypeKind(int lspSymbolKind) {
+        return lspSymbolKind == 5    // Class
+                || lspSymbolKind == 10   // Enum
+                || lspSymbolKind == 11   // Interface
+                || lspSymbolKind == 23   // Struct
+                || lspSymbolKind == 26;  // TypeParameter (delegates surface here on some servers)
+    }
+
+    private String resolveSymbolNamespace(WorkspaceSymbol symbol, Map<String, String> textCache) {
+        Location loc = symbol.location();
+        if (loc == null || loc.uri() == null || loc.range() == null || loc.range().start() == null
+                || isMetadataUri(loc.uri())) {
+            return null;
+        }
+        Path path = pathFromUri(loc.uri());
+        if (path == null) {
+            return null;
+        }
+        String fileText = textCache.computeIfAbsent(loc.uri(), k -> currentText(path));
+        if (fileText == null || fileText.isEmpty()) {
+            return null;
+        }
+        int offset = offsetOf(lineStartOffsets(fileText), loc.range().start());
+        return namespaceAtOffset(fileText, offset);
+    }
+
+    private static String namespaceAtOffset(String text, int offset) {
+        int limit = Math.min(Math.max(offset, 0), text.length());
+        List<String> blocks = new ArrayList<>();
+        List<Integer> blockDepth = new ArrayList<>();
+        String fileScoped = null;
+        int depth = 0;
+        int i = 0;
+        while (i < limit) {
+            char c = text.charAt(i);
+            if (c == '/' && i + 1 < limit && text.charAt(i + 1) == '/') {
+                int nl = text.indexOf('\n', i);
+                i = nl < 0 ? limit : nl;
+            } else if (c == '/' && i + 1 < limit && text.charAt(i + 1) == '*') {
+                int end = text.indexOf("*/", i + 2);
+                i = end < 0 ? limit : end + 2;
+            } else if (c == '"' || c == '\'') {
+                i = skipQuoted(text, i, limit, c);
+            } else if (c == '{') {
+                depth++;
+                i++;
+            } else if (c == '}') {
+                depth--;
+                while (!blockDepth.isEmpty() && blockDepth.get(blockDepth.size() - 1) >= depth) {
+                    blockDepth.remove(blockDepth.size() - 1);
+                    blocks.remove(blocks.size() - 1);
+                }
+                i++;
+            } else if (Character.isJavaIdentifierStart(c)) {
+                int start = i;
+                while (i < limit && Character.isJavaIdentifierPart(text.charAt(i))) {
+                    i++;
+                }
+                if (text.substring(start, i).equals("namespace")) {
+                    int j = i;
+                    while (j < limit && Character.isWhitespace(text.charAt(j))) {
+                        j++;
+                    }
+                    int nameStart = j;
+                    while (j < limit && (Character.isJavaIdentifierPart(text.charAt(j)) || text.charAt(j) == '.')) {
+                        j++;
+                    }
+                    String name = text.substring(nameStart, j).trim();
+                    int k = j;
+                    while (k < limit && Character.isWhitespace(text.charAt(k))) {
+                        k++;
+                    }
+                    if (k < limit && text.charAt(k) == ';') {
+                        fileScoped = name;
+                        i = k + 1;
+                    } else if (!name.isBlank()) {
+                        blocks.add(name);
+                        blockDepth.add(depth);
+                        i = j;
+                    }
+                }
+            } else {
+                i++;
+            }
+        }
+        if (!blocks.isEmpty()) {
+            return String.join(".", blocks);
+        }
+        return fileScoped == null ? "" : fileScoped;
+    }
+
+    private static boolean isLikelyNamespace(String ns) {
+        if (ns == null || ns.isBlank()) {
+            return false;
+        }
+        for (int i = 0; i < ns.length(); i++) {
+            char c = ns.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '.' && c != '_') {
+                return false;
+            }
+        }
+        return Character.isJavaIdentifierStart(ns.charAt(0));
+    }
+
+    private static String simpleTypeName(String name) {
+        if (name == null) {
+            return "";
+        }
+        String simple = name.trim();
+        int cut = simple.length();
+        for (int i = 0; i < simple.length(); i++) {
+            char c = simple.charAt(i);
+            if (c == '<' || c == '(' || c == '`' || Character.isWhitespace(c)) {
+                cut = i;
+                break;
+            }
+        }
+        return simple.substring(0, cut);
+    }
+
+    private static Set<String> importedNamespaces(String text) {
+        if (text == null || text.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> imported = new HashSet<>();
+        for (String raw : text.split("\n", -1)) {
+            String line = raw.trim();
+            if (line.startsWith("global using ")) {
+                line = line.substring("global using ".length()).trim();
+            } else if (line.startsWith("using ")) {
+                line = line.substring("using ".length()).trim();
+            } else {
+                continue;
+            }
+            if (line.startsWith("static ")) {
+                line = line.substring("static ".length()).trim();
+            }
+            int semicolon = line.indexOf(';');
+            if (semicolon < 0 || line.indexOf('(') >= 0 || line.indexOf('=') >= 0) {
+                continue;
+            }
+            String ns = line.substring(0, semicolon).trim();
+            if (!ns.isBlank()) {
+                imported.add(ns);
+            }
+        }
+        return imported;
+    }
+
+    private static Position usingInsertPosition(String text) {
+        if (text == null || text.isEmpty()) {
+            return Position.of(0, 0);
+        }
+        String[] lines = text.split("\n", -1);
+        int lastUsing = -1;
+        int namespaceLine = -1;
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if ((line.startsWith("using ") || line.startsWith("global using "))
+                    && line.indexOf('(') < 0 && line.endsWith(";")) {
+                lastUsing = i;
+            } else if (namespaceLine < 0 && line.startsWith("namespace ")) {
+                namespaceLine = i;
+            }
+        }
+        if (lastUsing >= 0) {
+            return Position.of(lastUsing + 1, 0);
+        }
+        if (namespaceLine >= 0) {
+            return Position.of(namespaceLine, 0);
+        }
+        return Position.of(0, 0);
+    }
+
+    private static String dominantNewline(String text) {
+        return text != null && text.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
     }
 
     public HoverInfo hover(Path filePath, String text, int line, int character) {
@@ -542,7 +889,8 @@ public final class DotnetLspService {
             if (location == null) {
                 continue;
             }
-            out.add(new WorkspaceSymbol(name, textOrEmpty(node.get("containerName")), location));
+            out.add(new WorkspaceSymbol(name, textOrEmpty(node.get("containerName")),
+                    node.path("kind").asInt(0), location));
         }
         return out;
     }
@@ -838,21 +1186,100 @@ public final class DotnetLspService {
     }
 
     public List<CodeAction> codeActions(Path filePath, String text, Range range, List<Diagnostic> diagnostics) {
-        if (!canUseLsp(filePath) || !codeActionSupported || range == null) {
+        if (!canUseLsp(filePath) || range == null) {
             return Collections.emptyList();
         }
         String uri = toUri(filePath);
         try {
             syncDocument(uri, filePath, text);
-            JsonNode result = client.sendRequest("textDocument/codeAction", Map.of(
-                    "textDocument", Map.of("uri", uri),
-                    "range", rangeToLsp(range),
-                    "context", Map.of("diagnostics", rawDiagnosticsFor(uri, range))
-            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            return parseCodeActionResult(result, uri);
+            List<CodeAction> actions = new ArrayList<>();
+            if (codeActionSupported) {
+                JsonNode result = client.sendRequest("textDocument/codeAction", Map.of(
+                        "textDocument", Map.of("uri", uri),
+                        "range", rangeToLsp(range),
+                        "context", Map.of("diagnostics", rawDiagnosticsFor(uri, range))
+                )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                actions.addAll(parseCodeActionResult(result, uri));
+            }
+            appendSyntheticUsingActions(actions, uri, text, range);
+            return actions;
         } catch (Exception e) {
             return Collections.emptyList();
         }
+    }
+
+    private void appendSyntheticUsingActions(List<CodeAction> actions, String uri, String text, Range range) {
+        if (!workspaceSymbolSupported || text == null || text.isEmpty()) {
+            return;
+        }
+        List<JsonNode> raw = diagnosticsByUri.get(normalizeUriKey(uri));
+        if (raw == null || raw.isEmpty()) {
+            return;
+        }
+        Set<String> titles = new HashSet<>();
+        for (CodeAction action : actions) {
+            if (action != null && action.title() != null) {
+                titles.add(action.title().trim());
+            }
+        }
+        Set<String> imported = importedNamespaces(text);
+        String newline = dominantNewline(text);
+        Position insertPos = usingInsertPosition(text);
+        int[] lineStarts = lineStartOffsets(text);
+        Map<String, String> textCache = new HashMap<>();
+        Set<String> handledIdentifiers = new HashSet<>();
+        int added = 0;
+        for (JsonNode node : raw) {
+            if (!isMissingUsingDiagnostic(node)) {
+                continue;
+            }
+            Diagnostic diagnostic = parseDiagnostic(node);
+            if (diagnostic == null || !rangeIntersectsDiagnostic(range, diagnostic)) {
+                continue;
+            }
+            String identifier = textInRange(text, lineStarts, diagnostic);
+            if (identifier.isBlank() || !handledIdentifiers.add(identifier)) {
+                continue;
+            }
+            for (WorkspaceSymbol symbol : workspaceSymbols(identifier)) {
+                if (!isImportableTypeKind(symbol.kind()) || !identifier.equals(simpleTypeName(symbol.name()))) {
+                    continue;
+                }
+                String ns = resolveSymbolNamespace(symbol, textCache);
+                if (!isLikelyNamespace(ns) || imported.contains(ns)) {
+                    continue;
+                }
+                String title = "using " + ns + ";";
+                if (!titles.add(title)) {
+                    continue;
+                }
+                actions.add(CodeAction.quickFix(title, List.of(TextEdit.insert(insertPos, title + newline))));
+                if (++added >= MAX_IMPORT_CANDIDATES) {
+                    return;
+                }
+            }
+        }
+    }
+
+    private static boolean isMissingUsingDiagnostic(JsonNode node) {
+        JsonNode codeNode = node == null ? null : node.get("code");
+        String code = codeNode == null ? "" : codeNode.asText("");
+        if (code.equalsIgnoreCase("CS0246") || code.equalsIgnoreCase("CS0103")) {
+            return true;
+        }
+        String message = node == null ? "" : textOrEmpty(node.get("message")).toLowerCase(Locale.ROOT);
+        return message.contains("could not be found")
+                || message.contains("missing a using directive")
+                || message.contains("does not exist in the current context");
+    }
+
+    private static String textInRange(String text, int[] lineStarts, Diagnostic diagnostic) {
+        int start = offsetOf(lineStarts, Position.of(diagnostic.startLine(), diagnostic.startCol()));
+        int end = offsetOf(lineStarts, Position.of(diagnostic.endLine(), diagnostic.endCol()));
+        if (start < 0 || end > text.length() || start >= end) {
+            return "";
+        }
+        return text.substring(start, end).trim();
     }
 
     private List<JsonNode> rawDiagnosticsFor(String uri, Range range) {
@@ -1389,7 +1816,7 @@ public final class DotnetLspService {
         return disk == null ? "" : disk;
     }
 
-    public record WorkspaceSymbol(String name, String container, Location location) {
+    public record WorkspaceSymbol(String name, String container, int kind, Location location) {
     }
 
     private record CallSite(Position pos, Range range) {
@@ -1415,6 +1842,7 @@ public final class DotnetLspService {
         try {
             state = State.STARTING;
             startAnalyzeProgress();
+            ensureOmniSharpConfig(omnisharp.get());
             List<String> command = new ArrayList<>();
             command.add(omnisharp.get().toAbsolutePath().toString());
             command.add("-lsp");
@@ -1450,6 +1878,28 @@ public final class DotnetLspService {
         }
     }
 
+    private void ensureOmniSharpConfig(Path omnisharpExecutable) {
+        try {
+            Path dir = omnisharpExecutable.toAbsolutePath().getParent();
+            if (dir == null) {
+                return;
+            }
+            Path config = dir.resolve("omnisharp.json");
+            String content = "{\n"
+                    + "  \"RoslynExtensionsOptions\": {\n"
+                    + "    \"enableImportCompletion\": true,\n"
+                    + "    \"enableAnalyzersSupport\": true,\n"
+                    + "    \"enableDecompilationSupport\": true\n"
+                    + "  }\n"
+                    + "}\n";
+            if (!Files.exists(config) || !content.equals(Files.readString(config))) {
+                Files.writeString(config, content, StandardCharsets.UTF_8);
+            }
+        } catch (Exception e) {
+            log.debug("Não foi possível gravar omnisharp.json: {}", e.getMessage());
+        }
+    }
+
     private void doStop() {
         Process p = process;
         if (p != null) {
@@ -1479,6 +1929,8 @@ public final class DotnetLspService {
         documentVersions.clear();
         openedContent.clear();
         diagnosticsByUri.clear();
+        importCompletionWarm.set(false);
+        importWarmupInFlight.clear();
         definitionSupported = false;
         referencesSupported = false;
         documentSymbolSupported = false;
@@ -1548,6 +2000,8 @@ public final class DotnetLspService {
         codeActionSupported = supportsProvider(node(capabilities, "codeActionProvider"));
         implementationSupported = supportsProvider(node(capabilities, "implementationProvider"));
         signatureHelpSupported = supportsProvider(node(capabilities, "signatureHelpProvider"));
+        completionResolveSupported = node(capabilities, "completionProvider") != null
+                && node(capabilities, "completionProvider").path("resolveProvider").asBoolean(false);
         workspaceSymbolSupported = supportsProvider(node(capabilities, "workspaceSymbolProvider"));
         inlayHintSupported = supportsProvider(node(capabilities, "inlayHintProvider"));
         captureOnTypeFormatting(node(capabilities, "documentOnTypeFormattingProvider"));
@@ -1617,7 +2071,10 @@ public final class DotnetLspService {
         Map<String, Object> textDocument = new LinkedHashMap<>();
         textDocument.put("synchronization", Map.of("dynamicRegistration", false));
         textDocument.put("completion", Map.of("completionItem",
-                Map.of("snippetSupport", true, "documentationFormat", List.of("plaintext"))));
+                Map.of("snippetSupport", true,
+                        "documentationFormat", List.of("plaintext"),
+                        "resolveSupport", Map.of("properties",
+                                List.of("additionalTextEdits", "detail", "documentation")))));
         textDocument.put("hover", Map.of("contentFormat", List.of("markdown", "plaintext")));
         textDocument.put("definition", Map.of("dynamicRegistration", false, "linkSupport", true));
         textDocument.put("implementation", Map.of("dynamicRegistration", false, "linkSupport", true));
@@ -1689,13 +2146,66 @@ public final class DotnetLspService {
         if (Objects.equals(previous, safeText)) {
             return;
         }
-        if (previous == null) {
+        boolean firstOpen = previous == null;
+        if (firstOpen) {
             sendDidOpen(uri, safeText);
         } else {
             sendDidChangeFull(uri, safeText);
         }
         openedContent.put(uri, safeText);
         diagnosticsByUri.remove(normalizeUriKey(uri));
+        if (firstOpen) {
+            prewarmImportCompletion(uri, safeText);
+        }
+    }
+
+    private void prewarmImportCompletion(String uri, String text) {
+        if (importCompletionWarm.get() || uri == null || !uri.toLowerCase(Locale.ROOT).endsWith(".cs")) {
+            return;
+        }
+        Position pos = firstTypeBodyPosition(text);
+        if (pos != null) {
+            warmImportCompletionAsync(uri, pos.line(), pos.col());
+        }
+    }
+
+    private static Position firstTypeBodyPosition(String text) {
+        if (text == null || text.isEmpty()) {
+            return null;
+        }
+        int decl = firstTypeDeclarationIndex(text);
+        if (decl < 0) {
+            return null;
+        }
+        int brace = text.indexOf('{', decl);
+        if (brace < 0) {
+            return null;
+        }
+        return positionOf(lineStartOffsets(text), Math.min(brace + 1, text.length()));
+    }
+
+    private static int firstTypeDeclarationIndex(String text) {
+        int best = -1;
+        for (String keyword : new String[]{"class", "struct", "record", "interface"}) {
+            int from = 0;
+            while (true) {
+                int i = text.indexOf(keyword, from);
+                if (i < 0) {
+                    break;
+                }
+                int after = i + keyword.length();
+                boolean boundaryBefore = i == 0 || !Character.isJavaIdentifierPart(text.charAt(i - 1));
+                boolean boundaryAfter = after < text.length() && Character.isWhitespace(text.charAt(after));
+                if (boundaryBefore && boundaryAfter) {
+                    if (best < 0 || i < best) {
+                        best = i;
+                    }
+                    break;
+                }
+                from = i + 1;
+            }
+        }
+        return best;
     }
 
     private static String normalizeUriKey(String uri) {
@@ -1748,24 +2258,112 @@ public final class DotnetLspService {
         sorted.sort(java.util.Comparator.comparing(DotnetLspService::completionSortKey));
         List<AutoCompleteItem> out = new ArrayList<>(sorted.size());
         for (JsonNode item : sorted) {
-            String label = textOrEmpty(item.get("label"));
-            String insertText = textOrEmpty(item.path("textEdit").get("newText") == null
-                    ? item.get("insertText") : item.path("textEdit").get("newText"));
-            if (insertText.isBlank()) {
-                insertText = textOrEmpty(item.get("insertText"));
-            }
-            if (insertText.isBlank()) {
-                insertText = label;
-            }
-            String detail = textOrEmpty(item.get("detail"));
-            String description = extractDocumentation(item.get("documentation"));
-            AutoCompleteItem.Kind kind = item.path("insertTextFormat").asInt(1) == 2
-                    ? AutoCompleteItem.Kind.SNIPPET
-                    : AutoCompleteItem.Kind.TEXT;
-            out.add(new AutoCompleteItem(insertText, label, nullIfBlank(detail),
-                    nullIfBlank(description), null, kind));
+            out.add(toAutoCompleteItem(item));
         }
         return out;
+    }
+
+    private List<AutoCompleteItem> parseAndResolveCompletions(JsonNode result, String prefix) {
+        if (result == null || result.isNull()) {
+            return Collections.emptyList();
+        }
+        JsonNode items = result.isArray() ? result : result.get("items");
+        if (items == null || !items.isArray()) {
+            return Collections.emptyList();
+        }
+        List<JsonNode> candidates = new ArrayList<>(items.size());
+        for (JsonNode item : items) {
+            if (!textOrEmpty(item.get("label")).isBlank()) {
+                candidates.add(item);
+            }
+        }
+        candidates.sort(java.util.Comparator.comparing(DotnetLspService::completionSortKey));
+        List<JsonNode> ordered = orderByPrefix(candidates, prefix);
+        if (ordered.size() > MAX_COMPLETION_ITEMS) {
+            ordered = ordered.subList(0, MAX_COMPLETION_ITEMS);
+        }
+        List<JsonNode> resolved = resolveCompletionItems(ordered);
+        List<AutoCompleteItem> out = new ArrayList<>(resolved.size());
+        for (JsonNode item : resolved) {
+            out.add(toAutoCompleteItem(item));
+        }
+        return out;
+    }
+
+    private static List<JsonNode> orderByPrefix(List<JsonNode> items, String prefix) {
+        if (items.isEmpty() || prefix == null || prefix.isBlank()) {
+            return items;
+        }
+        String needle = prefix.toLowerCase(Locale.ROOT);
+        List<JsonNode> starts = new ArrayList<>();
+        List<JsonNode> contains = new ArrayList<>();
+        for (JsonNode item : items) {
+            String label = textOrEmpty(item.get("label")).toLowerCase(Locale.ROOT);
+            if (label.startsWith(needle)) {
+                starts.add(item);
+            } else if (label.contains(needle)) {
+                contains.add(item);
+            }
+        }
+        if (starts.isEmpty() && contains.isEmpty()) {
+            return items;
+        }
+        starts.addAll(contains);
+        return starts;
+    }
+
+    private List<JsonNode> resolveCompletionItems(List<JsonNode> items) {
+        if (!completionResolveSupported || items.isEmpty()) {
+            return items;
+        }
+        List<CompletableFuture<JsonNode>> futures = new ArrayList<>(items.size());
+        for (JsonNode item : items) {
+            if (!needsCompletionResolve(item)) {
+                futures.add(CompletableFuture.completedFuture(item));
+                continue;
+            }
+            futures.add(client.sendRequest("completionItem/resolve", item)
+                    .handle((res, err) -> err == null && res != null && !res.isNull() ? res : item));
+        }
+        List<JsonNode> out = new ArrayList<>(items.size());
+        long deadline = System.currentTimeMillis() + COMPLETION_RESOLVE_BUDGET_MS;
+        for (int i = 0; i < futures.size(); i++) {
+            try {
+                long remaining = Math.max(1, deadline - System.currentTimeMillis());
+                out.add(futures.get(i).get(remaining, TimeUnit.MILLISECONDS));
+            } catch (Exception e) {
+                out.add(items.get(i));
+            }
+        }
+        return out;
+    }
+
+    private static boolean needsCompletionResolve(JsonNode item) {
+        JsonNode existing = item.get("additionalTextEdits");
+        if (existing != null && existing.isArray() && !existing.isEmpty()) {
+            return false;
+        }
+        return item.hasNonNull("data");
+    }
+
+    private AutoCompleteItem toAutoCompleteItem(JsonNode item) {
+        String label = textOrEmpty(item.get("label"));
+        String insertText = textOrEmpty(item.path("textEdit").get("newText") == null
+                ? item.get("insertText") : item.path("textEdit").get("newText"));
+        if (insertText.isBlank()) {
+            insertText = textOrEmpty(item.get("insertText"));
+        }
+        if (insertText.isBlank()) {
+            insertText = label;
+        }
+        String detail = textOrEmpty(item.get("detail"));
+        String description = extractDocumentation(item.get("documentation"));
+        AutoCompleteItem.Kind kind = item.path("insertTextFormat").asInt(1) == 2
+                ? AutoCompleteItem.Kind.SNIPPET
+                : AutoCompleteItem.Kind.TEXT;
+        List<TextEdit> additionalEdits = parseTextEditsStatic(item.get("additionalTextEdits"));
+        return new AutoCompleteItem(insertText, label, nullIfBlank(detail),
+                nullIfBlank(description), null, kind, additionalEdits);
     }
 
     private static String completionSortKey(JsonNode item) {

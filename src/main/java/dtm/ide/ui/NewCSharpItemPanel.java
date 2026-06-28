@@ -32,7 +32,8 @@ public final class NewCSharpItemPanel extends JPanel {
         INTERFACE("Interface", "interface", new Color(184, 215, 163), 'I'),
         RECORD("Record", "record", new Color(86, 156, 214), 'R'),
         STRUCT("Struct", "struct", new Color(220, 220, 170), 'S'),
-        ENUM("Enum", "enum", new Color(197, 134, 192), 'E');
+        ENUM("Enum", "enum", new Color(197, 134, 192), 'E'),
+        ATTRIBUTE("Attribute", "class", new Color(224, 134, 102), 'A');
 
         private final String label;
         private final String keyword;
@@ -134,7 +135,13 @@ public final class NewCSharpItemPanel extends JPanel {
         if (manual) {
             return;
         }
-        Kind target = isInterfaceName(nameField.getText().trim()) ? Kind.INTERFACE : Kind.CLASS;
+        String name = nameField.getText().trim();
+        Kind target = Kind.CLASS;
+        if (isAttributeName(name)) {
+            target = Kind.ATTRIBUTE;
+        } else if (isInterfaceName(name)) {
+            target = Kind.INTERFACE;
+        }
         lastAuto = target;
         if (kindList.getSelectedValue() != target) {
             kindList.setSelectedValue(target, true);
@@ -143,6 +150,10 @@ public final class NewCSharpItemPanel extends JPanel {
 
     private static boolean isInterfaceName(String name) {
         return name.length() >= 2 && name.charAt(0) == 'I' && Character.isUpperCase(name.charAt(1));
+    }
+
+    private static boolean isAttributeName(String name) {
+        return name.length() > "Attribute".length() && name.endsWith("Attribute");
     }
 
     private static String sanitize(String raw) {
