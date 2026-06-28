@@ -116,6 +116,7 @@ public final class DotnetBuild {
             }
             builder.redirectErrorStream(true);
             applyDotnetEnv(builder, firstCommandPath(command));
+            builder.environment().put("DOTNET_CLI_UI_LANGUAGE", "en");
             process = builder.start();
             registerProcess(DotnetRunSupport.TYPE_TEST, process);
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -150,11 +151,15 @@ public final class DotnetBuild {
         if (output == null || output.isBlank()) {
             return tests;
         }
+        boolean afterHeader = false;
         for (String raw : output.split("\\R")) {
-            if (raw.isEmpty() || !Character.isWhitespace(raw.charAt(0))) {
+            String line = raw.strip();
+            if (!afterHeader) {
+                if (line.toLowerCase(Locale.ROOT).contains("available:")) {
+                    afterHeader = true;
+                }
                 continue;
             }
-            String line = raw.strip();
             if (line.isEmpty() || line.indexOf('.') < 0 || !Character.isJavaIdentifierStart(line.charAt(0))) {
                 continue;
             }
@@ -162,7 +167,30 @@ public final class DotnetBuild {
                 tests.add(line);
             }
         }
+        if (tests.isEmpty()) {
+            for (String raw : output.split("\\R")) {
+                if (raw.isEmpty() || !Character.isWhitespace(raw.charAt(0))) {
+                    continue;
+                }
+                String line = raw.strip();
+                if (isStandaloneTestName(line) && !tests.contains(line)) {
+                    tests.add(line);
+                }
+            }
+        }
         return tests;
+    }
+
+    private static boolean isStandaloneTestName(String line) {
+        if (line.isEmpty() || line.indexOf('.') < 0 || !Character.isJavaIdentifierStart(line.charAt(0))) {
+            return false;
+        }
+        for (int i = 0; i < line.length(); i++) {
+            if (Character.isWhitespace(line.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private RunProcessHandle launchProcess(String type, List<String> command, Path project, boolean interactive) {

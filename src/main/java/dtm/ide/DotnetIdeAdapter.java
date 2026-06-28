@@ -73,6 +73,7 @@ import dtm.stools.component.panels.editor.code.diagnostics.Diagnostic;
 import dtm.stools.component.panels.editor.code.diagnostics.DiagnosticSeverity;
 import dtm.stools.component.panels.editor.code.codelens.CodeLens;
 import dtm.stools.component.panels.editor.code.codelens.CodeLensItem;
+import dtm.stools.component.panels.editor.code.codelens.CodeLensPlacement;
 import dtm.stools.component.panels.editor.code.hover.HoverInfo;
 import dtm.stools.component.panels.editor.code.inlay.InlayHint;
 import dtm.stools.component.panels.editor.code.prototype.folding.FoldRule;
@@ -236,6 +237,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public void onProjectOpened(IdeProjectContext context) {
         bindProject(context);
         setupDebugPanel();
+        runOnUiThread(this::ensureTestPanel);
         startLanguageServicesAsync();
     }
 
@@ -375,6 +377,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     });
 
                     refreshOpenEditors();
+                    requestBackgroundTestDiscovery();
                 } else {
                     if (analyzeProgressShown.compareAndSet(true, false)) {
                         SwingUtilities.invokeLater(() -> hideProgress(LSP_ANALYZE_PROGRESS_ID));
@@ -1265,10 +1268,29 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         List<CodeLens> lenses = new ArrayList<>();
         int[] budget = {CODE_LENS_LIMIT};
-        collectCodeLenses(service, symbols, context.filePath(), context.text(), lenses, budget);
         String[] sourceLines = context.text() == null ? new String[0] : context.text().split("\n", -1);
         collectTestLenses(symbols, "", sourceLines, lenses);
-        return lenses;
+        collectCodeLenses(service, symbols, context.filePath(), context.text(), lenses, budget);
+        return mergeInlineLenses(lenses);
+    }
+
+    private static List<CodeLens> mergeInlineLenses(List<CodeLens> lenses) {
+        Map<Integer, List<CodeLensItem>> inlineByLine = new LinkedHashMap<>();
+        List<CodeLens> result = new ArrayList<>();
+        for (CodeLens lens : lenses) {
+            if (lens == null) {
+                continue;
+            }
+            if (lens.placement() == CodeLensPlacement.INLINE) {
+                inlineByLine.computeIfAbsent(lens.line(), key -> new ArrayList<>()).addAll(lens.items());
+            } else {
+                result.add(lens);
+            }
+        }
+        for (Map.Entry<Integer, List<CodeLensItem>> entry : inlineByLine.entrySet()) {
+            result.add(CodeLens.inline(entry.getKey(), entry.getValue().toArray(new CodeLensItem[0])));
+        }
+        return result;
     }
 
     private void collectTestLenses(List<DocumentSymbol> symbols, String container, String[] lines, List<CodeLens> out) {
@@ -1282,12 +1304,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     && isTestMethod(lines, symbol.selectionRange().start().line())) {
                 String testId = stripSignature(qualified);
                 CodeLensItem run = CodeLensItem.builder()
-                        .text("▶ Run Test")
+                        .text("▶ Run")
                         .tooltip("Executar " + testId)
                         .cursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
                         .onClick(event -> runTestFromLens(testId))
                         .build();
-                out.add(CodeLens.above(symbol.selectionRange().start().line(), run));
+                out.add(CodeLens.inline(symbol.selectionRange().start().line(), run));
             }
             if (symbol.children() != null && !symbol.children().isEmpty()) {
                 collectTestLenses(symbol.children(), qualified, lines, out);
@@ -2397,8 +2419,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (testPanel == null) {
             testPanel = new DotnetTestExplorerPanel(() -> projectPath, this::ensureSdkService,
                     () -> ensurePluginSettings().getDefaultConfiguration());
-            testToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Testes", ToolIconType.PLAY, testPanel);
+            testToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Testes", ToolIconType.INFO, testPanel);
         }
+    }
+
+    private void requestBackgroundTestDiscovery() {
+        runOnUiThread(() -> {
+            ensureTestPanel();
+            testPanel.discoverIfNeeded();
+        });
     }
 
     private void runTestFromLens(String fullyQualifiedName) {
