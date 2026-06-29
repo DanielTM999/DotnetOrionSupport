@@ -92,6 +92,10 @@ final class DotnetProjectConventions {
 
     private static volatile Icon solutionIcon;
     private static volatile Icon projectIcon;
+    private static volatile Icon referencesIcon;
+    private static volatile Icon assemblyReferenceIcon;
+    private static volatile Icon packageReferenceIcon;
+    private static volatile Icon projectReferenceIcon;
 
     private DotnetProjectConventions() {
     }
@@ -387,8 +391,10 @@ final class DotnetProjectConventions {
             }
         }
 
+        addReferencesNode(projectChildren, projectFile);
         sortNodes(projectChildren);
         ProjectTreeNode projectNode = ProjectTreeNode.of(projectFile, labelOf(projectFile));
+        applyLayoutIcon(projectNode, projectIcon());
         projectNode.children(projectChildren);
 
         solutionChildren.add(projectNode);
@@ -412,6 +418,7 @@ final class DotnetProjectConventions {
         ProjectTreeNode node = ProjectTreeNode.of(rootPath, labelOf(projectFile));
         applyLayoutIcon(node, projectIcon());
         List<ProjectTreeNode> children = new ArrayList<>(root.getChildren());
+        addReferencesNode(children, projectFile);
         sortNodes(children);
         node.children(children);
         return node;
@@ -436,9 +443,42 @@ final class DotnetProjectConventions {
             children.add(child);
         }
 
+        addReferencesNode(children, projectFile);
         sortNodes(children);
         node.children(children);
+        applyLayoutIcon(node, projectIcon());
         return node;
+    }
+
+    private static void addReferencesNode(List<ProjectTreeNode> children, Path projectFile) {
+        if (projectFile == null) {
+            return;
+        }
+        Path virtualRoot = virtualReferencePath(projectFile, "root");
+        ProjectTreeNode referencesNode = ProjectTreeNode.of(virtualRoot, "References", true);
+        applyLayoutIcon(referencesNode, referencesIcon());
+
+        List<DotnetProjectReference> references = DotnetProjectReference.read(projectFile);
+        List<ProjectTreeNode> referenceNodes = new ArrayList<>();
+        for (int i = 0; i < references.size(); i++) {
+            DotnetProjectReference reference = references.get(i);
+            Path path = reference.target() != null
+                    ? reference.target()
+                    : virtualReferencePath(projectFile, "item-" + i);
+            ProjectTreeNode node = ProjectTreeNode.of(path, reference.label(), true);
+            applyLayoutIcon(node, referenceIcon(reference.kind()));
+            referenceNodes.add(node);
+        }
+        referenceNodes.sort(Comparator.comparing(ProjectTreeNode::getLabel, String.CASE_INSENSITIVE_ORDER));
+        referencesNode.children(referenceNodes);
+        children.add(referencesNode);
+    }
+
+    private static Path virtualReferencePath(Path projectFile, String leaf) {
+        Path directory = projectFile.getParent();
+        Path base = directory != null ? directory : projectFile.toAbsolutePath().getParent();
+        String projectName = projectFile.getFileName() != null ? projectFile.getFileName().toString() : "project";
+        return base.resolve(".orion-tree").resolve(projectName).resolve("references").resolve(leaf);
     }
 
     private static void collectTopmostProjects(ProjectTreeNode node, List<ProjectTreeNode> out) {
@@ -552,6 +592,50 @@ final class DotnetProjectConventions {
         if (icon == null) {
             icon = loadBundledIcon("imgs/dotnet/csProj.svg");
             projectIcon = icon;
+        }
+        return icon;
+    }
+
+    private static Icon referencesIcon() {
+        Icon icon = referencesIcon;
+        if (icon == null) {
+            icon = loadBundledIcon("imgs/dotnet/references.svg");
+            referencesIcon = icon;
+        }
+        return icon;
+    }
+
+    private static Icon referenceIcon(DotnetProjectReference.Kind kind) {
+        return switch (kind) {
+            case ASSEMBLY -> assemblyReferenceIcon();
+            case PACKAGE -> packageReferenceIcon();
+            case PROJECT -> projectReferenceIcon();
+        };
+    }
+
+    private static Icon assemblyReferenceIcon() {
+        Icon icon = assemblyReferenceIcon;
+        if (icon == null) {
+            icon = loadBundledIcon("imgs/dotnet/assemblyReference.svg");
+            assemblyReferenceIcon = icon;
+        }
+        return icon;
+    }
+
+    private static Icon packageReferenceIcon() {
+        Icon icon = packageReferenceIcon;
+        if (icon == null) {
+            icon = loadBundledIcon("imgs/dotnet/packageReference.svg");
+            packageReferenceIcon = icon;
+        }
+        return icon;
+    }
+
+    private static Icon projectReferenceIcon() {
+        Icon icon = projectReferenceIcon;
+        if (icon == null) {
+            icon = loadBundledIcon("imgs/dotnet/projectReference.svg");
+            projectReferenceIcon = icon;
         }
         return icon;
     }

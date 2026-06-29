@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <path d="M25 9h53l25 25v85H25z" fill="#edf5fc" stroke="#397bb7" stroke-width="7"/>
+  <path d="M78 9v27h25" fill="#bddcf4" stroke="#397bb7" stroke-width="7"/>
+  <rect x="11" y="68" width="106" height="39" rx="8" fill="#397bb7"/>
+  <text x="64" y="96" text-anchor="middle" font-family="Arial,sans-serif" font-size="27" font-weight="700" fill="white">DLL</text>
+</svg>

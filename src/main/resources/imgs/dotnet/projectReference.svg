@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect x="8" y="14" width="46" height="46" rx="7" fill="#397bb7"/>
+  <rect x="74" y="68" width="46" height="46" rx="7" fill="#397bb7"/>
+  <path d="M48 55 80 77M75 73l9 8M57 84H37a12 12 0 0 1-12-12V59M71 44h20a12 12 0 0 1 12 12v13" fill="none" stroke="#73b5e9" stroke-width="9" stroke-linecap="round"/>
+  <text x="31" y="47" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="white">C#</text>
+  <text x="97" y="101" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="white">C#</text>
+</svg>
