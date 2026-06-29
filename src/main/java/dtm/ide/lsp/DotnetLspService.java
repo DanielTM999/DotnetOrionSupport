@@ -6,6 +6,7 @@ import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
 import dtm.ide.api.project.editor.DocumentHighlight;
 import dtm.ide.api.project.editor.SemanticToken;
+import dtm.ide.project.DotnetProjectConfig;
 import dtm.ide.sdk.DotnetSdkService;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
 import dtm.stools.component.panels.editor.code.api.Command;
@@ -71,6 +72,15 @@ public final class DotnetLspService {
         NOT_STARTED, STARTING, READY, STOPPED, ERROR
     }
 
+    public static final String APPLY_CODE_ACTION_COMMAND = "dotnet/applyCodeAction";
+    private static final Set<String> SDK_IMPLICIT_NAMESPACES = Set.of(
+            "System",
+            "System.Collections.Generic",
+            "System.IO",
+            "System.Linq",
+            "System.Net.Http",
+            "System.Threading",
+            "System.Threading.Tasks");
     private static final long REQUEST_TIMEOUT_MS = 4000;
     private static final long COMPLETION_TIMEOUT_MS = 10000;
     private static final long COMPLETION_RESOLVE_BUDGET_MS = 2500;
@@ -133,6 +143,8 @@ public final class DotnetLspService {
     private volatile boolean documentHighlightSupported;
     private volatile boolean callHierarchySupported;
     private volatile boolean codeActionSupported;
+    private volatile boolean codeActionResolveSupported;
+    private volatile boolean executeCommandSupported;
     private volatile boolean implementationSupported;
     private volatile boolean signatureHelpSupported;
     private volatile boolean workspaceSymbolSupported;
@@ -149,6 +161,8 @@ public final class DotnetLspService {
     private final Map<String, AtomicInteger> documentVersions = new ConcurrentHashMap<>();
     private final Map<String, String> openedContent = new ConcurrentHashMap<>();
     private final Map<String, List<JsonNode>> diagnosticsByUri = new ConcurrentHashMap<>();
+    private volatile Consumer<DotnetWorkspaceEdit> applyEditSink;
+    private volatile Set<String> implicitNamespaces = Set.of();
 
     public DotnetLspService(Resource resource, DotnetSdkService sdkService) {
         this.sdkService = sdkService;
@@ -157,6 +171,23 @@ public final class DotnetLspService {
 
     public void bindProject(Path projectPath) {
         this.projectPath = projectPath == null ? null : projectPath.toAbsolutePath().normalize();
+        this.implicitNamespaces = computeImplicitNamespaces(this.projectPath);
+    }
+
+    private static Set<String> computeImplicitNamespaces(Path projectPath) {
+        if (projectPath == null) {
+            return Set.of();
+        }
+        try {
+            String value = new DotnetProjectConfig(projectPath).readProperties()
+                    .getOrDefault(DotnetProjectConfig.IMPLICIT_USINGS, "");
+            if (value.equalsIgnoreCase("enable") || value.equalsIgnoreCase("true")) {
+                return SDK_IMPLICIT_NAMESPACES;
+            }
+        } catch (Exception e) {
+            log.debug("Falha ao ler ImplicitUsings do csproj: {}", e.getMessage());
+        }
+        return Set.of();
     }
 
     public State getState() {
@@ -353,6 +384,7 @@ public final class DotnetLspService {
             }
         }
         Set<String> imported = importedNamespaces(text);
+        imported.addAll(implicitNamespaces);
         String newline = dominantNewline(text);
         Position insertPos = usingInsertPosition(text);
         String needle = trimmed.toLowerCase(Locale.ROOT);
@@ -512,7 +544,7 @@ public final class DotnetLspService {
 
     private static Set<String> importedNamespaces(String text) {
         if (text == null || text.isEmpty()) {
-            return Set.of();
+            return new HashSet<>();
         }
         Set<String> imported = new HashSet<>();
         for (String raw : text.split("\n", -1)) {
@@ -1208,6 +1240,55 @@ public final class DotnetLspService {
         }
     }
 
+    public DotnetWorkspaceEdit resolveCodeActionEdit(JsonNode rawAction) {
+        LspJsonRpcClient rpc = client;
+        if (rawAction == null || rawAction.isNull() || rpc == null) {
+            return new DotnetWorkspaceEdit(Map.of());
+        }
+        try {
+            JsonNode action = rawAction;
+            JsonNode editNode = action.get("edit");
+            boolean needsResolve = (editNode == null || editNode.isNull())
+                    && codeActionResolveSupported
+                    && action.get("data") != null && !action.get("data").isNull();
+            if (needsResolve) {
+                JsonNode resolved = rpc.sendRequest("codeAction/resolve", action)
+                        .get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                if (resolved != null && !resolved.isNull()) {
+                    action = resolved;
+                    editNode = action.get("edit");
+                }
+            }
+            DotnetWorkspaceEdit edit = parseWorkspaceEdit(editNode);
+            JsonNode commandNode = action.get("command");
+            if (commandNode != null && commandNode.isObject()
+                    && !textOrEmpty(commandNode.get("command")).isBlank()) {
+                executeCommand(commandNode);
+            }
+            return edit;
+        } catch (Exception e) {
+            log.debug("Falha ao resolver code action: {}", e.getMessage());
+            return new DotnetWorkspaceEdit(Map.of());
+        }
+    }
+
+    private void executeCommand(JsonNode commandNode) {
+        LspJsonRpcClient rpc = client;
+        if (!executeCommandSupported || rpc == null) {
+            return;
+        }
+        try {
+            JsonNode args = commandNode.get("arguments");
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("command", textOrEmpty(commandNode.get("command")));
+            params.put("arguments", args == null || args.isNull() ? List.of() : args);
+            rpc.sendRequest("workspace/executeCommand", params)
+                    .get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            log.debug("Falha ao executar comando LSP: {}", e.getMessage());
+        }
+    }
+
     private void appendSyntheticUsingActions(List<CodeAction> actions, String uri, String text, Range range) {
         if (!workspaceSymbolSupported || text == null || text.isEmpty()) {
             return;
@@ -1223,6 +1304,7 @@ public final class DotnetLspService {
             }
         }
         Set<String> imported = importedNamespaces(text);
+        imported.addAll(implicitNamespaces);
         String newline = dominantNewline(text);
         Position insertPos = usingInsertPosition(text);
         int[] lineStarts = lineStartOffsets(text);
@@ -1321,35 +1403,25 @@ public final class DotnetLspService {
         }
         List<dtm.stools.component.panels.editor.code.api.TextEdit> edits =
                 parseWorkspaceEdit(item.get("edit"), requestUri);
+        JsonNode dataNode = item.get("data");
+        boolean hasData = dataNode != null && !dataNode.isNull();
         JsonNode commandNode = item.get("command");
-        Command command = null;
-        if (commandNode != null && commandNode.isObject()) {
-            String commandId = textOrEmpty(commandNode.get("command"));
-            String commandTitle = textOrEmpty(commandNode.get("title"));
-            if (!commandId.isBlank()) {
-                command = new Command(commandId, commandTitle.isBlank() ? title : commandTitle,
-                        commandArguments(commandNode.get("arguments")));
-            }
-        }
-        if (edits.isEmpty() && command == null) {
+        boolean hasServerCommand = commandNode != null && commandNode.isObject()
+                && !textOrEmpty(commandNode.get("command")).isBlank();
+
+        if (edits.isEmpty() && !hasData && !hasServerCommand) {
             return null;
         }
-        return new CodeAction(
-                title,
-                mapCodeActionKind(textOrEmpty(item.get("kind"))),
-                edits,
-                command,
-                item.path("isPreferred").asBoolean(false)
-        );
-    }
 
-    private static List<Object> commandArguments(JsonNode arguments) {
-        if (arguments == null || !arguments.isArray() || arguments.isEmpty()) {
-            return List.of();
+        CodeAction.CodeActionKind kind = mapCodeActionKind(textOrEmpty(item.get("kind")));
+        boolean preferred = item.path("isPreferred").asBoolean(false);
+
+        if (!edits.isEmpty()) {
+            return new CodeAction(title, kind, edits, null, preferred);
         }
-        List<Object> out = new ArrayList<>(arguments.size());
-        arguments.forEach(out::add);
-        return out;
+
+        Command command = new Command(APPLY_CODE_ACTION_COMMAND, title, List.of(requestUri, item));
+        return new CodeAction(title, kind, edits, command, preferred);
     }
 
     private static List<dtm.stools.component.panels.editor.code.api.TextEdit> parseWorkspaceEdit(
@@ -1940,6 +2012,8 @@ public final class DotnetLspService {
         documentHighlightSupported = false;
         callHierarchySupported = false;
         codeActionSupported = false;
+        codeActionResolveSupported = false;
+        executeCommandSupported = false;
         implementationSupported = false;
         signatureHelpSupported = false;
         workspaceSymbolSupported = false;
@@ -1998,6 +2072,9 @@ public final class DotnetLspService {
         documentHighlightSupported = supportsProvider(node(capabilities, "documentHighlightProvider"));
         callHierarchySupported = supportsProvider(node(capabilities, "callHierarchyProvider"));
         codeActionSupported = supportsProvider(node(capabilities, "codeActionProvider"));
+        codeActionResolveSupported = node(capabilities, "codeActionProvider") != null
+                && node(capabilities, "codeActionProvider").path("resolveProvider").asBoolean(false);
+        executeCommandSupported = node(capabilities, "executeCommandProvider") != null;
         implementationSupported = supportsProvider(node(capabilities, "implementationProvider"));
         signatureHelpSupported = supportsProvider(node(capabilities, "signatureHelpProvider"));
         completionResolveSupported = node(capabilities, "completionProvider") != null
@@ -2086,7 +2163,14 @@ public final class DotnetLspService {
         textDocument.put("rename", Map.of("dynamicRegistration", false, "prepareSupport", false));
         textDocument.put("formatting", Map.of("dynamicRegistration", false));
         textDocument.put("onTypeFormatting", Map.of("dynamicRegistration", false));
-        textDocument.put("codeAction", Map.of("dynamicRegistration", false));
+        textDocument.put("codeAction", Map.of(
+                "dynamicRegistration", false,
+                "isPreferredSupport", true,
+                "dataSupport", true,
+                "resolveSupport", Map.of("properties", List.of("edit")),
+                "codeActionLiteralSupport", Map.of("codeActionKind", Map.of("valueSet", List.of(
+                        "", "quickfix", "refactor", "refactor.extract", "refactor.inline",
+                        "refactor.rewrite", "source", "source.organizeImports", "source.fixAll")))));
         textDocument.put("semanticTokens", Map.of(
                 "dynamicRegistration", false,
                 "requests", Map.of("full", true),
@@ -2096,7 +2180,10 @@ public final class DotnetLspService {
         textDocument.put("inlayHint", Map.of("dynamicRegistration", false));
         textDocument.put("callHierarchy", Map.of("dynamicRegistration", false));
         textDocument.put("publishDiagnostics", Map.of("relatedInformation", false));
-        Map<String, Object> workspace = Map.of("symbol", Map.of("dynamicRegistration", false));
+        Map<String, Object> workspace = Map.of(
+                "symbol", Map.of("dynamicRegistration", false),
+                "applyEdit", true,
+                "executeCommand", Map.of("dynamicRegistration", false));
         return Map.of("textDocument", textDocument, "workspace", workspace);
     }
 
@@ -2138,6 +2225,26 @@ public final class DotnetLspService {
         });
         client.onNotification("window/showMessage", params -> {
         });
+        client.onRequest("workspace/applyEdit", params -> {
+            DotnetWorkspaceEdit edit = params == null
+                    ? new DotnetWorkspaceEdit(Map.of())
+                    : parseWorkspaceEdit(params.get("edit"));
+            Consumer<DotnetWorkspaceEdit> sink = applyEditSink;
+            boolean applied = false;
+            if (sink != null && !edit.isEmpty()) {
+                try {
+                    sink.accept(edit);
+                    applied = true;
+                } catch (Exception e) {
+                    log.debug("Falha ao aplicar workspace/applyEdit: {}", e.getMessage());
+                }
+            }
+            return Map.of("applied", applied);
+        });
+    }
+
+    public void setApplyEditSink(Consumer<DotnetWorkspaceEdit> sink) {
+        this.applyEditSink = sink;
     }
 
     private synchronized void syncDocument(String uri, Path filePath, String text) {

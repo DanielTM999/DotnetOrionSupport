@@ -1,5 +1,6 @@
 package dtm.ide;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import dtm.di.annotations.Singleton;
 import dtm.ide.api.annotations.PluginReference;
 import dtm.ide.api.context.IdeProjectContext;
@@ -63,6 +64,8 @@ import dtm.ide.wizard.NewSolutionProjectPanel;
 import dtm.request_actions.http.download.core.DownloadObserver;
 import dtm.stools.component.menu.bar.tree.MenuNode;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
+import dtm.stools.component.panels.editor.code.api.Command;
+import dtm.stools.component.panels.editor.code.api.CommandHandler;
 import dtm.stools.component.panels.editor.code.api.DocumentSymbol;
 import dtm.stools.component.panels.editor.code.api.Location;
 import dtm.stools.component.panels.editor.code.api.Position;
@@ -485,6 +488,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return lspService;
         }
         lspService = new DotnetLspService(getResource(), sdk);
+        lspService.setApplyEditSink(this::applyWorkspaceEditFromServer);
         lspService.addDiagnosticsPublishedListener(uri -> {
             Path file = DotnetProjectConventions.pathFromUri(uri);
             if (file == null) {
@@ -627,6 +631,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         editorRegistry.trackEditor(normalizePath(context.filePath()), context);
+        installCodeActionCommandHandler(context);
         triggerDiagnostics(normalizePath(context.filePath()), context.getText());
     }
 
@@ -641,6 +646,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Path file = normalizePath(editorContext.filePath());
         editorRegistry.trackEditor(file, editorContext);
+        installCodeActionCommandHandler(editorContext);
         triggerDiagnostics(file, editorContext.getText());
     }
 
@@ -1201,6 +1207,67 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return Collections.emptyList();
         }
         return service.codeActions(context.filePath(), context.text(), context.range(), context.diagnostics());
+    }
+
+    private void installCodeActionCommandHandler(IdeEditorContext context) {
+        Object codeEditor = resolveField(context, "codeEditor");
+        if (codeEditor == null) {
+            return;
+        }
+        try {
+            Method method = codeEditor.getClass().getMethod("setCommandHandler", CommandHandler.class);
+            CommandHandler handler = this::handleCodeActionCommand;
+            method.invoke(codeEditor, handler);
+        } catch (Exception e) {
+            log.debug("Não foi possível registrar CommandHandler de code action: {}", e.getMessage());
+        }
+    }
+
+    private void handleCodeActionCommand(Command command) {
+        if (command == null || !DotnetLspService.APPLY_CODE_ACTION_COMMAND.equals(command.id())) {
+            return;
+        }
+        List<Object> args = command.arguments();
+        if (args == null || args.size() < 2 || !(args.get(1) instanceof JsonNode rawAction)) {
+            return;
+        }
+        Object uriArg = args.get(0);
+        Path file = uriArg == null ? null : DotnetProjectConventions.pathFromUri(uriArg.toString());
+        DotnetLspService service = lspService;
+        if (service == null) {
+            return;
+        }
+        navigationExecutor().execute(() -> {
+            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, "Aplicando ação de código..."));
+            try {
+                DotnetWorkspaceEdit edit = service.resolveCodeActionEdit(rawAction);
+                if (!edit.isEmpty()) {
+                    Map<Path, String> updated = computeWorkspaceEditTexts(edit);
+                    SwingUtilities.invokeAndWait(() -> applyWorkspaceEditTexts(updated));
+                    SwingUtilities.invokeLater(() -> updated.keySet().forEach(this::requestRefreshDiagnostics));
+                } else if (file != null) {
+                    SwingUtilities.invokeLater(() -> requestRefreshDiagnostics(file));
+                }
+            } catch (Exception e) {
+                log.debug("Falha ao aplicar code action: {}", e.getMessage());
+                SwingUtilities.invokeLater(() -> setStatusBarText("Falha ao aplicar ação: " + e.getMessage()));
+            } finally {
+                SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
+            }
+        });
+    }
+
+    private void applyWorkspaceEditFromServer(DotnetWorkspaceEdit edit) {
+        if (edit == null || edit.isEmpty()) {
+            return;
+        }
+        try {
+            Map<Path, String> updated = computeWorkspaceEditTexts(edit);
+            SwingUtilities.invokeAndWait(() -> applyWorkspaceEditTexts(updated));
+            SwingUtilities.invokeLater(() -> updated.keySet().forEach(this::requestRefreshDiagnostics));
+        } catch (Exception e) {
+            log.debug("Falha ao aplicar edição vinda do servidor: {}", e.getMessage());
+        }
     }
 
     @Override

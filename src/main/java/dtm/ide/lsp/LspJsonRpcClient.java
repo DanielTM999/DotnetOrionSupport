@@ -19,6 +19,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 @Slf4j
 final class LspJsonRpcClient {
@@ -29,6 +30,7 @@ final class LspJsonRpcClient {
     private final AtomicLong nextId = new AtomicLong(1);
     private final Map<Long, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
     private final Map<String, Consumer<JsonNode>> notificationHandlers = new ConcurrentHashMap<>();
+    private final Map<String, Function<JsonNode, Object>> requestHandlers = new ConcurrentHashMap<>();
     private volatile Consumer<JsonNode> errorObserver;
     private final ExecutorService executor = Executors.newCachedThreadPool(daemonFactory("dotnet-lsp-rpc"));
     private final Future<?> reader;
@@ -75,6 +77,10 @@ final class LspJsonRpcClient {
 
     void onNotification(String method, Consumer<JsonNode> handler) {
         notificationHandlers.put(method, handler);
+    }
+
+    void onRequest(String method, Function<JsonNode, Object> handler) {
+        requestHandlers.put(method, handler);
     }
 
     void onError(Consumer<JsonNode> observer) {
@@ -155,23 +161,33 @@ final class LspJsonRpcClient {
 
         if (methodNode != null) {
             String method = methodNode.asText();
+            if (idNode != null) {
+                Object result = null;
+                Function<JsonNode, Object> requestHandler = requestHandlers.get(method);
+                if (requestHandler != null) {
+                    try {
+                        result = requestHandler.apply(message.get("params"));
+                    } catch (Exception e) {
+                        log.debug("Handler de request LSP {} falhou: {}", method, e.getMessage());
+                    }
+                }
+                ObjectNode response = MAPPER.createObjectNode();
+                response.put("jsonrpc", "2.0");
+                response.set("id", idNode);
+                response.set("result", result == null ? MAPPER.nullNode() : MAPPER.valueToTree(result));
+                try {
+                    writeMessage(response);
+                } catch (IOException e) {
+                    log.debug("Falha ao responder request LSP {}: {}", method, e.getMessage());
+                }
+                return;
+            }
             Consumer<JsonNode> handler = notificationHandlers.get(method);
             if (handler != null) {
                 try {
                     handler.accept(message.get("params"));
                 } catch (Exception e) {
                     log.debug("Handler LSP {} falhou: {}", method, e.getMessage());
-                }
-            }
-            if (idNode != null) {
-                ObjectNode response = MAPPER.createObjectNode();
-                response.put("jsonrpc", "2.0");
-                response.set("id", idNode);
-                response.putNull("result");
-                try {
-                    writeMessage(response);
-                } catch (IOException e) {
-                    log.debug("Falha ao responder request LSP {}: {}", method, e.getMessage());
                 }
             }
         }
