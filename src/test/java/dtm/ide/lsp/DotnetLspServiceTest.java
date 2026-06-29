@@ -1,12 +1,42 @@
 package dtm.ide.lsp;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DotnetLspServiceTest {
+
+    @Test
+    void loadTargetUsesTheOnlySolutionAtWorkspaceRoot(@TempDir Path root) throws Exception {
+        Path solution = Files.createFile(root.resolve("App.sln"));
+        Files.createDirectories(root.resolve("src"));
+
+        assertEquals(solution, DotnetLspService.resolveLoadTarget(root));
+    }
+
+    @Test
+    void loadTargetKeepsWorkspaceRootForSeveralSolutions(@TempDir Path root) throws Exception {
+        Files.createFile(root.resolve("App.sln"));
+        Files.createFile(root.resolve("Tools.sln"));
+
+        assertEquals(root, DotnetLspService.resolveLoadTarget(root));
+    }
+
+    @Test
+    void loadTargetKeepsMultiProjectDirectoryWithoutSolution(@TempDir Path root) throws Exception {
+        Files.createDirectories(root.resolve("src/App"));
+        Files.createDirectories(root.resolve("src/Library"));
+        Files.createFile(root.resolve("src/App/App.csproj"));
+        Files.createFile(root.resolve("src/Library/Library.csproj"));
+
+        assertEquals(root, DotnetLspService.resolveLoadTarget(root));
+    }
 
     @Test
     void progressPercentStartsAtZeroWithoutTotals() {

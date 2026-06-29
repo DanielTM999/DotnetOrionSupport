@@ -39,12 +39,21 @@ public final class DotnetBuild {
     private final Map<String, Process> activeProcesses = new ConcurrentHashMap<>();
 
     public RunProcessHandle build(Path project, Path dotnet, String configuration) {
+        return build(project, dotnet, configuration, null, null);
+    }
+
+    public RunProcessHandle build(Path project, Path dotnet, String configuration,
+                                  Path projectFile, String targetFramework) {
         List<String> command = new ArrayList<>();
         command.add(dotnet.toAbsolutePath().toString());
         command.add("build");
         command.add("-c");
         command.add(configuration == null || configuration.isBlank() ? "Debug" : configuration);
         command.add("--nologo");
+        if (projectFile != null) {
+            command.add(projectFile.toAbsolutePath().toString());
+        }
+        addFrameworkOption(command, targetFramework);
         return launchProcess(DotnetRunSupport.TYPE_BUILD, command, project, false);
     }
 
@@ -63,12 +72,21 @@ public final class DotnetBuild {
     }
 
     public RunProcessHandle test(Path project, Path dotnet, String configuration) {
+        return test(project, dotnet, configuration, null, null);
+    }
+
+    public RunProcessHandle test(Path project, Path dotnet, String configuration,
+                                 Path projectFile, String targetFramework) {
         List<String> command = new ArrayList<>();
         command.add(dotnet.toAbsolutePath().toString());
         command.add("test");
         command.add("-c");
         command.add(configuration == null || configuration.isBlank() ? "Debug" : configuration);
         command.add("--nologo");
+        if (projectFile != null) {
+            command.add(projectFile.toAbsolutePath().toString());
+        }
+        addFrameworkOption(command, targetFramework);
         return launchProcess(DotnetRunSupport.TYPE_TEST, command, project, false);
     }
 
@@ -84,6 +102,11 @@ public final class DotnetBuild {
     }
 
     public Process launchTest(Path project, Path dotnet, String configuration, String filter) throws IOException {
+        return launchTest(project, dotnet, configuration, filter, false);
+    }
+
+    public Process launchTest(Path project, Path dotnet, String configuration,
+                              String filter, boolean waitForDebugger) throws IOException {
         List<String> command = new ArrayList<>();
         command.add(dotnet.toAbsolutePath().toString());
         command.add("test");
@@ -98,6 +121,10 @@ public final class DotnetBuild {
         builder.directory(project.toFile());
         builder.redirectErrorStream(true);
         applyDotnetEnv(builder, firstCommandPath(command));
+        builder.environment().put("DOTNET_CLI_UI_LANGUAGE", "en");
+        if (waitForDebugger) {
+            builder.environment().put("VSTEST_HOST_DEBUG", "1");
+        }
         Process process = builder.start();
         registerProcess(DotnetRunSupport.TYPE_TEST, process);
         return process;
@@ -218,7 +245,8 @@ public final class DotnetBuild {
     public RunProcessHandle buildThenRun(Path project, Path dotnet, String configuration,
                                          Path projectFile, String targetFramework, String launchProfile,
                                          Function<String, OutputPanelHandle> panelProvider,
-                                         Runnable showRunOutput, Map<String, String> launchEnv) {
+                                         Runnable showRunOutput, List<String> programArgs,
+                                         Map<String, String> launchEnv, Path runWorkingDirectory) {
         String config = configuration == null || configuration.isBlank() ? "Debug" : configuration;
         PipedInputStream consoleIn;
         PipedOutputStream consoleOut;
@@ -251,6 +279,10 @@ public final class DotnetBuild {
         }
         addFrameworkOption(runCmd, targetFramework);
         addLaunchProfileOption(runCmd, launchProfile);
+        if (programArgs != null && !programArgs.isEmpty()) {
+            runCmd.add("--");
+            runCmd.addAll(programArgs);
+        }
 
         Thread worker = new Thread(() -> {
             try (OutputStream out = consoleOut) {
@@ -274,7 +306,7 @@ public final class DotnetBuild {
                 }
                 writeLine(out, "> " + String.join(" ", runCmd));
                 ProcessBuilder runBuilder = new ProcessBuilder(runCmd)
-                        .directory(project.toFile())
+                        .directory((runWorkingDirectory == null ? project : runWorkingDirectory).toFile())
                         .redirectErrorStream(true);
                 applyDotnetEnv(runBuilder, dotnet);
                 mergeLaunchEnv(runBuilder, launchEnv);
@@ -416,6 +448,69 @@ public final class DotnetBuild {
                     DotnetDapDebugSession s = sessionRef.get();
                     if (s != null) {
                         s.terminate();
+                    }
+                    worker.interrupt();
+                })
+                .stdinMode(RunProcessHandle.StdinMode.TERMINAL)
+                .build();
+    }
+
+    public RunProcessHandle attachDebugger(Path project, Path dotnet, Path netcoredbg, long pid,
+                                           List<RunBreakpointData> breakpoints, DotnetDebugView view,
+                                           Consumer<DotnetDapDebugSession> sessionSink,
+                                           boolean breakOnAllExceptions) {
+        PipedInputStream consoleIn;
+        PipedOutputStream consoleOut;
+        try {
+            consoleIn = new PipedInputStream(1 << 16);
+            consoleOut = new PipedOutputStream(consoleIn);
+        } catch (IOException e) {
+            return errorHandle("Falha ao preparar console: " + e.getMessage());
+        }
+        AtomicBoolean done = new AtomicBoolean(false);
+        AtomicReference<DotnetDapDebugSession> sessionRef = new AtomicReference<>();
+        DeferredOutputStream stdinBridge = new DeferredOutputStream();
+        Thread worker = new Thread(() -> {
+            try (OutputStream out = consoleOut) {
+                writeLine(out, "> netcoredbg attach PID " + pid);
+                DotnetDapDebugSession session = new DotnetDapDebugSession(
+                        netcoredbg, dotnet, null, project, null, null, "Debug", List.of(),
+                        breakpoints == null ? List.of() : breakpoints, view, out, stdinBridge,
+                        null, pid, null);
+                session.setBreakOnAllExceptions(breakOnAllExceptions);
+                sessionRef.set(session);
+                if (sessionSink != null) {
+                    sessionSink.accept(session);
+                }
+                session.start();
+                session.awaitTermination();
+            } catch (Exception e) {
+                safeWriteLine(consoleOut, "[erro] " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            } finally {
+                done.set(true);
+                if (sessionSink != null) {
+                    sessionSink.accept(null);
+                }
+                if (view != null) {
+                    try {
+                        view.onDebugFinished();
+                    } catch (Exception ignored) {
+                    }
+                }
+                stdinBridge.closeQuietly();
+            }
+        }, "dotnet-attach-debug");
+        worker.setDaemon(true);
+        worker.start();
+        return RunProcessHandle.builder()
+                .output(consoleIn)
+                .input(stdinBridge)
+                .readonly(false)
+                .alive(() -> !done.get())
+                .terminate(() -> {
+                    DotnetDapDebugSession session = sessionRef.get();
+                    if (session != null) {
+                        session.terminate();
                     }
                     worker.interrupt();
                 })

@@ -13,6 +13,7 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTextPane;
+import javax.swing.JTextField;
 import javax.swing.JTree;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
@@ -54,6 +55,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Supplier;
+import java.util.function.LongConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -67,6 +69,8 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private static final Pattern WIN_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\s\"]+");
     private static final Pattern FAIL_COUNT =
             Pattern.compile("(?:com falha|failed)\\D*(\\d+)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DEBUG_PROCESS_ID =
+            Pattern.compile("(?:process(?:o)?\\s*(?:id|pid)|pid)\\D+(\\d+)", Pattern.CASE_INSENSITIVE);
     private static final int RUN_ICON_WIDTH = 22;
 
     private static final Color C_ACCENT = new Color(0x4FB6FF);
@@ -77,6 +81,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private final Supplier<Path> projectSupplier;
     private final Supplier<DotnetSdkService> sdkSupplier;
     private final Supplier<String> configSupplier;
+    private final LongConsumer debugProcessHandler;
     private final DotnetBuild build = new DotnetBuild();
 
     private final DefaultMutableTreeNode root = new DefaultMutableTreeNode("Testes");
@@ -101,7 +106,9 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private final JButton refreshButton = new JButton("Atualizar");
     private final JButton runAllButton = new JButton("Rodar todos", new PlayIcon(11, new Color(0x4CAF50)));
     private final JButton runSelectedButton = new JButton("Rodar selecionado");
+    private final JButton debugSelectedButton = new JButton("Depurar selecionado");
     private final JButton stopButton = new JButton("Parar");
+    private final JTextField filterField = new JTextField(20);
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "dotnet-test-explorer");
@@ -113,10 +120,16 @@ public final class DotnetTestExplorerPanel extends JPanel {
 
     public DotnetTestExplorerPanel(Supplier<Path> projectSupplier, Supplier<DotnetSdkService> sdkSupplier,
                                    Supplier<String> configSupplier) {
+        this(projectSupplier, sdkSupplier, configSupplier, null);
+    }
+
+    public DotnetTestExplorerPanel(Supplier<Path> projectSupplier, Supplier<DotnetSdkService> sdkSupplier,
+                                   Supplier<String> configSupplier, LongConsumer debugProcessHandler) {
         super(new BorderLayout());
         this.projectSupplier = projectSupplier;
         this.sdkSupplier = sdkSupplier;
         this.configSupplier = configSupplier;
+        this.debugProcessHandler = debugProcessHandler;
         buildUi();
         addHierarchyListener(e -> {
             if (isShowing()) {
@@ -131,8 +144,12 @@ public final class DotnetTestExplorerPanel extends JPanel {
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
         toolbar.add(runAllButton);
         toolbar.add(runSelectedButton);
+        toolbar.add(debugSelectedButton);
         toolbar.add(stopButton);
         toolbar.add(refreshButton);
+        toolbar.add(new JLabel("Filtro:"));
+        filterField.putClientProperty("JTextField.placeholderText", "FullyQualifiedName~... ou trait");
+        toolbar.add(filterField);
         toolbar.add(Box.createHorizontalStrut(12));
         summary.setOpaque(false);
         passedLabel.setToolTipText("Passaram");
@@ -147,6 +164,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
         refreshButton.addActionListener(e -> refresh());
         runAllButton.addActionListener(e -> runAll());
         runSelectedButton.addActionListener(e -> runSelected());
+        debugSelectedButton.addActionListener(e -> debugSelected());
         stopButton.addActionListener(e -> stop());
         stopButton.setEnabled(false);
         runAllButton.setToolTipText("Executa todos os testes do projeto");
@@ -277,7 +295,9 @@ public final class DotnetTestExplorerPanel extends JPanel {
             setStatus("Nenhum teste descoberto. Use Atualizar primeiro.");
             return;
         }
-        runFilter(null, new ArrayList<>(allTests), "Rodando todos os testes...");
+        String filter = filterField.getText() == null ? "" : filterField.getText().trim();
+        runFilter(filter.isEmpty() ? null : filter,
+                filter.isEmpty() ? new ArrayList<>(allTests) : List.of(), "Rodando todos os testes...");
     }
 
     private void runSelected() {
@@ -287,6 +307,18 @@ public final class DotnetTestExplorerPanel extends JPanel {
             return;
         }
         setStatus("Selecione um teste na árvore.");
+    }
+
+    private void debugSelected() {
+        TreePath path = tree.getSelectionPath();
+        if (path == null || !(path.getLastPathComponent() instanceof DefaultMutableTreeNode node)
+                || !(node.getUserObject() instanceof TestLeaf leaf)) {
+            setStatus("Selecione um teste individual para depurar.");
+            return;
+        }
+        String test = leaf.fullName();
+        runFilter("FullyQualifiedName~" + filterValue(test), List.of(test),
+                "Aguardando debugger para " + shortName(test) + "...", true);
     }
 
     private void runNode(TreePath path) {
@@ -323,6 +355,10 @@ public final class DotnetTestExplorerPanel extends JPanel {
     }
 
     private void runFilter(String filter, List<String> scope, String message) {
+        runFilter(filter, scope, message, false);
+    }
+
+    private void runFilter(String filter, List<String> scope, String message, boolean debug) {
         if (busy) {
             return;
         }
@@ -342,11 +378,19 @@ public final class DotnetTestExplorerPanel extends JPanel {
             int exit = -1;
             List<String> failed = new ArrayList<>();
             try {
-                Process process = build.launchTest(project, dotnet.get(), configuration, filter);
+                Process process = build.launchTest(project, dotnet.get(), configuration, filter, debug);
+                boolean debuggerAttached = false;
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
+                        if (debug && !debuggerAttached) {
+                            Long pid = debugProcessId(line);
+                            if (pid != null && debugProcessHandler != null) {
+                                debuggerAttached = true;
+                                debugProcessHandler.accept(pid);
+                            }
+                        }
                         if (!WARNING_LINE.matcher(line).find()) {
                             String consoleLine = shortenPaths(prettifyTestLine(line));
                             SwingUtilities.invokeLater(() -> appendConsole(consoleLine + System.lineSeparator()));
@@ -537,6 +581,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
         refreshButton.setEnabled(!value);
         runAllButton.setEnabled(!value);
         runSelectedButton.setEnabled(!value);
+        debugSelectedButton.setEnabled(!value && debugProcessHandler != null);
         stopButton.setEnabled(value);
         if (message != null) {
             setStatus(message);
@@ -669,6 +714,21 @@ public final class DotnetTestExplorerPanel extends JPanel {
 
     private static String filterValue(String name) {
         return name.contains("(") ? name.substring(0, name.indexOf('(')) : name;
+    }
+
+    static Long debugProcessId(String line) {
+        if (line == null) {
+            return null;
+        }
+        Matcher matcher = DEBUG_PROCESS_ID.matcher(line);
+        if (!matcher.find()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(matcher.group(1));
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static String shortName(String qualified) {

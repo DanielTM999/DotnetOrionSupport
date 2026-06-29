@@ -12,6 +12,9 @@ import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Dimension;
@@ -24,17 +27,30 @@ import java.util.function.Supplier;
 public final class DotnetRunConfigurationForm implements RunConfigurationForm {
 
     private static final String DEFAULT_PROFILE = "(padrão)";
+    private static final String DEFAULT_TFM = "(automático)";
 
     private final JPanel panel = new JPanel();
     private final JComboBox<Path> projectCombo = new JComboBox<>();
     private final JComboBox<String> configCombo = new JComboBox<>(new String[]{"Debug", "Release"});
+    private final JComboBox<String> frameworkCombo = new JComboBox<>();
     private final JComboBox<String> profileCombo = new JComboBox<>();
+    private final JTextField argumentsField = new JTextField();
+    private final JTextField workingDirectoryField = new JTextField();
+    private final JTextArea environmentArea = new JTextArea(4, 36);
+    private final String type;
 
     private RunConfigurationData current;
 
     public DotnetRunConfigurationForm(Supplier<Path> projectRootSupplier) {
+        this(projectRootSupplier, DotnetRunSupport.TYPE_RUN);
+    }
+
+    public DotnetRunConfigurationForm(Supplier<Path> projectRootSupplier, String type) {
+        this.type = type == null ? DotnetRunSupport.TYPE_RUN : type;
         Path root = projectRootSupplier == null ? null : projectRootSupplier.get();
-        List<Path> projects = TargetFramework.findRunnableProjectFiles(root);
+        List<Path> projects = DotnetRunSupport.TYPE_RUN.equals(this.type)
+                ? TargetFramework.findRunnableProjectFiles(root)
+                : TargetFramework.findProjectFiles(root);
         if (projects.isEmpty()) {
             projects = TargetFramework.findProjectFiles(root);
         }
@@ -42,7 +58,8 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
             projectCombo.addItem(project);
         }
         projectCombo.setRenderer(new ProjectRenderer());
-        projectCombo.addActionListener(e -> reloadProfiles());
+        projectCombo.addActionListener(e -> reloadProjectOptions());
+        reloadFrameworks();
         reloadProfiles();
         build();
     }
@@ -60,12 +77,19 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
             properties.put(DotnetRunSupport.PROP_PROJECT, project.toString());
         }
         properties.put(DotnetRunSupport.PROP_CONFIGURATION, String.valueOf(configCombo.getSelectedItem()));
+        Object framework = frameworkCombo.getSelectedItem();
+        if (framework != null && !DEFAULT_TFM.equals(framework)) {
+            properties.put(DotnetRunSupport.PROP_TARGET_FRAMEWORK, framework.toString());
+        }
         Object profile = profileCombo.getSelectedItem();
         if (profile != null && !DEFAULT_PROFILE.equals(profile)) {
             properties.put(DotnetRunSupport.PROP_LAUNCH_PROFILE, profile.toString());
         }
+        putIfNotBlank(properties, DotnetRunSupport.PROP_PROGRAM_ARGS, argumentsField.getText());
+        putIfNotBlank(properties, DotnetRunSupport.PROP_WORKING_DIRECTORY, workingDirectoryField.getText());
+        putIfNotBlank(properties, DotnetRunSupport.PROP_ENVIRONMENT, environmentArea.getText());
         RunConfigurationData data = current != null ? current : new RunConfigurationData();
-        data.setType(DotnetRunSupport.TYPE_RUN);
+        data.setType(type);
         data.setProperties(properties);
         data.setTitle(null);
         return data;
@@ -89,9 +113,15 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         if (configuration != null) {
             configCombo.setSelectedItem(configuration.toString());
         }
+        reloadFrameworks();
+        Object framework = properties.get(DotnetRunSupport.PROP_TARGET_FRAMEWORK);
+        frameworkCombo.setSelectedItem(framework == null ? DEFAULT_TFM : framework.toString());
         reloadProfiles();
         Object profile = properties.get(DotnetRunSupport.PROP_LAUNCH_PROFILE);
         profileCombo.setSelectedItem(profile == null ? DEFAULT_PROFILE : profile.toString());
+        argumentsField.setText(textProperty(properties, DotnetRunSupport.PROP_PROGRAM_ARGS));
+        workingDirectoryField.setText(textProperty(properties, DotnetRunSupport.PROP_WORKING_DIRECTORY));
+        environmentArea.setText(textProperty(properties, DotnetRunSupport.PROP_ENVIRONMENT));
     }
 
     private void build() {
@@ -101,7 +131,18 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         panel.add(Box.createVerticalStrut(8));
         panel.add(labeled("Configuração", configCombo));
         panel.add(Box.createVerticalStrut(8));
-        panel.add(labeled("Perfil de launch", profileCombo));
+        panel.add(labeled("Target framework", frameworkCombo));
+        if (DotnetRunSupport.TYPE_RUN.equals(type)) {
+            panel.add(Box.createVerticalStrut(8));
+            panel.add(labeled("Perfil de launch", profileCombo));
+            panel.add(Box.createVerticalStrut(8));
+            panel.add(labeled("Argumentos do programa", argumentsField));
+            panel.add(Box.createVerticalStrut(8));
+            panel.add(labeled("Diretório de trabalho", workingDirectoryField));
+            panel.add(Box.createVerticalStrut(8));
+            environmentArea.setLineWrap(false);
+            panel.add(labeledArea("Variáveis de ambiente (uma NOME=VALOR por linha)", environmentArea));
+        }
     }
 
     private JPanel labeled(String label, JComponent field) {
@@ -112,6 +153,17 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 56));
         row.add(new JLabel(label), BorderLayout.NORTH);
         row.add(field, BorderLayout.CENTER);
+        return row;
+    }
+
+    private JPanel labeledArea(String label, JTextArea field) {
+        JScrollPane scroll = new JScrollPane(field);
+        scroll.setPreferredSize(new Dimension(420, 90));
+        JPanel row = new JPanel(new BorderLayout(0, 4));
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 120));
+        row.add(new JLabel(label), BorderLayout.NORTH);
+        row.add(scroll, BorderLayout.CENTER);
         return row;
     }
 
@@ -130,6 +182,29 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         }
     }
 
+    private void reloadProjectOptions() {
+        reloadFrameworks();
+        reloadProfiles();
+    }
+
+    private void reloadFrameworks() {
+        Object previous = frameworkCombo.getSelectedItem();
+        frameworkCombo.removeAllItems();
+        frameworkCombo.addItem(DEFAULT_TFM);
+        Path project = (Path) projectCombo.getSelectedItem();
+        if (project != null) {
+            for (String tfm : TargetFramework.readTfms(project)) {
+                if (!DotnetRunSupport.TYPE_RUN.equals(type)
+                        || TargetFramework.selectRunnableTfm(List.of(tfm), TargetFramework.isWindows()).isPresent()) {
+                    frameworkCombo.addItem(tfm);
+                }
+            }
+        }
+        if (previous != null) {
+            frameworkCombo.setSelectedItem(previous);
+        }
+    }
+
     private void selectProject(String pathText) {
         try {
             Path target = Path.of(pathText).toAbsolutePath().normalize();
@@ -142,6 +217,17 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
             }
         } catch (Exception ignored) {
         }
+    }
+
+    private static void putIfNotBlank(Map<String, Object> properties, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            properties.put(key, value.trim());
+        }
+    }
+
+    private static String textProperty(Map<String, Object> properties, String key) {
+        Object value = properties.get(key);
+        return value == null ? "" : value.toString();
     }
 
     private static String projectName(Path file) {

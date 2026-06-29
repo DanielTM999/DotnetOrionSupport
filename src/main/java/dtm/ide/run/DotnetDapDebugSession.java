@@ -80,6 +80,7 @@ final class DotnetDapDebugSession {
     private volatile boolean breakOnAllExceptions;
     private volatile DotnetHotReloadAgent hotReloadAgent;
     private final AtomicBoolean hotReloadInProgress = new AtomicBoolean(false);
+    private volatile TemporaryBreakpoint temporaryBreakpoint;
 
     DotnetDapDebugSession(Path netcoredbg, Path dotnet, Path program, Path cwd, Path projectFile,
                           String targetFramework, String configuration, List<String> programArgs,
@@ -225,6 +226,67 @@ final class DotnetDapDebugSession {
 
     void restart() {
         sendRequest("restart", MAPPER.createObjectNode());
+    }
+
+    boolean setNextStatement(Path file, int line0Based) {
+        if (!isStopped() || file == null || line0Based < 0) {
+            return false;
+        }
+        ObjectNode source = MAPPER.createObjectNode();
+        source.put("path", file.toAbsolutePath().normalize().toString());
+        ObjectNode args = MAPPER.createObjectNode();
+        args.set("source", source);
+        args.put("line", line0Based + 1);
+        args.put("column", 1);
+        sendRequestForResult("gotoTargets", args).thenCompose(body -> {
+            JsonNode targets = body.path("targets");
+            if (!targets.isArray() || targets.isEmpty()) {
+                return CompletableFuture.failedFuture(new IllegalStateException("linha sem destino DAP válido"));
+            }
+            ObjectNode go = MAPPER.createObjectNode();
+            go.put("threadId", threadId);
+            go.put("targetId", targets.get(0).path("id").asInt());
+            return sendRequestForResult("goto", go);
+        }).exceptionally(error -> {
+            safeWriteProgram("[debug] Set Next Statement falhou: " + error.getMessage() + System.lineSeparator());
+            return null;
+        });
+        return true;
+    }
+
+    boolean runToCursor(Path file, int line0Based) {
+        if (!isStopped() || file == null || line0Based < 0) {
+            return false;
+        }
+        Path key = file.toAbsolutePath().normalize();
+        NavigableSet<Integer> lines = liveBreakpoints.computeIfAbsent(key, ignored -> new TreeSet<>());
+        boolean added;
+        synchronized (lines) {
+            added = lines.add(line0Based);
+        }
+        temporaryBreakpoint = new TemporaryBreakpoint(key, line0Based, added);
+        sendBreakpointsForFile(key, lines).thenRun(this::resume).exceptionally(error -> {
+            clearTemporaryBreakpoint();
+            safeWriteProgram("[debug] Run to Cursor falhou: " + error.getMessage() + System.lineSeparator());
+            return null;
+        });
+        return true;
+    }
+
+    private void clearTemporaryBreakpoint() {
+        TemporaryBreakpoint temporary = temporaryBreakpoint;
+        temporaryBreakpoint = null;
+        if (temporary == null || !temporary.added()) {
+            return;
+        }
+        NavigableSet<Integer> lines = liveBreakpoints.get(temporary.file());
+        if (lines == null) {
+            return;
+        }
+        synchronized (lines) {
+            lines.remove(temporary.line());
+        }
+        sendBreakpointsForFile(temporary.file(), lines);
     }
 
     void applyHotReload(Path activeFile, String activeText, Consumer<DotnetHotReloadResult> resultSink) {
@@ -762,6 +824,7 @@ final class DotnetDapDebugSession {
                 sendConfigurationIfReady();
             }
             case "stopped" -> {
+                clearTemporaryBreakpoint();
                 long ticket = stoppedTicket.incrementAndGet();
                 JsonNode stoppedBody = msg.path("body");
                 int stoppedThread = msg.path("body").path("threadId").asInt(0);
@@ -1258,6 +1321,9 @@ final class DotnetDapDebugSession {
                             + ": " + accepted + "/" + (total == 0 ? snapshot.size() : total)
                             + " aceitos." + System.lineSeparator());
                 });
+    }
+
+    private record TemporaryBreakpoint(Path file, int line, boolean added) {
     }
 
     private void captureCallStack(JsonNode frames) {

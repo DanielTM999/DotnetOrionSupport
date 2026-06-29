@@ -54,6 +54,7 @@ import dtm.ide.settings.DotnetPluginSettings;
 import dtm.ide.settings.DotnetSettingsPage;
 import dtm.ide.settings.TreeLayout;
 import dtm.ide.ui.DotnetProjectConfigPanel;
+import dtm.ide.ui.DotnetProcessPickerPanel;
 import dtm.ide.ui.DotnetTestExplorerPanel;
 import dtm.ide.ui.NewCSharpItemPanel;
 import dtm.ide.ui.NuGetManagerPanel;
@@ -407,40 +408,57 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         SwingUtilities.invokeLater(() -> showProgress(LSP_PROGRESS_ID, "Restaurando pacotes (dotnet restore)..."));
-        Process process = null;
         try {
-            process = new ProcessBuilder(dotnet.toAbsolutePath().toString(), "restore")
-                    .directory(project.toFile())
-                    .redirectErrorStream(true)
-                    .start();
-            Process started = process;
-            Thread drain = new Thread(() -> drainQuietly(started.getInputStream()), "dotnet-restore-drain");
-            drain.setDaemon(true);
-            drain.start();
-            if (!process.waitFor(RESTORE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                log.warn("dotnet restore excedeu {}s e foi abortado.", RESTORE_TIMEOUT_SECONDS);
-                process.destroyForcibly();
+            for (Path projectFile : projectFiles) {
+                if (!isProjectCurrent(ticket, project) || !needsRestore(projectFile)) {
+                    continue;
+                }
+                restoreProject(dotnet, projectFile);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Exception e) {
             log.debug("Falha ao restaurar pacotes do projeto: {}", e.getMessage());
         } finally {
-            if (process != null && process.isAlive()) {
+            SwingUtilities.invokeLater(() -> hideProgress(LSP_PROGRESS_ID));
+        }
+    }
+
+    private static void restoreProject(Path dotnet, Path projectFile) throws Exception {
+        Path directory = projectFile.getParent();
+        Process process = new ProcessBuilder(
+                dotnet.toAbsolutePath().toString(), "restore", projectFile.toAbsolutePath().toString())
+                .directory(directory == null ? projectFile.toAbsolutePath().getParent().toFile() : directory.toFile())
+                .redirectErrorStream(true)
+                .start();
+        try {
+            Thread drain = new Thread(() -> drainQuietly(process.getInputStream()), "dotnet-restore-drain");
+            drain.setDaemon(true);
+            drain.start();
+            if (!process.waitFor(RESTORE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                log.warn("dotnet restore de {} excedeu {}s e foi abortado.",
+                        projectFile.getFileName(), RESTORE_TIMEOUT_SECONDS);
                 process.destroyForcibly();
             }
-            SwingUtilities.invokeLater(() -> hideProgress(LSP_PROGRESS_ID));
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
         }
     }
 
     private static boolean needsRestore(List<Path> projectFiles) {
         for (Path projectFile : projectFiles) {
-            Path dir = projectFile.getParent();
-            if (dir != null && !Files.isRegularFile(dir.resolve("obj").resolve("project.assets.json"))) {
+            if (needsRestore(projectFile)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static boolean needsRestore(Path projectFile) {
+        Path dir = projectFile == null ? null : projectFile.getParent();
+        return dir != null && !Files.isRegularFile(dir.resolve("obj").resolve("project.assets.json"));
     }
 
     private static void drainQuietly(InputStream in) {
@@ -705,8 +723,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
             if (service == null) {
                 return;
             }
+            EditorConfigSettings.FormatOptions options = EditorConfigSettings.resolve(file, 4, true);
             List<TextEdit> edits = service.onTypeFormatting(
-                    file, text, line, col, String.valueOf(trigger), 4, true);
+                    file, text, line, col, String.valueOf(trigger), options.tabSize(), options.insertSpaces());
             if (edits == null || edits.isEmpty()) {
                 return;
             }
@@ -969,11 +988,33 @@ public class DotnetIdeAdapter extends IdeAdapter {
         menu.separator()
                 .item("Go to Implementation", isImplementationAvailable(editorContext),
                         e -> onGoToImplementation(editorContext))
+                .item("Go to Type Definition", isTypeDefinitionAvailable(editorContext),
+                        e -> onGoToTypeDefinition(editorContext))
                 .item("Rename Symbol...", isRenameAvailable(editorContext),
                         e -> showRenameSymbolDialog(editorContext))
+                .item("Run to Cursor", enabled,
+                        e -> runToCursor(editorContext))
+                .item("Set Next Statement", enabled,
+                        e -> setNextStatement(editorContext))
                 .item("Evaluate Expression...", enabled, e -> showEvaluateDialog(editorContext, expression))
                 .item("Add Watch", enabled && expression != null && !expression.isBlank(),
                         e -> addWatchExpression(expression));
+    }
+
+    private void runToCursor(IdeEditorContext context) {
+        boolean sent = context != null && runSupport.runToCursor(
+                context.filePath(), context.getCaretLine());
+        if (!sent) {
+            setStatusBarText("Run to Cursor exige uma sessão de debug pausada.");
+        }
+    }
+
+    private void setNextStatement(IdeEditorContext context) {
+        boolean sent = context != null && runSupport.setNextStatement(
+                context.filePath(), context.getCaretLine());
+        if (!sent) {
+            setStatusBarText("Set Next Statement exige uma sessão de debug pausada.");
+        }
     }
 
     @Override
@@ -1030,6 +1071,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 && identifierAt(context.getText(), context.getCaretOffset()) != null;
     }
 
+    private boolean isTypeDefinitionAvailable(IdeEditorContext context) {
+        DotnetLspService service = lspService;
+        return service != null && service.isTypeDefinitionReady()
+                && context != null
+                && context.filePath() != null
+                && isCSharpLike(context.filePath())
+                && identifierAt(context.getText(), context.getCaretOffset()) != null;
+    }
+
     private void showRenameSymbolDialog(IdeEditorContext context) {
         if (context == null || context.filePath() == null) {
             return;
@@ -1077,6 +1127,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     return;
                 }
                 Map<Path, String> updated = computeWorkspaceEditTexts(workspaceEdit);
+                if (!confirmRenamePreview(workspaceEdit, newName)) {
+                    SwingUtilities.invokeLater(() -> setStatusBarText("Rename cancelado."));
+                    return;
+                }
                 SwingUtilities.invokeAndWait(() -> applyWorkspaceEditTexts(updated));
                 SwingUtilities.invokeLater(() -> {
                     updated.keySet().forEach(this::requestRefreshDiagnostics);
@@ -1088,6 +1142,43 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
             }
         });
+    }
+
+    private boolean confirmRenamePreview(DotnetWorkspaceEdit edit, String newName) {
+        StringBuilder message = new StringBuilder("Renomear para '")
+                .append(newName).append("' fará ")
+                .append(edit.editCount()).append(" alteração(ões) em ")
+                .append(edit.changes().size()).append(" arquivo(s):");
+        int shown = 0;
+        for (Map.Entry<Path, List<TextEdit>> entry : edit.changes().entrySet()) {
+            if (shown++ == 8) {
+                message.append("\n… e mais ").append(edit.changes().size() - 8).append(" arquivo(s)");
+                break;
+            }
+            message.append("\n• ").append(entry.getKey().getFileName())
+                    .append(" (").append(entry.getValue().size()).append(")");
+        }
+        final int[] result = {-1};
+        Runnable show = () -> result[0] = createModernDialogBuilder()
+                .title("Preview de Rename")
+                .draggable(true)
+                .message(message.toString())
+                .accentColor(new Color(59, 130, 246))
+                .option("Aplicar", 0, new Color(59, 130, 246), Color.WHITE)
+                .option("Cancelar", 1, new Color(220, 53, 69), Color.WHITE)
+                .type(ModernDialog.Type.QUESTION)
+                .show();
+        try {
+            if (SwingUtilities.isEventDispatchThread()) {
+                show.run();
+            } else {
+                SwingUtilities.invokeAndWait(show);
+            }
+            return result[0] == 0;
+        } catch (Exception e) {
+            log.debug("Falha ao exibir preview de rename: {}", e.getMessage());
+            return false;
+        }
     }
 
     private Map<Path, String> computeWorkspaceEditTexts(DotnetWorkspaceEdit workspaceEdit) throws Exception {
@@ -1276,14 +1367,16 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (service == null || context == null || context.file() == null || !isCSharpLike(context.file())) {
             return context == null ? null : context.text();
         }
+        EditorConfigSettings.FormatOptions options = EditorConfigSettings.resolve(
+                context.file(), context.tabSize(), context.useSpacesForTab());
         if (context.formatScope() == IdeFormatScope.SELECTION) {
             String selectionSource = context.fullText() == null ? context.text() : context.fullText();
             String formattedSelection = service.formatRange(context.file(), selectionSource,
-                    context.startOffset(), context.endOffset(), context.tabSize(), context.useSpacesForTab());
+                    context.startOffset(), context.endOffset(), options.tabSize(), options.insertSpaces());
             return formattedSelection == null ? context.text() : formattedSelection;
         }
         String fullText = context.fullText() == null ? context.text() : context.fullText();
-        String formatted = service.format(context.file(), fullText, context.tabSize(), context.useSpacesForTab());
+        String formatted = service.format(context.file(), fullText, options.tabSize(), options.insertSpaces());
         return formatted == null ? fullText : formatted;
     }
 
@@ -2259,6 +2352,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 context.getCaretLine(), context.getCaretCol());
     }
 
+    private void onGoToTypeDefinition(IdeEditorContext context) {
+        if (context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+            return;
+        }
+        navigateTypeDefinitionsAsync(context.getText(), context.filePath(),
+                context.getCaretLine(), context.getCaretCol());
+    }
+
     @Override
     public void onBreakpointChanged(BreakpointChangedEvent event) {
         super.onBreakpointChanged(event);
@@ -2312,6 +2413,27 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 }
             } catch (Exception e) {
                 log.debug("Falha ao navegar para implementação: {}", e.getMessage());
+            } finally {
+                SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
+            }
+        });
+    }
+
+    private void navigateTypeDefinitionsAsync(String text, Path file, int line, int col) {
+        DotnetLspService service = lspService;
+        if (service == null) {
+            return;
+        }
+        navigationExecutor().execute(() -> {
+            SwingUtilities.invokeLater(() ->
+                    showProgress(NAV_PROGRESS_ID, "Procurando definição de tipo..."));
+            try {
+                List<Location> targets = service.typeDefinitions(file, text, line, col);
+                if (!targets.isEmpty()) {
+                    navigateToDefinition(targets.getFirst());
+                }
+            } catch (Exception e) {
+                log.debug("Falha ao navegar para definição de tipo: {}", e.getMessage());
             } finally {
                 SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
             }
@@ -2386,7 +2508,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 || path == null || !isCSharpLike(path)) {
             return content;
         }
-        String formatted = service.format(path, content, 4, true);
+        EditorConfigSettings.FormatOptions options = EditorConfigSettings.resolve(path, 4, true);
+        String formatted = service.format(path, content, options.tabSize(), options.insertSpaces());
         return formatted == null ? content : formatted;
     }
 
@@ -2426,6 +2549,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         e -> buildSolution("Compilar (Release)", List.of("build", "-c", "Release")))
                 .item("dotnetPublishRelease", "Publicar (Release)",
                         e -> buildSolution("Publicar (Release)", List.of("publish", "-c", "Release")))
+                .item("dotnetPackRelease", "Empacotar NuGet (Release)",
+                        e -> buildSolution("Empacotar NuGet (Release)", List.of("pack", "-c", "Release")))
                 .separator()
                 .item("dotnetRebuildMenu", "Recompilar",
                         e -> buildSolution("Recompilar", List.of("build", "--no-incremental")))
@@ -2442,6 +2567,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         MenuNode.item("dotnetTests", "Testes .NET")
                                 .tooltip("Descobrir e executar testes do projeto")
                                 .onClick(e -> openTestExplorer())
+                )
+                .add(
+                        MenuNode.item("dotnetAttachProcess", "Attach ao processo .NET...")
+                                .tooltip("Selecionar um processo em execução e anexar o netcoredbg")
+                                .onClick(e -> openAttachProcessPicker())
                 )
                 .add(
                         MenuNode.item("dotnetRestore", "Restaurar pacotes (dotnet restore)")
@@ -2482,10 +2612,54 @@ public class DotnetIdeAdapter extends IdeAdapter {
         });
     }
 
+    private void openAttachProcessPicker() {
+        runOnUiThread(() -> {
+            DotnetProcessPickerPanel picker = new DotnetProcessPickerPanel();
+            Long pid = createModernComponentDialogBuilder(Long.class)
+                    .title("Attach ao processo .NET")
+                    .draggable(true)
+                    .showIcon(false)
+                    .accentColor(new Color(59, 130, 246))
+                    .confirmText("Attach")
+                    .cancelText("Cancelar")
+                    .component(picker)
+                    .result(ctx -> picker.selectedPid())
+                    .show();
+            if (pid == null) {
+                return;
+            }
+            attachTestProcess(pid);
+        });
+    }
+
+    private void attachTestProcess(long pid) {
+        runOnUiThread(() -> {
+            debugActive.set(true);
+            refreshHotReloadButton();
+            RunProcessHandle handle = runSupport.attachToProcess(pid);
+            if (!handle.isAlive()) {
+                debugActive.set(false);
+                refreshHotReloadButton();
+            }
+            OutputPanelHandle panel = requestOutputPanel("dotnet");
+            panel.clear();
+            panel.show();
+            Thread output = new Thread(() -> {
+                try (InputStream in = handle.getOutput()) {
+                    in.transferTo(panel.getOutputStream());
+                } catch (Exception e) {
+                    log.debug("Falha ao encaminhar saída do attach: {}", e.getMessage());
+                }
+            }, "dotnet-attach-output");
+            output.setDaemon(true);
+            output.start();
+        });
+    }
+
     private void ensureTestPanel() {
         if (testPanel == null) {
             testPanel = new DotnetTestExplorerPanel(() -> projectPath, this::ensureSdkService,
-                    () -> ensurePluginSettings().getDefaultConfiguration());
+                    () -> ensurePluginSettings().getDefaultConfiguration(), this::attachTestProcess);
             testToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Testes", ToolIconType.INFO, testPanel);
         }
     }
@@ -2577,7 +2751,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<RunConfigurationContribution> getRunConfigurationContributions() {
-        return List.of(new DotnetRunConfigurationContribution(() -> projectPath));
+        return List.of(
+                new DotnetRunConfigurationContribution(() -> projectPath, DotnetRunSupport.TYPE_RUN),
+                new DotnetRunConfigurationContribution(() -> projectPath, DotnetRunSupport.TYPE_BUILD),
+                new DotnetRunConfigurationContribution(() -> projectPath, DotnetRunSupport.TYPE_TEST));
     }
 
     @Override

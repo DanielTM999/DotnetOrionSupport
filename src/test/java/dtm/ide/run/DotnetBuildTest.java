@@ -42,4 +42,16 @@ class DotnetBuildTest {
         assertTrue(DotnetBuild.parseTestList("").isEmpty());
         assertTrue(DotnetBuild.parseTestList(null).isEmpty());
     }
+
+    @Test
+    void parsesParameterizedNunitAndMstestDisplayNames() {
+        String output = String.join("\n",
+                "The following Tests are available:",
+                "    Sample.NUnitTests.Adds(1, 2)",
+                "    Sample.MsTests.Adds (Data Row 0)");
+
+        assertEquals(List.of(
+                "Sample.NUnitTests.Adds(1, 2)",
+                "Sample.MsTests.Adds (Data Row 0)"), DotnetBuild.parseTestList(output));
+    }
 }

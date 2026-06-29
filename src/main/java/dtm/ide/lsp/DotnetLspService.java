@@ -129,6 +129,7 @@ public final class DotnetLspService {
     private volatile State state = State.NOT_STARTED;
     private volatile String lastError;
     private volatile Path projectPath;
+    private volatile Path loadTarget;
     private volatile Process process;
     private volatile Future<?> stderrPump;
     private volatile Future<?> watcher;
@@ -138,6 +139,7 @@ public final class DotnetLspService {
     private volatile boolean referencesSupported;
     private volatile boolean documentSymbolSupported;
     private volatile boolean renameSupported;
+    private volatile boolean prepareRenameSupported;
     private volatile boolean formattingSupported;
     private volatile boolean rangeFormattingSupported;
     private volatile boolean documentHighlightSupported;
@@ -146,6 +148,7 @@ public final class DotnetLspService {
     private volatile boolean codeActionResolveSupported;
     private volatile boolean executeCommandSupported;
     private volatile boolean implementationSupported;
+    private volatile boolean typeDefinitionSupported;
     private volatile boolean signatureHelpSupported;
     private volatile boolean workspaceSymbolSupported;
     private volatile boolean semanticTokensSupported;
@@ -170,8 +173,52 @@ public final class DotnetLspService {
     }
 
     public void bindProject(Path projectPath) {
-        this.projectPath = projectPath == null ? null : projectPath.toAbsolutePath().normalize();
+        Path normalized = projectPath == null ? null : projectPath.toAbsolutePath().normalize();
+        this.projectPath = normalized != null && Files.isRegularFile(normalized)
+                ? normalized.getParent()
+                : normalized;
+        this.loadTarget = resolveLoadTarget(normalized);
         this.implicitNamespaces = computeImplicitNamespaces(this.projectPath);
+    }
+
+    static Path resolveLoadTarget(Path projectPath) {
+        if (projectPath == null) {
+            return null;
+        }
+        Path normalized = projectPath.toAbsolutePath().normalize();
+        if (Files.isRegularFile(normalized)) {
+            return isWorkspaceFile(normalized) ? normalized : normalized.getParent();
+        }
+        if (!Files.isDirectory(normalized)) {
+            return normalized;
+        }
+        List<Path> solutions;
+        try (var entries = Files.list(normalized)) {
+            solutions = entries
+                    .filter(Files::isRegularFile)
+                    .filter(DotnetLspService::isSolutionFile)
+                    .sorted()
+                    .toList();
+        } catch (IOException e) {
+            return normalized;
+        }
+        return solutions.size() == 1 ? solutions.getFirst() : normalized;
+    }
+
+    private static boolean isWorkspaceFile(Path path) {
+        return isSolutionFile(path) || hasExtension(path, ".csproj")
+                || hasExtension(path, ".vbproj") || hasExtension(path, ".fsproj");
+    }
+
+    private static boolean isSolutionFile(Path path) {
+        return hasExtension(path, ".sln") || hasExtension(path, ".slnx");
+    }
+
+    private static boolean hasExtension(Path path, String extension) {
+        String name = path == null || path.getFileName() == null
+                ? ""
+                : path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(extension);
     }
 
     private static Set<String> computeImplicitNamespaces(Path projectPath) {
@@ -205,6 +252,10 @@ public final class DotnetLspService {
 
     public boolean isSemanticTokensReady() {
         return isRunning() && semanticTokensSupported;
+    }
+
+    public boolean isTypeDefinitionReady() {
+        return isRunning() && typeDefinitionSupported;
     }
 
     public void addDiagnosticsPublishedListener(Consumer<String> listener) {
@@ -683,6 +734,23 @@ public final class DotnetLspService {
         }
     }
 
+    public List<Location> typeDefinitions(Path filePath, String text, int line, int character) {
+        if (!canUseLsp(filePath) || !typeDefinitionSupported) {
+            return Collections.emptyList();
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode result = client.sendRequest("textDocument/typeDefinition", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "position", LspJsonRpcClient.position(line, character)
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return resolveMetadataLocations(parseLocations(result));
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
     private List<Location> resolveMetadataLocations(List<Location> locations) {
         List<Location> out = new ArrayList<>(locations.size());
         for (Location loc : locations) {
@@ -1076,6 +1144,9 @@ public final class DotnetLspService {
         if (!canUseLsp(filePath) || !renameSupported || newName == null || newName.isBlank()) {
             return new DotnetWorkspaceEdit(Map.of());
         }
+        if (prepareRenameSupported && !prepareRename(filePath, text, line, character)) {
+            return new DotnetWorkspaceEdit(Map.of());
+        }
         String uri = toUri(filePath);
         try {
             syncDocument(uri, filePath, text);
@@ -1087,6 +1158,28 @@ public final class DotnetLspService {
             return parseWorkspaceEdit(result);
         } catch (Exception e) {
             return new DotnetWorkspaceEdit(Map.of());
+        }
+    }
+
+    public boolean prepareRename(Path filePath, String text, int line, int character) {
+        if (!canUseLsp(filePath) || !renameSupported) {
+            return false;
+        }
+        if (!prepareRenameSupported) {
+            return true;
+        }
+        String uri = toUri(filePath);
+        try {
+            syncDocument(uri, filePath, text);
+            JsonNode result = client.sendRequest("textDocument/prepareRename", Map.of(
+                    "textDocument", Map.of("uri", uri),
+                    "position", LspJsonRpcClient.position(line, character)
+            )).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return result != null && !result.isNull()
+                    && (result.path("defaultBehavior").asBoolean(false)
+                    || result.has("range") || (result.has("start") && result.has("end")));
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -1918,6 +2011,9 @@ public final class DotnetLspService {
             List<String> command = new ArrayList<>();
             command.add(omnisharp.get().toAbsolutePath().toString());
             command.add("-lsp");
+            Path target = loadTarget == null ? projectPath : loadTarget;
+            command.add("-s");
+            command.add(target.toAbsolutePath().toString());
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.directory(projectPath.toFile());
             builder.redirectErrorStream(false);
@@ -1943,7 +2039,7 @@ public final class DotnetLspService {
             diagnosticsByUri.clear();
             lastError = null;
             state = State.READY;
-            log.info("OmniSharp iniciado em {}", projectPath);
+            log.info("OmniSharp iniciado em {} (alvo de carga: {})", projectPath, target);
         } catch (Exception e) {
             recordError("Falha ao iniciar OmniSharp: " + safeMessage(e));
             doStop();
@@ -2007,6 +2103,7 @@ public final class DotnetLspService {
         referencesSupported = false;
         documentSymbolSupported = false;
         renameSupported = false;
+        prepareRenameSupported = false;
         formattingSupported = false;
         rangeFormattingSupported = false;
         documentHighlightSupported = false;
@@ -2015,6 +2112,7 @@ public final class DotnetLspService {
         codeActionResolveSupported = false;
         executeCommandSupported = false;
         implementationSupported = false;
+        typeDefinitionSupported = false;
         signatureHelpSupported = false;
         workspaceSymbolSupported = false;
         semanticTokensSupported = false;
@@ -2050,6 +2148,9 @@ public final class DotnetLspService {
         initParams.put("processId", ProcessHandle.current().pid());
         initParams.put("rootUri", toUri(projectPath));
         initParams.put("rootPath", projectPath.toAbsolutePath().toString());
+        initParams.put("workspaceFolders", List.of(Map.of(
+                "uri", toUri(projectPath),
+                "name", projectPath.getFileName() == null ? ".NET" : projectPath.getFileName().toString())));
         initParams.put("capabilities", clientCapabilities());
         initParams.put("clientInfo", Map.of("name", "DotnetOrionSupport", "version", "1.0.0"));
         initParams.put("trace", "off");
@@ -2067,6 +2168,8 @@ public final class DotnetLspService {
         referencesSupported = supportsProvider(node(capabilities, "referencesProvider"));
         documentSymbolSupported = supportsProvider(node(capabilities, "documentSymbolProvider"));
         renameSupported = supportsProvider(node(capabilities, "renameProvider"));
+        prepareRenameSupported = node(capabilities, "renameProvider") != null
+                && node(capabilities, "renameProvider").path("prepareProvider").asBoolean(false);
         formattingSupported = supportsProvider(node(capabilities, "documentFormattingProvider"));
         rangeFormattingSupported = supportsProvider(node(capabilities, "documentRangeFormattingProvider"));
         documentHighlightSupported = supportsProvider(node(capabilities, "documentHighlightProvider"));
@@ -2076,6 +2179,7 @@ public final class DotnetLspService {
                 && node(capabilities, "codeActionProvider").path("resolveProvider").asBoolean(false);
         executeCommandSupported = node(capabilities, "executeCommandProvider") != null;
         implementationSupported = supportsProvider(node(capabilities, "implementationProvider"));
+        typeDefinitionSupported = supportsProvider(node(capabilities, "typeDefinitionProvider"));
         signatureHelpSupported = supportsProvider(node(capabilities, "signatureHelpProvider"));
         completionResolveSupported = node(capabilities, "completionProvider") != null
                 && node(capabilities, "completionProvider").path("resolveProvider").asBoolean(false);
@@ -2155,12 +2259,13 @@ public final class DotnetLspService {
         textDocument.put("hover", Map.of("contentFormat", List.of("markdown", "plaintext")));
         textDocument.put("definition", Map.of("dynamicRegistration", false, "linkSupport", true));
         textDocument.put("implementation", Map.of("dynamicRegistration", false, "linkSupport", true));
+        textDocument.put("typeDefinition", Map.of("dynamicRegistration", false, "linkSupport", true));
         textDocument.put("signatureHelp", Map.of("dynamicRegistration", false,
                 "signatureInformation", Map.of("documentationFormat", List.of("plaintext"),
                         "parameterInformation", Map.of("labelOffsetSupport", true))));
         textDocument.put("references", Map.of("dynamicRegistration", false));
         textDocument.put("documentSymbol", Map.of("dynamicRegistration", false, "hierarchicalDocumentSymbolSupport", true));
-        textDocument.put("rename", Map.of("dynamicRegistration", false, "prepareSupport", false));
+        textDocument.put("rename", Map.of("dynamicRegistration", false, "prepareSupport", true));
         textDocument.put("formatting", Map.of("dynamicRegistration", false));
         textDocument.put("onTypeFormatting", Map.of("dynamicRegistration", false));
         textDocument.put("codeAction", Map.of(
@@ -2612,7 +2717,7 @@ public final class DotnetLspService {
         if (node == null || node.isNull()) {
             return null;
         }
-        String uri = textOrEmpty(node.get("uri"));
+        String uri = textOrEmpty(node.has("targetUri") ? node.get("targetUri") : node.get("uri"));
         JsonNode rangeNode = node.has("targetRange") ? node.get("targetRange") : node.get("range");
         Range range = parseRange(rangeNode);
         if (uri.isBlank() || range == null) {

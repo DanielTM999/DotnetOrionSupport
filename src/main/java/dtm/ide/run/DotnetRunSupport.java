@@ -34,6 +34,10 @@ public final class DotnetRunSupport {
     public static final String PROP_CONFIGURATION = "configuration";
     public static final String PROP_LAUNCH_PROFILE = "launchProfile";
     public static final String PROP_PROJECT = "projectFile";
+    public static final String PROP_TARGET_FRAMEWORK = "targetFramework";
+    public static final String PROP_PROGRAM_ARGS = "programArgs";
+    public static final String PROP_WORKING_DIRECTORY = "workingDirectory";
+    public static final String PROP_ENVIRONMENT = "environment";
 
     private static final Pattern MAIN_PATTERN = Pattern.compile(
             "\\bstatic\\s+(?:async\\s+)?[\\w<>\\[\\].,\\s]*?\\bMain\\s*\\(");
@@ -244,6 +248,7 @@ public final class DotnetRunSupport {
         }
 
         String launchProfile = launchProfileOf(data);
+        String requestedTfm = targetFrameworkOf(data);
         return switch (type) {
             case TYPE_RUN -> {
                 Path projectFile = resolveTargetProjectFile(data, project);
@@ -251,22 +256,35 @@ public final class DotnetRunSupport {
                     yield DotnetBuild.errorHandle(runBlockedMessage(project));
                 }
                 Path runDir = parentOr(projectFile, project);
-                Optional<String> runnableTfm = runnableTfmOf(projectFile);
+                Optional<String> runnableTfm = runnableTfmOf(projectFile, requestedTfm);
                 if (runnableTfm.isEmpty()) {
                     yield DotnetBuild.errorHandle(runBlockedMessage(runDir));
                 }
                 yield launchRun(runDir, dotnet.get(), configuration, projectFile, launchProfile,
-                        runnableTfm.orElse(null));
+                        runnableTfm.orElse(null), data);
             }
-            case TYPE_TEST -> build.test(project, dotnet.get(), configuration);
-            default -> build.build(project, dotnet.get(), configuration);
+            case TYPE_TEST -> {
+                Path projectFile = projectFileOf(data);
+                Path runDir = parentOr(projectFile, project);
+                yield build.test(runDir, dotnet.get(), configuration, projectFile, requestedTfm);
+            }
+            default -> {
+                Path projectFile = projectFileOf(data);
+                Path runDir = parentOr(projectFile, project);
+                yield build.build(runDir, dotnet.get(), configuration, projectFile, requestedTfm);
+            }
         };
     }
 
     private RunProcessHandle launchRun(Path project, Path dotnet, String configuration,
-                                       Path projectFile, String launchProfile, String targetFramework) {
+                                       Path projectFile, String launchProfile, String targetFramework,
+                                       RunConfigurationData data) {
+        LaunchSettings.Profile profile = LaunchSettings.findProfile(projectFile, launchProfile);
+        Path workingDirectory = workingDirectoryOf(data, projectFile,
+                profile == null ? null : profile.workingDirectory());
         return build.buildThenRun(project, dotnet, configuration,
-                projectFile, targetFramework, launchProfile, outputPanels, runOutputFocus, null);
+                projectFile, targetFramework, launchProfile, outputPanels, runOutputFocus,
+                programArgsOf(data), environmentOf(data), workingDirectory);
     }
 
     private Path resolveTargetProjectFile(RunConfigurationData data, Path projectDir) {
@@ -304,8 +322,34 @@ public final class DotnetRunSupport {
         return TargetFramework.selectRunnableTfm(TargetFramework.readTfms(projectFile), TargetFramework.isWindows());
     }
 
+    private static Optional<String> runnableTfmOf(Path projectFile, String requestedTfm) {
+        if (requestedTfm == null || requestedTfm.isBlank()) {
+            return runnableTfmOf(projectFile);
+        }
+        for (String tfm : TargetFramework.readTfms(projectFile)) {
+            if (tfm.equalsIgnoreCase(requestedTfm.trim())
+                    && TargetFramework.selectRunnableTfm(List.of(tfm), TargetFramework.isWindows()).isPresent()) {
+                return Optional.of(tfm);
+            }
+        }
+        return Optional.empty();
+    }
+
     private static Optional<String> runnableModernTfmOf(Path projectFile) {
         return TargetFramework.selectRunnableModernTfm(TargetFramework.readTfms(projectFile), TargetFramework.isWindows());
+    }
+
+    private static Optional<String> runnableModernTfmOf(Path projectFile, String requestedTfm) {
+        if (requestedTfm == null || requestedTfm.isBlank()) {
+            return runnableModernTfmOf(projectFile);
+        }
+        for (String tfm : TargetFramework.readTfms(projectFile)) {
+            if (tfm.equalsIgnoreCase(requestedTfm.trim())
+                    && TargetFramework.isRunnableModernOnHost(tfm)) {
+                return Optional.of(tfm);
+            }
+        }
+        return Optional.empty();
     }
 
     private static Path projectFileOf(RunConfigurationData data) {
@@ -328,6 +372,64 @@ public final class DotnetRunSupport {
             return null;
         }
         Object value = data.getProperties().get(PROP_LAUNCH_PROFILE);
+        return value == null ? null : value.toString();
+    }
+
+    private static String targetFrameworkOf(RunConfigurationData data) {
+        if (data == null || data.getProperties() == null) {
+            return null;
+        }
+        Object value = data.getProperties().get(PROP_TARGET_FRAMEWORK);
+        return value == null || value.toString().isBlank() ? null : value.toString().trim();
+    }
+
+    private static List<String> programArgsOf(RunConfigurationData data) {
+        String value = propertyText(data, PROP_PROGRAM_ARGS);
+        return LaunchSettings.splitArgs(value);
+    }
+
+    private static Map<String, String> environmentOf(RunConfigurationData data) {
+        String value = propertyText(data, PROP_ENVIRONMENT);
+        if (value == null || value.isBlank()) {
+            return Map.of();
+        }
+        Map<String, String> environment = new LinkedHashMap<>();
+        for (String line : value.split("\\R")) {
+            String entry = line.trim();
+            if (entry.isEmpty() || entry.startsWith("#")) {
+                continue;
+            }
+            int separator = entry.indexOf('=');
+            if (separator > 0) {
+                environment.put(entry.substring(0, separator).trim(), entry.substring(separator + 1));
+            }
+        }
+        return environment;
+    }
+
+    private static Path workingDirectoryOf(RunConfigurationData data, Path projectFile, String profileDirectory) {
+        String configured = propertyText(data, PROP_WORKING_DIRECTORY);
+        String value = configured == null || configured.isBlank() ? profileDirectory : configured;
+        Path projectDirectory = parentOr(projectFile, null);
+        if (value == null || value.isBlank()) {
+            return projectDirectory;
+        }
+        try {
+            Path path = Path.of(value.trim());
+            if (!path.isAbsolute() && projectDirectory == null) {
+                return null;
+            }
+            return (path.isAbsolute() ? path : projectDirectory.resolve(path)).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            return projectDirectory;
+        }
+    }
+
+    private static String propertyText(RunConfigurationData data, String key) {
+        if (data == null || data.getProperties() == null) {
+            return null;
+        }
+        Object value = data.getProperties().get(key);
         return value == null ? null : value.toString();
     }
 
@@ -358,7 +460,7 @@ public final class DotnetRunSupport {
 
         return build.buildThenRun(runDir, dotnet.get(), configuration,
                 projectFile, runnableTfm.orElse(null), null,
-                outputPanels, runOutputFocus, null);
+                outputPanels, runOutputFocus, List.of(), Map.of(), runDir);
     }
 
     public RunProcessHandle launchDebug(RunConfigurationData data, RunExecutionContext context) {
@@ -371,7 +473,7 @@ public final class DotnetRunSupport {
             return DotnetBuild.errorHandle(debugBlockedMessage(project));
         }
         Path runDir = parentOr(projectFile, project);
-        Optional<String> runnableTfm = runnableModernTfmOf(projectFile);
+        Optional<String> runnableTfm = runnableModernTfmOf(projectFile, targetFrameworkOf(data));
         if (runnableTfm.isEmpty()) {
             return DotnetBuild.errorHandle(debugBlockedMessage(runDir));
         }
@@ -402,17 +504,44 @@ public final class DotnetRunSupport {
         sdk.getNcdbHook();
 
         LaunchSettings.Profile profile = LaunchSettings.findProfile(projectFile, launchProfileOf(data));
-        List<String> programArgs = profile == null ? List.of() : profile.args();
+        List<String> customArgs = programArgsOf(data);
+        List<String> programArgs = customArgs.isEmpty() && profile != null ? profile.args() : customArgs;
         Map<String, String> launchEnv = new LinkedHashMap<>(profile == null ? Map.of() : profile.effectiveEnv());
+        launchEnv.putAll(environmentOf(data));
+        Path workingDirectory = workingDirectoryOf(data, projectFile,
+                profile == null ? null : profile.workingDirectory());
         boolean breakOnAllExceptions = breakOnAllExceptionsSupplier != null
                 && breakOnAllExceptionsSupplier.getAsBoolean();
-        return build.buildThenDebug(runDir, dotnet.get(), netcoredbg, configuration, projectFile,
+        return build.buildThenDebug(workingDirectory == null ? runDir : workingDirectory,
+                dotnet.get(), netcoredbg, configuration, projectFile,
                 runnableTfm.orElse(null), breakpoints, debugView, outputPanels, runOutputFocus,
                 startupHook, this::setDebugSession, programArgs, launchEnv, breakOnAllExceptions);
     }
 
     public boolean isDebugging() {
         return debugSession.get() != null;
+    }
+
+    public RunProcessHandle attachToProcess(long pid) {
+        Path project = projectPath;
+        if (project == null || pid <= 0 || ProcessHandle.of(pid).filter(ProcessHandle::isAlive).isEmpty()) {
+            return DotnetBuild.errorHandle("Processo inválido ou encerrado.");
+        }
+        Optional<Path> dotnet = ensureDotnet();
+        if (dotnet.isEmpty() || sdkService == null) {
+            return DotnetBuild.errorHandle("Toolchain .NET indisponível para attach.");
+        }
+        Path netcoredbg;
+        try {
+            netcoredbg = sdkService.getNetcoredbgPath()
+                    .orElseGet(() -> sdkService.ensureNetcoredbg(downloadProgress));
+        } catch (Exception e) {
+            return DotnetBuild.errorHandle("netcoredbg indisponível: " + e.getMessage());
+        }
+        boolean breakOnAllExceptions = breakOnAllExceptionsSupplier != null
+                && breakOnAllExceptionsSupplier.getAsBoolean();
+        return build.attachDebugger(project, dotnet.get(), netcoredbg, pid, List.of(), debugView,
+                this::setDebugSession, breakOnAllExceptions);
     }
 
 
@@ -443,6 +572,16 @@ public final class DotnetRunSupport {
             }
         }
         return true;
+    }
+
+    public boolean setNextStatement(Path file, int line0Based) {
+        DotnetDapDebugSession session = debugSession.get();
+        return session != null && session.setNextStatement(file, line0Based);
+    }
+
+    public boolean runToCursor(Path file, int line0Based) {
+        DotnetDapDebugSession session = debugSession.get();
+        return session != null && session.runToCursor(file, line0Based);
     }
 
     public DebugVar evaluateDebug(String expression) {
