@@ -85,7 +85,7 @@ final class DotnetHotReloadAgent implements AutoCloseable {
             return;
         }
         Path agentDll = ensureBuilt();
-        Path deltaDir = cwd.resolve(".orion-hot-reload").resolve("deltas");
+        Path deltaDir = cwd.resolve(".orion").resolve("orion-hot-reload").resolve("deltas");
         Files.createDirectories(deltaDir);
         String assemblyName = assemblyFile.getFileName().toString().replaceFirst("(?i)\\.dll$", "");
         List<String> command = new ArrayList<>();
