@@ -55,6 +55,7 @@ import dtm.ide.settings.DotnetSettingsPage;
 import dtm.ide.settings.TreeLayout;
 import dtm.ide.ui.DotnetProjectConfigPanel;
 import dtm.ide.ui.DotnetProcessPickerPanel;
+import dtm.ide.ui.DotnetPublishPanel;
 import dtm.ide.ui.DotnetTestExplorerPanel;
 import dtm.ide.ui.NewCSharpItemPanel;
 import dtm.ide.ui.NuGetManagerPanel;
@@ -2547,8 +2548,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         e -> buildSolution("Compilar (Debug)", List.of("build", "-c", "Debug")))
                 .item("dotnetBuildRelease", "Compilar (Release)",
                         e -> buildSolution("Compilar (Release)", List.of("build", "-c", "Release")))
-                .item("dotnetPublishRelease", "Publicar (Release)",
-                        e -> buildSolution("Publicar (Release)", List.of("publish", "-c", "Release")))
+                .item("dotnetPublishRelease", "Publicar...",
+                        e -> openPublishDialog())
                 .item("dotnetPackRelease", "Empacotar NuGet (Release)",
                         e -> buildSolution("Empacotar NuGet (Release)", List.of("pack", "-c", "Release")))
                 .separator()
@@ -3734,6 +3735,65 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         runDotnetOnTarget(target, title, verbAndArgs);
+    }
+
+    private void openPublishDialog() {
+        Path target = resolveBuildTarget();
+        if (target == null) {
+            SwingUtilities.invokeLater(() -> setStatusBarText("Nenhuma solução/projeto .NET aberto."));
+            return;
+        }
+        List<String> tfms = TargetFramework.resolveTfms(target);
+        boolean netFrameworkOnly = TargetFramework.isNetFrameworkOnly(target);
+        Path projectDir = target.getParent() != null ? target.getParent() : projectPath;
+        runOnUiThread(() -> {
+            DotnetPublishPanel panel = new DotnetPublishPanel(tfms, netFrameworkOnly, projectDir);
+            DotnetPublishPanel.PublishOptions options = createModernComponentDialogBuilder(
+                    DotnetPublishPanel.PublishOptions.class)
+                    .title("Publicar projeto .NET")
+                    .draggable(true)
+                    .showIcon(false)
+                    .accentColor(new Color(59, 130, 246))
+                    .confirmText("Publicar")
+                    .cancelText("Cancelar")
+                    .component(panel)
+                    .result(ctx -> panel.getOptions())
+                    .show();
+            if (options != null) {
+                runDotnetOnTarget(target, "Publicar (" + options.configuration() + ")",
+                        buildPublishArgs(options));
+            }
+        });
+    }
+
+    private List<String> buildPublishArgs(DotnetPublishPanel.PublishOptions options) {
+        List<String> args = new ArrayList<>();
+        args.add("publish");
+        args.add("-c");
+        args.add(options.configuration());
+        if (options.framework() != null && !options.framework().isBlank()) {
+            args.add("-f");
+            args.add(options.framework());
+        }
+        if (options.selfContained()) {
+            args.add("--self-contained");
+            args.add("true");
+            if (options.runtime() != null) {
+                args.add("-r");
+                args.add(options.runtime());
+            }
+            if (options.singleFile()) {
+                args.add("-p:PublishSingleFile=true");
+            }
+            if (options.trimmed()) {
+                args.add("-p:PublishTrimmed=true");
+            }
+        }
+        if (options.output() != null && !options.output().isBlank()) {
+            args.add("-o");
+            args.add(options.output());
+        }
+        return args;
     }
 
     private void openProjectReferenceManager(Path csproj) {
