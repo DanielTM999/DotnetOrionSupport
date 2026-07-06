@@ -78,6 +78,10 @@ public final class TargetFramework {
         return isRunnableModernOnHost(tfm, isWindows());
     }
 
+    public static boolean requiresLegacyLanguageServer(Path projectPath){
+        return true;
+    }
+
     static boolean isRunnableModernOnHost(String tfm, boolean windows) {
         if (!isModern(tfm) || isNetStandard(tfm)) {
             return false;

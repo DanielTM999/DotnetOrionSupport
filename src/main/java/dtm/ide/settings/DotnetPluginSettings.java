@@ -27,6 +27,7 @@ public final class DotnetPluginSettings {
     private boolean ghostText = true;
     private String defaultConfiguration = "Debug";
     private TreeLayout treeLayout = TreeLayout.DEFAULT;
+    private LanguageServerMode languageServerMode = LanguageServerMode.AUTO;
     private boolean breakOnAllExceptions = false;
 
     public DotnetPluginSettings(Path settingsDir) {
@@ -76,6 +77,14 @@ public final class DotnetPluginSettings {
 
     public String getDefaultConfiguration() {
         return defaultConfiguration;
+    }
+
+    public LanguageServerMode getLanguageServerMode(){
+        return languageServerMode;
+    }
+
+    public void setLanguageServerMode(LanguageServerMode languageServerMode){
+        this.languageServerMode = languageServerMode;
     }
 
     public void setDefaultConfiguration(String defaultConfiguration) {

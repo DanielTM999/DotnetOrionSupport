@@ -6,7 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetHotReloadAgent.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetHotReloadAgent.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/TargetFramework.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/TargetFramework.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetPluginSettings.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetPluginSettings.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -41,27 +42,29 @@
   <component name="ProjectViewState">
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;JAR Application.AppJar.executor&quot;: &quot;Debug&quot;,
-    &quot;Maven.DotnetOrionSupport [clean,compile...].executor&quot;: &quot;Debug&quot;,
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Remote JVM Debug.buildDebugPlugin.executor&quot;: &quot;Debug&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
-    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;kotlin-language-version-configured&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;onboarding.tips.debug.path&quot;: &quot;C:/Users/danie/Documents/development/java/DotnetOrionSupport/src/main/java/dtm/ide/Main.java&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "JAR Application.AppJar.executor": "Debug",
+    "Maven.DotnetOrionSupport [clean,compile...].executor": "Run",
+    "Maven.DotnetOrionSupport [compile].executor": "Run",
+    "Maven.DotnetOrionSupport [validate].executor": "Run",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Remote JVM Debug.buildDebugPlugin.executor": "Debug",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "git-widget-placeholder": "main",
+    "kotlin-language-version-configured": "true",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "onboarding.tips.debug.path": "C:/Users/danie/Documents/development/java/DotnetOrionSupport/src/main/java/dtm/ide/Main.java"
   }
-}</component>
+}]]></component>
   <component name="RunManager" selected="Remote JVM Debug.buildDebugPlugin">
     <configuration name="AppJar" type="JarApplication">
       <option name="JAR_PATH" value="$USER_HOME$/Orion/app/Orion.jar" />
