@@ -66,13 +66,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 @Slf4j
-public final class DotnetLspService {
+public abstract class AbstractLspService implements LspService {
 
-    public enum State {
-        NOT_STARTED, STARTING, READY, STOPPED, ERROR
-    }
-
-    public static final String APPLY_CODE_ACTION_COMMAND = "dotnet/applyCodeAction";
     private static final Set<String> SDK_IMPLICIT_NAMESPACES = Set.of(
             "System",
             "System.Collections.Generic",
@@ -167,7 +162,7 @@ public final class DotnetLspService {
     private volatile Consumer<DotnetWorkspaceEdit> applyEditSink;
     private volatile Set<String> implicitNamespaces = Set.of();
 
-    public DotnetLspService(Resource resource, DotnetSdkService sdkService) {
+    protected AbstractLspService(Resource resource, DotnetSdkService sdkService) {
         this.sdkService = sdkService;
         this.resource = resource;
     }
@@ -196,7 +191,7 @@ public final class DotnetLspService {
         try (var entries = Files.list(normalized)) {
             solutions = entries
                     .filter(Files::isRegularFile)
-                    .filter(DotnetLspService::isSolutionFile)
+                    .filter(AbstractLspService::isSolutionFile)
                     .sorted()
                     .toList();
         } catch (IOException e) {
@@ -272,10 +267,6 @@ public final class DotnetLspService {
                 loadProgressListeners.add(listener);
             }
         }
-    }
-
-    public interface LoadProgressListener {
-        void onProgress(int percent, boolean finished);
     }
 
     public void start() {
@@ -1981,9 +1972,6 @@ public final class DotnetLspService {
         return disk == null ? "" : disk;
     }
 
-    public record WorkspaceSymbol(String name, String container, int kind, Location location) {
-    }
-
     private record CallSite(Position pos, Range range) {
     }
 
@@ -1999,72 +1987,106 @@ public final class DotnetLspService {
             recordError("Toolchain .NET não vinculada ao LSP.");
             return;
         }
-        Optional<Path> omnisharp = sdkService.getOmniSharpPath();
-        if (omnisharp.isEmpty()) {
-            recordError("OmniSharp não encontrado na toolchain .NET do plugin.");
+        Optional<Path> binary = resolveServerBinary();
+        if (binary.isEmpty()) {
+            recordError(serverName() + " não encontrado na toolchain .NET do plugin.");
             return;
         }
         try {
             state = State.STARTING;
             startAnalyzeProgress();
-            ensureOmniSharpConfig(omnisharp.get());
-            List<String> command = new ArrayList<>();
-            command.add(omnisharp.get().toAbsolutePath().toString());
-            command.add("-lsp");
+            prepareServerConfig(binary.get());
             Path target = loadTarget == null ? projectPath : loadTarget;
-            command.add("-s");
-            command.add(target.toAbsolutePath().toString());
+            List<String> command = buildLaunchCommand(binary.get(), target);
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.directory(projectPath.toFile());
             builder.redirectErrorStream(false);
-
-            Optional<Path> dotnetRoot = sdkService.getDotnetRoot(projectPath);
-            if (dotnetRoot.isPresent()) {
-                String root = dotnetRoot.get().toAbsolutePath().toString();
-                builder.environment().put("DOTNET_ROOT", root);
-                builder.environment().put("DOTNET_ROLL_FORWARD", "LatestMajor");
-                String pathSep = System.getProperty("path.separator", ":");
-                String currentPath = builder.environment().getOrDefault("PATH", System.getenv("PATH"));
-                builder.environment().put("PATH", currentPath == null ? root : root + pathSep + currentPath);
-            }
+            applyDotnetEnvironment(builder);
 
             process = builder.start();
             stderrPump = executor.submit(() -> pumpStderr(process.getErrorStream()));
             client = new LspJsonRpcClient(process.getInputStream(), process.getOutputStream());
             registerNotificationHandlers();
+            registerServerNotificationHandlers(client);
             watcher = executor.submit(this::watchProcess);
             performHandshake();
+            afterInitialized();
             documentVersions.clear();
             openedContent.clear();
             diagnosticsByUri.clear();
             lastError = null;
             state = State.READY;
-            log.info("OmniSharp iniciado em {} (alvo de carga: {})", projectPath, target);
+            log.info("{} iniciado em {} (alvo de carga: {})", serverName(), projectPath, target);
         } catch (Exception e) {
-            recordError("Falha ao iniciar OmniSharp: " + safeMessage(e));
+            recordError("Falha ao iniciar " + serverName() + ": " + safeMessage(e));
             doStop();
         }
     }
 
-    private void ensureOmniSharpConfig(Path omnisharpExecutable) {
-        try {
-            Path dir = omnisharpExecutable.toAbsolutePath().getParent();
-            if (dir == null) {
-                return;
-            }
-            Path config = dir.resolve("omnisharp.json");
-            String content = "{\n"
-                    + "  \"RoslynExtensionsOptions\": {\n"
-                    + "    \"enableImportCompletion\": true,\n"
-                    + "    \"enableAnalyzersSupport\": true,\n"
-                    + "    \"enableDecompilationSupport\": true\n"
-                    + "  }\n"
-                    + "}\n";
-            if (!Files.exists(config) || !content.equals(Files.readString(config))) {
-                Files.writeString(config, content, StandardCharsets.UTF_8);
-            }
-        } catch (Exception e) {
-            log.debug("Não foi possível gravar omnisharp.json: {}", e.getMessage());
+    protected abstract String serverName();
+
+    protected abstract Optional<Path> resolveServerBinary();
+
+    protected abstract List<String> buildLaunchCommand(Path binary, Path loadTarget);
+
+    protected void prepareServerConfig(Path binary) {
+    }
+
+    protected Map<String, Object> initializationOptions() {
+        return Map.of();
+    }
+
+    protected void afterInitialized() {
+    }
+
+    protected void registerServerNotificationHandlers(LspJsonRpcClient rpc) {
+    }
+
+    protected final LspJsonRpcClient rpc() {
+        return client;
+    }
+
+    protected final Path projectPath() {
+        return projectPath;
+    }
+
+    protected final Path loadTarget() {
+        return loadTarget;
+    }
+
+    protected final Resource resource() {
+        return resource;
+    }
+
+    protected final DotnetSdkService sdkService() {
+        return sdkService;
+    }
+
+    protected final void markLoadFinished() {
+        finishAnalyzeProgress();
+    }
+
+    protected final void storeDiagnostics(String uri, List<JsonNode> diagnostics) {
+        if (uri == null) {
+            return;
+        }
+        diagnosticsByUri.put(normalizeUriKey(uri), diagnostics == null ? List.of() : diagnostics);
+        notifyDiagnosticsPublished(uri);
+    }
+
+    protected Optional<Path> resolveDotnetRoot() {
+        return sdkService.getDotnetRoot(projectPath);
+    }
+
+    protected final void applyDotnetEnvironment(ProcessBuilder builder) {
+        Optional<Path> dotnetRoot = resolveDotnetRoot();
+        if (dotnetRoot.isPresent()) {
+            String root = dotnetRoot.get().toAbsolutePath().toString();
+            builder.environment().put("DOTNET_ROOT", root);
+            builder.environment().put("DOTNET_ROLL_FORWARD", "LatestMajor");
+            String pathSep = System.getProperty("path.separator", ":");
+            String currentPath = builder.environment().getOrDefault("PATH", System.getenv("PATH"));
+            builder.environment().put("PATH", currentPath == null ? root : root + pathSep + currentPath);
         }
     }
 
@@ -2134,7 +2156,7 @@ public final class DotnetLspService {
                     doStop();
                     state = intentionalStop.get() ? State.STOPPED : State.ERROR;
                     if (!intentionalStop.get()) {
-                        lastError = "OmniSharp terminou inesperadamente (código " + exit + ").";
+                        lastError = serverName() + " terminou inesperadamente (código " + exit + ").";
                     }
                 }
             }
@@ -2155,13 +2177,10 @@ public final class DotnetLspService {
         initParams.put("clientInfo", Map.of("name", "DotnetOrionSupport", "version", "1.0.0"));
         initParams.put("trace", "off");
 
-        initParams.put("initializationOptions", Map.of(
-                "RoslynExtensionsOptions", Map.of(
-                        "enableDecompilationSupport", true,
-                        "enableImportCompletion", true,
-                        "enableAnalyzersSupport", true
-                )
-        ));
+        Map<String, Object> initOptions = initializationOptions();
+        if (initOptions != null && !initOptions.isEmpty()) {
+            initParams.put("initializationOptions", initOptions);
+        }
         JsonNode result = client.sendRequest("initialize", initParams).get(INIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         JsonNode capabilities = result == null ? null : result.get("capabilities");
         definitionSupported = supportsProvider(node(capabilities, "definitionProvider"));
@@ -2285,11 +2304,16 @@ public final class DotnetLspService {
         textDocument.put("inlayHint", Map.of("dynamicRegistration", false));
         textDocument.put("callHierarchy", Map.of("dynamicRegistration", false));
         textDocument.put("publishDiagnostics", Map.of("relatedInformation", false));
+        textDocument.putAll(extraTextDocumentCapabilities());
         Map<String, Object> workspace = Map.of(
                 "symbol", Map.of("dynamicRegistration", false),
                 "applyEdit", true,
                 "executeCommand", Map.of("dynamicRegistration", false));
         return Map.of("textDocument", textDocument, "workspace", workspace);
+    }
+
+    protected Map<String, Object> extraTextDocumentCapabilities() {
+        return Map.of();
     }
 
     private void registerNotificationHandlers() {
@@ -2308,23 +2332,6 @@ public final class DotnetLspService {
 
             diagnosticsByUri.put(normalizeUriKey(uri), diagnostics);
             notifyDiagnosticsPublished(uri);
-        });
-        client.onNotification("o#/backgrounddiagnosticstatus", params -> {
-            if (params == null) {
-                return;
-            }
-            int total = intField(params, "NumberFilesTotal", "numberFilesTotal");
-            int remaining = intField(params, "NumberFilesRemaining", "numberFilesRemaining");
-            String status = textField(params, "Status", "status");
-            if (isLoadFinished(total, remaining, status)) {
-                finishAnalyzeProgress();
-                return;
-            }
-            if (total > analyzeMaxTotal) {
-                analyzeMaxTotal = total;
-            }
-            int percent = progressPercent(total, remaining, analyzeMaxTotal, analyzeLastPercent);
-            publishAnalyzeProgress(percent);
         });
         client.onNotification("window/logMessage", params -> {
         });
@@ -2348,11 +2355,29 @@ public final class DotnetLspService {
         });
     }
 
+    protected final void handleBackgroundDiagnosticStatus(JsonNode params) {
+        if (params == null) {
+            return;
+        }
+        int total = intField(params, "NumberFilesTotal", "numberFilesTotal");
+        int remaining = intField(params, "NumberFilesRemaining", "numberFilesRemaining");
+        String status = textField(params, "Status", "status");
+        if (isLoadFinished(total, remaining, status)) {
+            finishAnalyzeProgress();
+            return;
+        }
+        if (total > analyzeMaxTotal) {
+            analyzeMaxTotal = total;
+        }
+        int percent = progressPercent(total, remaining, analyzeMaxTotal, analyzeLastPercent);
+        publishAnalyzeProgress(percent);
+    }
+
     public void setApplyEditSink(Consumer<DotnetWorkspaceEdit> sink) {
         this.applyEditSink = sink;
     }
 
-    private synchronized void syncDocument(String uri, Path filePath, String text) {
+    protected synchronized void syncDocument(String uri, Path filePath, String text) {
         String safeText = text == null ? "" : text;
         String previous = openedContent.get(uri);
         if (Objects.equals(previous, safeText)) {
@@ -2467,7 +2492,7 @@ public final class DotnetLspService {
                 sorted.add(item);
             }
         }
-        sorted.sort(java.util.Comparator.comparing(DotnetLspService::completionSortKey));
+        sorted.sort(java.util.Comparator.comparing(AbstractLspService::completionSortKey));
         List<AutoCompleteItem> out = new ArrayList<>(sorted.size());
         for (JsonNode item : sorted) {
             out.add(toAutoCompleteItem(item));
@@ -2489,7 +2514,7 @@ public final class DotnetLspService {
                 candidates.add(item);
             }
         }
-        candidates.sort(java.util.Comparator.comparing(DotnetLspService::completionSortKey));
+        candidates.sort(java.util.Comparator.comparing(AbstractLspService::completionSortKey));
         List<JsonNode> ordered = orderByPrefix(candidates, prefix);
         if (ordered.size() > MAX_COMPLETION_ITEMS) {
             ordered = ordered.subList(0, MAX_COMPLETION_ITEMS);
@@ -2879,7 +2904,7 @@ public final class DotnetLspService {
         return parseTextEditsStatic(node);
     }
 
-    private Diagnostic parseDiagnostic(JsonNode node) {
+    protected Diagnostic parseDiagnostic(JsonNode node) {
         JsonNode range = node.get("range");
         if (range == null) {
             return null;
@@ -3078,7 +3103,7 @@ public final class DotnetLspService {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                log.debug("[omnisharp] {}", line);
+                log.debug("[{}] {}", serverName(), line);
             }
         } catch (Exception ignored) {
         }
@@ -3151,7 +3176,7 @@ public final class DotnetLspService {
         return value == null || value.isBlank() ? null : value;
     }
 
-    private static String toUri(Path filePath) {
+    protected static String toUri(Path filePath) {
         return filePath.toAbsolutePath().normalize().toUri().toString();
     }
 

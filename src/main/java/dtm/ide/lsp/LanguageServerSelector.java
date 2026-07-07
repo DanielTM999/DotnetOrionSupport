@@ -27,5 +27,5 @@ public final class LanguageServerSelector {
         return PREFER_ROSLYN_FOR_MODERN ? LspServerKind.ROSLYN : LspServerKind.OMNISHARP;
     }
 
-    private static final boolean PREFER_ROSLYN_FOR_MODERN = false;
+    private static final boolean PREFER_ROSLYN_FOR_MODERN = true;
 }

@@ -40,6 +40,7 @@ public class DotnetSdkService {
 
     public static final String DOTNET_PROGRESS_ID = "downloadDotnetSdk";
     public static final String OMNISHARP_PROGRESS_ID = "downloadOmniSharp";
+    public static final String ROSLYN_LS_PROGRESS_ID = "downloadRoslynLs";
     public static final String NETCOREDBG_PROGRESS_ID = "downloadNetcoredbg";
 
     public static final String DEFAULT_DOTNET_SDK_VERSION = "8.0.422";
@@ -48,6 +49,8 @@ public class DotnetSdkService {
     public static final String DOTNET_7_SDK_VERSION = "7.0.410";
     public static final String DOTNET_6_SDK_VERSION = "6.0.428";
     public static final String DEFAULT_OMNISHARP_VERSION = "1.39.15";
+    public static final String DEFAULT_ROSLYN_LS_VERSION = "5.10.0-1.26356.6";
+    public static final String ROSLYN_RUNTIME_SDK_VERSION = DOTNET_10_SDK_VERSION;
     public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.3";
 
     private static final int DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -56,8 +59,11 @@ public class DotnetSdkService {
     private static final String SDK_DIR = "sdk";
     private static final String DOTNET_DIR = "dotnet";
     private static final String OMNISHARP_DIR = "omnisharp";
+    private static final String ROSLYN_DIR = "roslyn";
     private static final String NETCOREDBG_DIR = "netcoredbg";
     private static final String NETCOREDBG_RELEASE_REPOSITORY = "DanielTM999/netcoredbg";
+    private static final String ROSLYN_LS_RELEASE_REPOSITORY = "Crashdummyy/roslynLanguageServer";
+    private static final String ROSLYN_LS_DLL = "Microsoft.CodeAnalysis.LanguageServer.dll";
     private static final Pattern SDK_LIST_VERSION = Pattern.compile("^\\s*(\\d+)\\.(\\d+)\\.[^\\s]+");
     private static final Pattern GLOBAL_JSON_SDK_VERSION =
             Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
@@ -169,6 +175,36 @@ public class DotnetSdkService {
         downloadToRoot(omniSharpArtifact(DEFAULT_OMNISHARP_VERSION), root, listener);
         return getOmniSharpPath().orElseThrow(() ->
                 displayException("OmniSharp foi baixado, mas o executável não foi encontrado.", null));
+    }
+
+    public Optional<Path> getRoslynLanguageServerPath() {
+        return resolveRoslynDll(roslynRoot(DEFAULT_ROSLYN_LS_VERSION));
+    }
+
+    public Path ensureRoslyn(DownloadProgressListener progressListener) {
+        Optional<Path> existing = getRoslynLanguageServerPath();
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        DownloadProgressListener listener = progressListener == null ? DownloadProgressListener.NOOP : progressListener;
+        Path root = roslynRoot(DEFAULT_ROSLYN_LS_VERSION);
+        downloadToRoot(roslynArtifact(DEFAULT_ROSLYN_LS_VERSION), root, listener);
+        return getRoslynLanguageServerPath().orElseThrow(() ->
+                displayException("Roslyn Language Server foi baixado, mas o binário não foi encontrado.", null));
+    }
+
+    public Optional<Path> getRoslynRuntimeRoot() {
+        return getDotnetPath(ROSLYN_RUNTIME_SDK_VERSION).map(Path::getParent);
+    }
+
+    public Path ensureRoslynRuntime(DownloadProgressListener progressListener) {
+        Optional<Path> existing = getDotnetPath(ROSLYN_RUNTIME_SDK_VERSION);
+        if (existing.isPresent()) {
+            return existing.get().getParent();
+        }
+        ensureDotnet(ROSLYN_RUNTIME_SDK_VERSION, progressListener);
+        return getRoslynRuntimeRoot().orElseThrow(() ->
+                displayException("Runtime .NET para o Roslyn Language Server não foi encontrado.", null));
     }
 
     public Optional<Path> getNetcoredbgPath() {
@@ -390,9 +426,34 @@ public class DotnetSdkService {
         return sdk == null ? null : sdk.resolve(OMNISHARP_DIR).resolve(version);
     }
 
+    private Path roslynRoot(String version) {
+        Path sdk = sdkRoot();
+        return sdk == null ? null : sdk.resolve(ROSLYN_DIR).resolve(version);
+    }
+
     private Path netcoredbgRoot(String version) {
         Path sdk = sdkRoot();
         return sdk == null ? null : sdk.resolve(NETCOREDBG_DIR).resolve(version);
+    }
+
+    private Optional<Path> resolveRoslynDll(Path root) {
+        if (root == null || !Files.isDirectory(root)) {
+            return Optional.empty();
+        }
+        Path direct = root.resolve(ROSLYN_LS_DLL);
+        if (Files.isRegularFile(direct)) {
+            return Optional.of(direct.toAbsolutePath().normalize());
+        }
+        try (Stream<Path> paths = Files.walk(root)) {
+            return paths
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName() != null)
+                    .filter(path -> ROSLYN_LS_DLL.equals(path.getFileName().toString()))
+                    .findFirst()
+                    .map(path -> path.toAbsolutePath().normalize());
+        } catch (Exception e) {
+            return Optional.empty();
+        }
     }
 
     private Optional<Path> resolveExecutable(Path root, String baseName) {
@@ -435,6 +496,19 @@ public class DotnetSdkService {
         String url = "https://github.com/OmniSharp/omnisharp-roslyn/releases/download/v"
                 + version + "/" + fileName;
         return new SdkArtifact(version, fileName, url, OMNISHARP_PROGRESS_ID, "Baixando OmniSharp " + version);
+    }
+
+    private static SdkArtifact roslynArtifact(String version) {
+        Platform p = currentPlatform();
+        String os = p.isWindows() ? "win" : (p.isMac() ? "osx" : "linux");
+        String arch = p.isArm64() ? "arm64" : "x64";
+        String rid = os + "-" + arch;
+
+        String fileName = "microsoft.codeanalysis.languageserver." + rid + ".zip";
+        String url = "https://github.com/" + ROSLYN_LS_RELEASE_REPOSITORY + "/releases/download/"
+                + version + "/" + fileName;
+        return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
+                "Baixando Roslyn Language Server " + version);
     }
 
     private static SdkArtifact netcoredbgArtifact(String version) {

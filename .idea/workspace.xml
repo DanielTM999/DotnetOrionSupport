@@ -6,8 +6,14 @@
   <component name="ChangeListManager">
     <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/DotnetLspService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/AbstractLspService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/LanguageServerSelector.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/LanguageServerSelector.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/TargetFramework.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/TargetFramework.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/sdk/DotnetSdkService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/sdk/DotnetSdkService.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetPluginSettings.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetPluginSettings.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/dtm/ide/lsp/DotnetLspServiceTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/dtm/ide/lsp/DotnetLspServiceTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/dtm/ide/lsp/LanguageServerSelectorTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/dtm/ide/lsp/LanguageServerSelectorTest.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -45,7 +51,7 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "JAR Application.AppJar.executor": "Debug",
-    "Maven.DotnetOrionSupport [clean,compile...].executor": "Run",
+    "Maven.DotnetOrionSupport [clean,compile...].executor": "Debug",
     "Maven.DotnetOrionSupport [compile].executor": "Run",
     "Maven.DotnetOrionSupport [validate].executor": "Run",
     "ModuleVcsDetector.initialDetectionPerformed": "true",
@@ -142,6 +148,15 @@
     <option name="version" value="3" />
   </component>
   <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <line-breakpoint enabled="true" type="java-line">
+          <url>file://$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java</url>
+          <line>526</line>
+          <option name="timeStamp" value="1" />
+        </line-breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
     <watches-manager>
       <configuration name="JarApplication">
         <watch expression="context" />

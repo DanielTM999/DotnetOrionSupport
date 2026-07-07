@@ -19,7 +19,7 @@ class LanguageServerSelectorTest {
     }
 
     @Test
-    void autoDefaultsToOmnisharpForModernSdkProject(@TempDir Path dir) throws Exception {
+    void autoPicksRoslynForModernSdkProject(@TempDir Path dir) throws Exception {
         Files.writeString(dir.resolve("App.csproj"), """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -27,7 +27,7 @@ class LanguageServerSelectorTest {
                   </PropertyGroup>
                 </Project>
                 """);
-        assertEquals(LspServerKind.OMNISHARP, LanguageServerSelector.select(dir, settings(LanguageServerMode.AUTO)));
+        assertEquals(LspServerKind.ROSLYN, LanguageServerSelector.select(dir, settings(LanguageServerMode.AUTO)));
     }
 
     @Test

@@ -27,8 +27,12 @@ import dtm.ide.api.search.GlobalSearchQuery;
 import dtm.ide.api.search.GlobalSearchResult;
 import dtm.ide.api.theme.EditorTheme;
 import dtm.ide.editor.theme.DotnetEditorTheme;
-import dtm.ide.lsp.DotnetLspService;
 import dtm.ide.lsp.DotnetWorkspaceEdit;
+import dtm.ide.lsp.LanguageServerSelector;
+import dtm.ide.lsp.LspServerKind;
+import dtm.ide.lsp.LspService;
+import dtm.ide.lsp.OmniSharpLspService;
+import dtm.ide.lsp.RoslynLspService;
 import dtm.ide.lsp.UsagesPopup;
 import dtm.ide.reference.ProjectReferenceService;
 import dtm.ide.run.DebugCallStackPanel;
@@ -156,7 +160,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile Path projectPath;
     private volatile IdeProjectContext projectContext;
     private volatile DotnetSdkService sdkService;
-    private volatile DotnetLspService lspService;
+    private volatile LspService lspService;
     private final DotnetRunSupport runSupport = new DotnetRunSupport();
     private volatile ExecutorService languageSetupExecutor;
     private volatile ExecutorService navigationExecutor;
@@ -253,7 +257,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         debugFinished();
         wordCaretTicket.incrementAndGet();
         SwingUtilities.invokeLater(this::hideCodeActionLamp);
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service != null) {
             service.clearMetadataCache();
         }
@@ -276,7 +280,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void clearCaches() {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service != null) {
             service.clearMetadataCache();
             service.stop();
@@ -341,11 +345,17 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 runSupport.bindSdk(sdk);
                 DotnetSdkService.DownloadProgressListener progress = progressListener();
                 String requiredSdkVersion = sdk.resolveSdkVersion(project);
+                LspServerKind kind = LanguageServerSelector.select(project, ensurePluginSettings());
+                boolean roslyn = kind == LspServerKind.ROSLYN;
                 boolean needDotnet = sdk.getDotnetPath(requiredSdkVersion).isEmpty();
-                boolean needOmnisharp = sdk.getOmniSharpPath().isEmpty();
+                boolean needServer = roslyn
+                        ? sdk.getRoslynLanguageServerPath().isEmpty()
+                        : sdk.getOmniSharpPath().isEmpty();
+                boolean needRoslynRuntime = roslyn && sdk.getRoslynRuntimeRoot().isEmpty();
 
-                if ((needDotnet || needOmnisharp)
-                        && !confirmToolchainDownload(needDotnet ? requiredSdkVersion : null, needOmnisharp)) {
+                if ((needDotnet || needServer || needRoslynRuntime)
+                        && !confirmToolchainDownload(needDotnet ? requiredSdkVersion : null,
+                                needServer || needRoslynRuntime)) {
                     return;
                 }
 
@@ -353,8 +363,16 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     sdk.ensureDotnet(requiredSdkVersion, progress);
                 }
 
-                if (needOmnisharp) {
-                    sdk.ensureOmniSharp(progress);
+                if (needRoslynRuntime) {
+                    sdk.ensureRoslynRuntime(progress);
+                }
+
+                if (needServer) {
+                    if (roslyn) {
+                        sdk.ensureRoslyn(progress);
+                    } else {
+                        sdk.ensureOmniSharp(progress);
+                    }
                 }
                 if (!isProjectCurrent(ticket, project)) {
                     return;
@@ -363,7 +381,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 if (!isProjectCurrent(ticket, project)) {
                     return;
                 }
-                DotnetLspService service = ensureLspService(sdk);
+                LspService service = ensureLspService(sdk, kind);
                 service.bindProject(project);
 
                 analyzeProgressShown.set(true);
@@ -476,7 +494,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void stopLanguageServices() {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service != null) {
             service.stop();
         }
@@ -502,11 +520,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return sdkService;
     }
 
-    private synchronized DotnetLspService ensureLspService(DotnetSdkService sdk) {
+    private synchronized LspService ensureLspService(DotnetSdkService sdk, LspServerKind kind) {
         if (lspService != null) {
             return lspService;
         }
-        lspService = new DotnetLspService(getResource(), sdk);
+        lspService = kind == LspServerKind.ROSLYN
+                ? new RoslynLspService(getResource(), sdk)
+                : new OmniSharpLspService(getResource(), sdk);
         lspService.setApplyEditSink(this::applyWorkspaceEditFromServer);
         lspService.addDiagnosticsPublishedListener(uri -> {
             Path file = DotnetProjectConventions.pathFromUri(uri);
@@ -563,7 +583,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         };
     }
 
-    private boolean confirmToolchainDownload(String dotnetSdkVersion, boolean needOmnisharp) {
+    private boolean confirmToolchainDownload(String dotnetSdkVersion, boolean needServer) {
         if (toolchainDeclined.get()) {
             return false;
         }
@@ -571,8 +591,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (dotnetSdkVersion != null && !dotnetSdkVersion.isBlank()) {
             missing.add(".NET SDK " + dotnetSdkVersion);
         }
-        if (needOmnisharp) {
-            missing.add("Intellisense " + DotnetSdkService.DEFAULT_OMNISHARP_VERSION + " (language server C#)");
+        if (needServer) {
+            missing.add("IntelliSense (language server C#)");
         }
         String message = "O Orion precisa baixar " + String.join(" e ", missing)
                 + " para habilitar o suporte a C# (IntelliSense e build) deste projeto."
@@ -696,7 +716,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (!ensurePluginSettings().isOnTypeFormatting()) {
             return;
         }
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || !service.isOnTypeFormattingSupported()) {
             return;
         }
@@ -720,7 +740,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         int col = context.getCaretCol();
         int caretOffset = context.getCaretOffset();
         navigationExecutor().execute(() -> {
-            DotnetLspService service = lspService;
+            LspService service = lspService;
             if (service == null) {
                 return;
             }
@@ -779,7 +799,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void triggerDiagnostics(Path file, String text) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || file == null || !isCSharpLike(file)) {
             return;
         }
@@ -836,7 +856,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<AutoCompleteItem> getCompletionSuggestions(IdeCompletionContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -873,7 +893,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (debugActive.get()) {
             return null;
         }
-        DotnetLspService service = lspService;
+        LspService service = lspService;
 
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return null;
@@ -928,7 +948,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (debugActive.get()) {
             return null;
         }
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return null;
         }
@@ -966,7 +986,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (debugActive.get()) {
             return null;
         }
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return null;
         }
@@ -1020,7 +1040,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<Location> findDefinitions(IdeDefinitionContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1029,7 +1049,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<Location> findReferences(IdeDefinitionContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1038,7 +1058,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<DocumentSymbol> getDocumentSymbols(IdeDocumentSymbolContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1047,7 +1067,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<TextEdit> computeRenameEdits(IdeRenameContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1055,7 +1075,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean isRenameAvailable(IdeEditorContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         return service != null && service.isRunning()
                 && context != null
                 && context.filePath() != null
@@ -1064,7 +1084,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean isImplementationAvailable(IdeEditorContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         return service != null && service.isRunning()
                 && context != null
                 && context.filePath() != null
@@ -1073,7 +1093,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean isTypeDefinitionAvailable(IdeEditorContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         return service != null && service.isTypeDefinitionReady()
                 && context != null
                 && context.filePath() != null
@@ -1113,7 +1133,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void renameSymbol(IdeEditorContext context, String newName) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || context.filePath() == null) {
             return;
         }
@@ -1285,7 +1305,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public Collection<Diagnostic> getDiagnostics(IdeDiagnosticsContext context,
                                                  boolean incremental,
                                                  Collection<Diagnostic> previous) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.getFilePath())) {
             return Collections.emptyList();
         }
@@ -1294,7 +1314,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<CodeAction> getCodeActions(IdeCodeActionContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1316,7 +1336,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void handleCodeActionCommand(Command command) {
-        if (command == null || !DotnetLspService.APPLY_CODE_ACTION_COMMAND.equals(command.id())) {
+        if (command == null || !LspService.APPLY_CODE_ACTION_COMMAND.equals(command.id())) {
             return;
         }
         List<Object> args = command.arguments();
@@ -1325,7 +1345,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Object uriArg = args.get(0);
         Path file = uriArg == null ? null : DotnetProjectConventions.pathFromUri(uriArg.toString());
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null) {
             return;
         }
@@ -1364,7 +1384,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public String formatCode(FormatCodeContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || context.file() == null || !isCSharpLike(context.file())) {
             return context == null ? null : context.text();
         }
@@ -1383,13 +1403,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public boolean isSemanticTokensEnabled() {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         return service != null && service.isSemanticTokensReady();
     }
 
     @Override
     public List<SemanticToken> getSemanticTokens(IdeSemanticTokensContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1398,7 +1418,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<InlayHint> getInlayHints(IdeInlayHintContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1410,7 +1430,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (debugActive.get()) {
             return Collections.emptyList();
         }
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1419,7 +1439,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<CodeLens> getCodeLenses(IdeCodeLensContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1516,7 +1536,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return angle >= 0 ? base.substring(0, angle) : base;
     }
 
-    private void collectCodeLenses(DotnetLspService service, List<DocumentSymbol> symbols, Path filePath,
+    private void collectCodeLenses(LspService service, List<DocumentSymbol> symbols, Path filePath,
                                    String text, List<CodeLens> out, int[] budget) {
         for (DocumentSymbol symbol : symbols) {
             if (symbol == null || symbol.selectionRange() == null || symbol.selectionRange().start() == null) {
@@ -1639,7 +1659,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public GlobalSearchResult search(GlobalSearchQuery query, GlobalSearchResult current) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || query == null || !query.hasTerm()) {
             return current;
         }
@@ -1647,13 +1667,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (term.length() < 2) {
             return current;
         }
-        List<DotnetLspService.WorkspaceSymbol> symbols = service.workspaceSymbols(term);
+        List<LspService.WorkspaceSymbol> symbols = service.workspaceSymbols(term);
         if (symbols.isEmpty()) {
             return current;
         }
         int limit = query.maxResults() > 0 ? query.maxResults() : symbols.size();
         List<GlobalSearchMatch> matches = new ArrayList<>();
-        for (DotnetLspService.WorkspaceSymbol symbol : symbols) {
+        for (LspService.WorkspaceSymbol symbol : symbols) {
             if (matches.size() >= limit) {
                 break;
             }
@@ -1678,7 +1698,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return current == null ? symbolResult : current.merge(symbolResult);
     }
 
-    private static String symbolPreview(DotnetLspService.WorkspaceSymbol symbol) {
+    private static String symbolPreview(LspService.WorkspaceSymbol symbol) {
         String container = symbol.container();
         return container == null || container.isBlank()
                 ? symbol.name()
@@ -1708,7 +1728,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<CallHierarchyItem> prepareCallHierarchy(IdeCallHierarchyContext context) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || !isCSharpLike(context.filePath())) {
             return Collections.emptyList();
         }
@@ -1717,13 +1737,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<CallHierarchyCall> getIncomingCalls(CallHierarchyItem item) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         return service == null ? Collections.emptyList() : service.incomingCalls(item);
     }
 
     @Override
     public List<CallHierarchyCall> getOutgoingCalls(CallHierarchyItem item) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         return service == null ? Collections.emptyList() : service.outgoingCalls(item);
     }
 
@@ -1735,7 +1755,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 || !isCSharpLike(context.filePath())) {
             return;
         }
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || !service.isRunning()) {
             return;
         }
@@ -1751,7 +1771,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (!isSameCaretContext(context, editorContext)) {
             return;
         }
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null) {
             return;
         }
@@ -2079,7 +2099,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private List<DebugCompletion> lspExpressionCompletions(IdeEditorContext context, String expression) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
             return List.of();
         }
@@ -2379,7 +2399,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void navigateAsync(String text, Path file, int line, int col, int offset) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null) return;
         navigationExecutor().execute(() -> {
             SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, "Abrindo definição (descompilando se necessário)..."));
@@ -2397,7 +2417,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void navigateImplementationsAsync(String text, Path file, int line, int col) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null) {
             return;
         }
@@ -2421,7 +2441,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void navigateTypeDefinitionsAsync(String text, Path file, int line, int col) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         if (service == null) {
             return;
         }
@@ -2503,7 +2523,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public String onBeforeFileSave(Path path, String content) {
-        DotnetLspService service = lspService;
+        LspService service = lspService;
         DotnetPluginSettings settings = pluginSettings;
         if (service == null || settings == null || !settings.isFormatOnSave()
                 || path == null || !isCSharpLike(path)) {
@@ -2694,7 +2714,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void restartLanguageServer() {
         languageSetupExecutor().execute(() -> {
-            DotnetLspService service = lspService;
+            LspService service = lspService;
             if (service != null) {
                 service.stop();
             }

@@ -18,6 +18,7 @@ public final class DotnetPluginSettings {
     private static final String KEY_GHOST_TEXT = "ghostText";
     private static final String KEY_TREE_LAYOUT = "treeLayout";
     private static final String KEY_BREAK_ON_ALL_EXCEPTIONS = "breakOnAllExceptions";
+    private static final String KEY_LANGUAGE_SERVER_MODE = "languageServerMode";
 
     private final Path settingsFile;
 
@@ -84,7 +85,7 @@ public final class DotnetPluginSettings {
     }
 
     public void setLanguageServerMode(LanguageServerMode languageServerMode){
-        this.languageServerMode = languageServerMode;
+        this.languageServerMode = languageServerMode == null ? LanguageServerMode.AUTO : languageServerMode;
     }
 
     public void setDefaultConfiguration(String defaultConfiguration) {
@@ -108,6 +109,7 @@ public final class DotnetPluginSettings {
         defaultConfiguration = "Debug";
         treeLayout = TreeLayout.DEFAULT;
         breakOnAllExceptions = false;
+        languageServerMode = LanguageServerMode.AUTO;
     }
 
     public void load() {
@@ -124,6 +126,7 @@ public final class DotnetPluginSettings {
             defaultConfiguration = props.getProperty(KEY_DEFAULT_CONFIGURATION, "Debug");
             treeLayout = TreeLayout.fromKey(props.getProperty(KEY_TREE_LAYOUT, TreeLayout.DEFAULT.key()));
             breakOnAllExceptions = Boolean.parseBoolean(props.getProperty(KEY_BREAK_ON_ALL_EXCEPTIONS, "false"));
+            languageServerMode = LanguageServerMode.fromKey(props.getProperty(KEY_LANGUAGE_SERVER_MODE, LanguageServerMode.AUTO.key()));
         } catch (Exception e) {
             log.debug("Falha ao carregar settings .NET: {}", e.getMessage());
         }
@@ -141,6 +144,7 @@ public final class DotnetPluginSettings {
         props.setProperty(KEY_DEFAULT_CONFIGURATION, defaultConfiguration);
         props.setProperty(KEY_TREE_LAYOUT, getTreeLayout().key());
         props.setProperty(KEY_BREAK_ON_ALL_EXCEPTIONS, Boolean.toString(breakOnAllExceptions));
+        props.setProperty(KEY_LANGUAGE_SERVER_MODE, (languageServerMode == null ? LanguageServerMode.AUTO : languageServerMode).key());
         try {
             Path parent = settingsFile.getParent();
             if (parent != null) {
