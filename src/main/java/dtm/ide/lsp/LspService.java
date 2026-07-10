@@ -48,6 +48,10 @@ public interface LspService {
 
     boolean isTypeDefinitionReady();
 
+    default boolean supportsRazor() {
+        return false;
+    }
+
     void addDiagnosticsPublishedListener(Consumer<String> listener);
 
     void addLoadProgressListener(LoadProgressListener listener);

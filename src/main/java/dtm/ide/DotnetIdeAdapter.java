@@ -564,6 +564,20 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
     }
 
+    private boolean lspHandlesEditor(Path filePath) {
+        if (filePath == null) {
+            return false;
+        }
+        if (isCSharpLike(filePath)) {
+            return true;
+        }
+        if (!DotnetProjectConventions.isRazorLike(filePath)) {
+            return false;
+        }
+        LspService service = lspService;
+        return service != null && service.supportsRazor();
+    }
+
     private DotnetSdkService.DownloadProgressListener progressListener() {
         return new DotnetSdkService.DownloadProgressListener() {
             @Override
@@ -710,7 +724,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public void onCodeEditorInsertText(IdeEditorContext editorContext, int offset, String inserted) {
         if (editorContext == null || editorContext.filePath() == null
                 || inserted == null || inserted.isEmpty()
-                || !isCSharpLike(editorContext.filePath())) {
+                || !lspHandlesEditor(editorContext.filePath())) {
             return;
         }
         if (!ensurePluginSettings().isOnTypeFormatting()) {
@@ -857,7 +871,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<AutoCompleteItem> getCompletionSuggestions(IdeCompletionContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.completeForEditor(
@@ -866,7 +880,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public boolean shouldAutoTriggerCompletion(IdeCompletionContext context) {
-        if (context == null || !isCSharpLike(context.filePath())) {
+        if (context == null || !lspHandlesEditor(context.filePath())) {
             return false;
         }
         String line = context.currentLine();
@@ -895,7 +909,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         LspService service = lspService;
 
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return null;
         }
         DotnetPluginSettings settings = pluginSettings;
@@ -949,7 +963,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return null;
         }
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return null;
         }
         HoverInfo diagnosticHover = service.diagnosticHover(context.filePath(), context.line(), context.col());
@@ -961,7 +975,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void onHover(IdeHoverContext context) {
-        if (!debugActive.get() || context == null || context.text() == null || !isCSharpLike(context.filePath())) {
+        if (!debugActive.get() || context == null || context.text() == null || !lspHandlesEditor(context.filePath())) {
             debugValuePopup.hide();
             return;
         }
@@ -987,7 +1001,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return null;
         }
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return null;
         }
         return service.signatureHelp(context.filePath(), context.text(), context.caretLine(), context.caretCol());
@@ -1001,7 +1015,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public void contributeEditorMenu(IdeMenuBuilder menu, IdeEditorContext editorContext) {
         if (menu == null || editorContext == null || editorContext.filePath() == null
-                || !isCSharpLike(editorContext.filePath())) {
+                || !lspHandlesEditor(editorContext.filePath())) {
             return;
         }
         boolean enabled = debugActive.get();
@@ -1041,7 +1055,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<Location> findDefinitions(IdeDefinitionContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.definitions(context.filePath(), context.text(), context.line(), context.col());
@@ -1050,7 +1064,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<Location> findReferences(IdeDefinitionContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.references(context.filePath(), context.text(), context.line(), context.col());
@@ -1059,7 +1073,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<DocumentSymbol> getDocumentSymbols(IdeDocumentSymbolContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.documentSymbols(context.filePath(), context.text());
@@ -1068,7 +1082,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<TextEdit> computeRenameEdits(IdeRenameContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.rename(context.filePath(), context.text(), context.line(), context.col(), context.newName());
@@ -1079,7 +1093,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return service != null && service.isRunning()
                 && context != null
                 && context.filePath() != null
-                && isCSharpLike(context.filePath())
+                && lspHandlesEditor(context.filePath())
                 && identifierAt(context.getText(), context.getCaretOffset()) != null;
     }
 
@@ -1088,7 +1102,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return service != null && service.isRunning()
                 && context != null
                 && context.filePath() != null
-                && isCSharpLike(context.filePath())
+                && lspHandlesEditor(context.filePath())
                 && identifierAt(context.getText(), context.getCaretOffset()) != null;
     }
 
@@ -1097,7 +1111,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return service != null && service.isTypeDefinitionReady()
                 && context != null
                 && context.filePath() != null
-                && isCSharpLike(context.filePath())
+                && lspHandlesEditor(context.filePath())
                 && identifierAt(context.getText(), context.getCaretOffset()) != null;
     }
 
@@ -1306,7 +1320,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                                                  boolean incremental,
                                                  Collection<Diagnostic> previous) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.getFilePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.getFilePath())) {
             return Collections.emptyList();
         }
         return service.diagnose(context.getFilePath(), context.getText());
@@ -1315,7 +1329,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<CodeAction> getCodeActions(IdeCodeActionContext context) {
         LspService service = lspService;
-        if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.codeActions(context.filePath(), context.text(), context.range(), context.diagnostics());
@@ -1385,7 +1399,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public String formatCode(FormatCodeContext context) {
         LspService service = lspService;
-        if (service == null || context == null || context.file() == null || !isCSharpLike(context.file())) {
+        if (service == null || context == null || context.file() == null || !lspHandlesEditor(context.file())) {
             return context == null ? null : context.text();
         }
         EditorConfigSettings.FormatOptions options = EditorConfigSettings.resolve(
@@ -1410,7 +1424,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<SemanticToken> getSemanticTokens(IdeSemanticTokensContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.semanticTokens(context.filePath(), context.text());
@@ -1419,7 +1433,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<InlayHint> getInlayHints(IdeInlayHintContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.inlayHints(context.filePath(), context.text(), context.firstLine(), context.lastLine());
@@ -1431,7 +1445,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return Collections.emptyList();
         }
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.documentHighlights(context.filePath(), context.text(), context.line(), context.col());
@@ -1440,7 +1454,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<CodeLens> getCodeLenses(IdeCodeLensContext context) {
         LspService service = lspService;
-        if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         List<DocumentSymbol> symbols = service.documentSymbols(context.filePath(), context.text());
@@ -1729,7 +1743,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public List<CallHierarchyItem> prepareCallHierarchy(IdeCallHierarchyContext context) {
         LspService service = lspService;
-        if (service == null || context == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
         return service.prepareCallHierarchy(context.filePath(), context.text(), context.line(), context.col());
@@ -1752,7 +1766,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         long ticket = wordCaretTicket.incrementAndGet();
         SwingUtilities.invokeLater(this::hideCodeActionLamp);
         if (context == null || context.filePath() == null || context.editorContext() == null
-                || !isCSharpLike(context.filePath())) {
+                || !lspHandlesEditor(context.filePath())) {
             return;
         }
         LspService service = lspService;
@@ -2100,7 +2114,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private List<DebugCompletion> lspExpressionCompletions(IdeEditorContext context, String expression) {
         LspService service = lspService;
-        if (service == null || context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+        if (service == null || context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return List.of();
         }
         String expressionText = expression == null ? "" : expression;
@@ -2353,7 +2367,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void onWordClick(IdeWordClickContext context) {
-        if (context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+        if (context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return;
         }
         navigateAsync(context.text(), context.filePath(), context.line(), context.col(), context.startOffset());
@@ -2366,7 +2380,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void onGoToImplementation(IdeEditorContext context) {
-        if (context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+        if (context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return;
         }
         navigateImplementationsAsync(context.getText(), context.filePath(),
@@ -2374,7 +2388,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void onGoToTypeDefinition(IdeEditorContext context) {
-        if (context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+        if (context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return;
         }
         navigateTypeDefinitionsAsync(context.getText(), context.filePath(),
@@ -2391,7 +2405,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void navigateFromEditor(IdeEditorContext context) {
-        if (context == null || context.filePath() == null || !isCSharpLike(context.filePath())) {
+        if (context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return;
         }
         navigateAsync(context.getText(), context.filePath(),

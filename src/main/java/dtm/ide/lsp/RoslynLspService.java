@@ -51,7 +51,20 @@ public final class RoslynLspService extends AbstractLspService {
         command.add("--extensionLogDirectory");
         command.add(logDirectory().toAbsolutePath().toString());
         command.add("--stdio");
+        sdkService().getRazorExtensionPath().ifPresent(extension -> {
+            command.add("--extension");
+            command.add(extension.toString());
+            sdkService().getRazorDesignTimeTargets().ifPresent(targets -> {
+                command.add("--csharpDesignTimePath");
+                command.add(targets.toString());
+            });
+        });
         return command;
+    }
+
+    @Override
+    public boolean supportsRazor() {
+        return sdkService().getRazorExtensionPath().isPresent();
     }
 
     private Path logDirectory() {

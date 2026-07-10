@@ -64,6 +64,7 @@ public class DotnetSdkService {
     private static final String NETCOREDBG_RELEASE_REPOSITORY = "DanielTM999/netcoredbg";
     private static final String ROSLYN_LS_RELEASE_REPOSITORY = "Crashdummyy/roslynLanguageServer";
     private static final String ROSLYN_LS_DLL = "Microsoft.CodeAnalysis.LanguageServer.dll";
+    private static final String ROSLYN_RAZOR_EXTENSION_DLL = "Microsoft.VisualStudioCode.RazorExtension.dll";
     private static final Pattern SDK_LIST_VERSION = Pattern.compile("^\\s*(\\d+)\\.(\\d+)\\.[^\\s]+");
     private static final Pattern GLOBAL_JSON_SDK_VERSION =
             Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
@@ -179,6 +180,17 @@ public class DotnetSdkService {
 
     public Optional<Path> getRoslynLanguageServerPath() {
         return resolveRoslynDll(roslynRoot(DEFAULT_ROSLYN_LS_VERSION));
+    }
+
+    public Optional<Path> getRazorExtensionPath() {
+        return findInRoslynBundle(name -> name.equals(ROSLYN_RAZOR_EXTENSION_DLL));
+    }
+
+    public Optional<Path> getRazorDesignTimeTargets() {
+        return findInRoslynBundle(name -> {
+            String lower = name.toLowerCase(Locale.ROOT);
+            return lower.endsWith("designtime.targets") && lower.contains("razor");
+        });
     }
 
     public Path ensureRoslyn(DownloadProgressListener progressListener) {
@@ -434,6 +446,23 @@ public class DotnetSdkService {
     private Path netcoredbgRoot(String version) {
         Path sdk = sdkRoot();
         return sdk == null ? null : sdk.resolve(NETCOREDBG_DIR).resolve(version);
+    }
+
+    private Optional<Path> findInRoslynBundle(java.util.function.Predicate<String> nameMatch) {
+        Path root = roslynRoot(DEFAULT_ROSLYN_LS_VERSION);
+        if (root == null || !Files.isDirectory(root)) {
+            return Optional.empty();
+        }
+        try (Stream<Path> paths = Files.walk(root)) {
+            return paths
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName() != null)
+                    .filter(path -> nameMatch.test(path.getFileName().toString()))
+                    .findFirst()
+                    .map(path -> path.toAbsolutePath().normalize());
+        } catch (Exception e) {
+            return Optional.empty();
+        }
     }
 
     private Optional<Path> resolveRoslynDll(Path root) {

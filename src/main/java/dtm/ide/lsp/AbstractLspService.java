@@ -2458,12 +2458,20 @@ public abstract class AbstractLspService implements LspService {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
     }
 
+    protected String languageIdForUri(String uri) {
+        String lower = uri == null ? "" : uri.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".razor") || lower.endsWith(".cshtml")) {
+            return "razor";
+        }
+        return "csharp";
+    }
+
     private void sendDidOpen(String uri, String text) {
         int version = documentVersions.computeIfAbsent(uri, ignored -> new AtomicInteger()).incrementAndGet();
         client.sendNotification("textDocument/didOpen", Map.of(
                 "textDocument", Map.of(
                         "uri", uri,
-                        "languageId", "csharp",
+                        "languageId", languageIdForUri(uri),
                         "version", version,
                         "text", text == null ? "" : text
                 )
