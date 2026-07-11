@@ -53,6 +53,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -122,6 +123,7 @@ public abstract class AbstractLspService implements LspService {
     private volatile ScheduledFuture<?> analyzeProgressTicker;
 
     private volatile State state = State.NOT_STARTED;
+    private volatile CountDownLatch readyLatch = new CountDownLatch(1);
     private volatile String lastError;
     private volatile Path projectPath;
     private volatile Path loadTarget;
@@ -245,6 +247,33 @@ public abstract class AbstractLspService implements LspService {
         return p != null && p.isAlive() && state == State.READY;
     }
 
+    @Override
+    public boolean awaitReady(long timeoutMs) {
+        if (isRunning()) {
+            return true;
+        }
+        if (timeoutMs <= 0) {
+            return false;
+        }
+        if (state != State.STARTING) {
+            return false;
+        }
+        CountDownLatch latch = readyLatch;
+        try {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return isRunning();
+    }
+
+    private void releaseReadyLatch() {
+        CountDownLatch latch = readyLatch;
+        if (latch != null) {
+            latch.countDown();
+        }
+    }
+
     public boolean isSemanticTokensReady() {
         return isRunning() && semanticTokensSupported;
     }
@@ -284,6 +313,7 @@ public abstract class AbstractLspService implements LspService {
             intentionalStop.set(true);
             doStop();
             state = State.STOPPED;
+            releaseReadyLatch();
         }
     }
 
@@ -2010,6 +2040,7 @@ public abstract class AbstractLspService implements LspService {
             return;
         }
         try {
+            readyLatch = new CountDownLatch(1);
             state = State.STARTING;
             startAnalyzeProgress();
             prepareServerConfig(binary.get());
@@ -2033,6 +2064,7 @@ public abstract class AbstractLspService implements LspService {
             diagnosticsByUri.clear();
             lastError = null;
             state = State.READY;
+            releaseReadyLatch();
             log.info("{} iniciado em {} (alvo de carga: {})", serverName(), projectPath, target);
         } catch (Exception e) {
             recordError("Falha ao iniciar " + serverName() + ": " + safeMessage(e));
@@ -2172,6 +2204,7 @@ public abstract class AbstractLspService implements LspService {
                 if (process == p) {
                     doStop();
                     state = intentionalStop.get() ? State.STOPPED : State.ERROR;
+                    releaseReadyLatch();
                     if (!intentionalStop.get()) {
                         lastError = serverName() + " terminou inesperadamente (código " + exit + ").";
                     }
@@ -3137,6 +3170,7 @@ public abstract class AbstractLspService implements LspService {
     private void recordError(String message) {
         this.lastError = message;
         this.state = State.ERROR;
+        releaseReadyLatch();
         log.warn("LSP .NET: {}", message);
     }
 

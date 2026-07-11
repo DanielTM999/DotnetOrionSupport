@@ -44,6 +44,10 @@ public interface LspService {
 
     boolean isRunning();
 
+    default boolean awaitReady(long timeoutMs) {
+        return isRunning();
+    }
+
     boolean isSemanticTokensReady();
 
     boolean isTypeDefinitionReady();

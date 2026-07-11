@@ -170,6 +170,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private static final int CODE_LENS_LIMIT = 100;
     private final Set<Path> featureRefreshedFiles = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean analyzeProgressShown = new AtomicBoolean(false);
+    private volatile int lspLoadPercent = 0;
     private volatile DotnetProjectConfigPanel projectConfigPanel;
     private volatile DotnetPluginSettings pluginSettings;
     private final AtomicBoolean toolchainDeclined = new AtomicBoolean(false);
@@ -223,6 +224,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private static final String LSP_PROGRESS_ID = "dotnetLspStartup";
     private static final long RESTORE_TIMEOUT_SECONDS = 180;
     private static final String LSP_ANALYZE_PROGRESS_ID = "dotnetLspAnalyze";
+    private static final long LSP_HOVER_WAIT_MS = 2000L;
+    private static final long LSP_COMPLETION_WAIT_MS = 1200L;
+    private static final long LSP_DIAGNOSTICS_WAIT_MS = 4000L;
     private static final String NAV_PROGRESS_ID = "dotnetNavigate";
     private static final String HOT_RELOAD_PROGRESS_ID = "dotnetHotReload";
 
@@ -541,11 +545,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
         });
         lspService.addLoadProgressListener((percent, finished) -> SwingUtilities.invokeLater(() -> {
             if (finished) {
+                lspLoadPercent = 100;
                 if (analyzeProgressShown.compareAndSet(true, false)) {
                     hideProgress(LSP_ANALYZE_PROGRESS_ID);
+                    refreshOpenEditors();
                 }
                 return;
             }
+            lspLoadPercent = percent;
             if (analyzeProgressShown.compareAndSet(false, true)) {
                 showProgress(LSP_ANALYZE_PROGRESS_ID, "Analisando projeto");
             }
@@ -819,6 +826,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         navigationExecutor().execute(() -> {
             try {
+                if (!service.isRunning() && isLspLoading(service)) {
+                    service.awaitReady(LSP_DIAGNOSTICS_WAIT_MS);
+                }
                 service.diagnose(file, text);
             } catch (Exception ignored) {
             }
@@ -873,6 +883,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
         LspService service = lspService;
         if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
+        }
+        if (!service.isRunning() && isLspLoading(service)) {
+            service.awaitReady(LSP_COMPLETION_WAIT_MS);
         }
         return service.completeForEditor(
                 context.filePath(), context.text(), context.caretLine(), context.caretCol(), context.prefix());
@@ -966,11 +979,31 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
             return null;
         }
+        if (!service.isRunning()) {
+            if (!isLspLoading(service)) {
+                return null;
+            }
+            service.awaitReady(LSP_HOVER_WAIT_MS);
+            if (!service.isRunning()) {
+                return lspLoadingHover();
+            }
+        }
         HoverInfo diagnosticHover = service.diagnosticHover(context.filePath(), context.line(), context.col());
         if (diagnosticHover != null) {
             return diagnosticHover;
         }
         return service.hover(context.filePath(), context.text(), context.line(), context.col());
+    }
+
+    private boolean isLspLoading(LspService service) {
+        return service != null && service.getState() == LspService.State.STARTING;
+    }
+
+    private HoverInfo lspLoadingHover() {
+        int percent = lspLoadPercent;
+        String suffix = percent > 0 && percent < 100 ? " (" + percent + "%)" : "";
+        return HoverInfo.markdown("**Carregando IntelliSense C#…" + suffix + "**\n\n"
+                + "As informações aparecem assim que o projeto terminar de analisar.");
     }
 
     @Override
