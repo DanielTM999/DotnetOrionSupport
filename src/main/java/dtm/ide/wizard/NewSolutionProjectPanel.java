@@ -4,6 +4,7 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.DefaultListCellRenderer;
+import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
@@ -12,10 +13,14 @@ import javax.swing.JPanel;
 import javax.swing.JTextField;
 import javax.swing.event.AncestorEvent;
 import javax.swing.event.AncestorListener;
+import dtm.stools.component.inputfields.textfield.PathTextField;
+import dtm.stools.component.inputfields.osfilepicker.OsFilePicker;
+import java.io.File;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 public final class NewSolutionProjectPanel extends JPanel {
@@ -28,6 +33,7 @@ public final class NewSolutionProjectPanel extends JPanel {
 
     private final JComboBox<DotnetTemplate> templateCombo = new JComboBox<>();
     private final JTextField nameField = new JTextField("NewProject");
+    private final PathTextField locationField = new PathTextField("/");
     private final JComboBox<String> frameworkCombo = new JComboBox<>();
     private final JLabel statusLabel = new JLabel(" ");
 
@@ -65,9 +71,17 @@ public final class NewSolutionProjectPanel extends JPanel {
             statusLabel.setText("Pasta da solução indisponível.");
             return null;
         }
-        Path projectDir = solutionDir.resolve(name);
-        if (java.nio.file.Files.exists(projectDir)) {
-            statusLabel.setText("Já existe uma pasta '" + name + "' na solução.");
+        Path baseDir;
+        try {
+            baseDir = resolveLocation(locationField.getText());
+        } catch (IllegalArgumentException ex) {
+            statusLabel.setText(ex.getMessage());
+            return null;
+        }
+        Path projectDir = baseDir.resolve(name);
+        if (Files.exists(projectDir)) {
+            Path relative = solutionDir.relativize(projectDir);
+            statusLabel.setText("Já existe uma pasta '" + relative + "' na solução.");
             return null;
         }
         DotnetTemplate template = (DotnetTemplate) templateCombo.getSelectedItem();
@@ -93,8 +107,81 @@ public final class NewSolutionProjectPanel extends JPanel {
         form.add(Box.createVerticalStrut(8));
         form.add(labeled("Nome", nameField));
         form.add(Box.createVerticalStrut(8));
+        locationField.setPlaceholder("ex.: NetCore ou src/NetStandard (vazio = raiz da solução)");
+        locationField.setToolTipText("Subpasta relativa à solução onde o projeto será criado. Vazio = raiz da solução.");
+        form.add(labeled("Local (opcional)", locationRow()));
+        form.add(Box.createVerticalStrut(8));
         form.add(labeled("Framework", frameworkCombo));
         return form;
+    }
+
+    private Path resolveLocation(String raw) {
+        String location = raw == null ? "" : raw.trim().replace('\\', '/');
+        while (location.startsWith("/")) {
+            location = location.substring(1);
+        }
+        while (location.endsWith("/")) {
+            location = location.substring(0, location.length() - 1);
+        }
+        if (location.isEmpty()) {
+            return solutionDir;
+        }
+        Path base = solutionDir;
+        for (String segment : location.split("/")) {
+            String part = segment.trim();
+            if (part.isEmpty() || part.equals(".")) {
+                continue;
+            }
+            if (part.equals("..")) {
+                throw new IllegalArgumentException("O local não pode sair da pasta da solução.");
+            }
+            base = base.resolve(part);
+        }
+        Path normalized = base.normalize();
+        if (!normalized.startsWith(solutionDir.normalize())) {
+            throw new IllegalArgumentException("O local deve ficar dentro da pasta da solução.");
+        }
+        return normalized;
+    }
+
+    private JComponent locationRow() {
+        JButton browse = new JButton("...");
+        browse.setToolTipText("Escolher pasta dentro da solução");
+        browse.setPreferredSize(new Dimension(ROW_HEIGHT + 6, ROW_HEIGHT));
+        browse.addActionListener(e -> chooseLocation());
+        JPanel row = new JPanel(new BorderLayout(6, 0));
+        row.setOpaque(false);
+        row.add(locationField, BorderLayout.CENTER);
+        row.add(browse, BorderLayout.EAST);
+        return row;
+    }
+
+    private void chooseLocation() {
+        if (solutionDir == null) {
+            statusLabel.setText("Pasta da solução indisponível.");
+            return;
+        }
+        Path base = solutionDir.toAbsolutePath().normalize();
+        File initial = base.toFile();
+        String current = locationField.getText();
+        if (current != null && !current.isBlank()) {
+            File candidate = base.resolve(current.trim().replace('\\', '/')).toFile();
+            if (candidate.isDirectory()) {
+                initial = candidate;
+            }
+        }
+        File selected = OsFilePicker.openDirectory("Selecionar pasta do projeto na solução", initial);
+        if (selected == null) {
+            return;
+        }
+        Path chosen = selected.toPath().toAbsolutePath().normalize();
+        if (!chosen.startsWith(base)) {
+            statusLabel.setText("A pasta deve ficar dentro da solução.");
+            return;
+        }
+        String relative = base.relativize(chosen).toString().replace('\\', '/');
+        locationField.setText(relative);
+        statusLabel.setText(" ");
     }
 
     private JPanel labeled(String label, JComponent field) {

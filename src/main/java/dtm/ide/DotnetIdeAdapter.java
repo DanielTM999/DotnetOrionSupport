@@ -690,9 +690,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (context == null || context.filePath() == null || !isHighlightable(context.filePath())) {
             return;
         }
-        editorRegistry.trackEditor(normalizePath(context.filePath()), context);
+        Path normalized = normalizePath(context.filePath());
+        editorRegistry.trackEditor(normalized, context);
+        if (applyDecompiledEditorGuards(context)) {
+            return;
+        }
         installCodeActionCommandHandler(context);
-        triggerDiagnostics(normalizePath(context.filePath()), context.getText());
+        triggerDiagnostics(normalized, context.getText());
     }
 
     @Override
@@ -706,8 +710,29 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Path file = normalizePath(editorContext.filePath());
         editorRegistry.trackEditor(file, editorContext);
+        if (applyDecompiledEditorGuards(editorContext)) {
+            return;
+        }
         installCodeActionCommandHandler(editorContext);
         triggerDiagnostics(file, editorContext.getText());
+    }
+
+    private boolean applyDecompiledEditorGuards(IdeEditorContext context) {
+        if (!isDecompiledFile(context.filePath())) {
+            return false;
+        }
+        try {
+            context.setReadOnly(true);
+            context.setDiagnosticsAutoRunEnabled(false);
+        } catch (Exception e) {
+            log.debug("Falha ao aplicar restrições de arquivo decompilado: {}", e.getMessage());
+        }
+        return true;
+    }
+
+    @Override
+    public boolean canSaveFile(Path filePath) {
+        return !isDecompiledFile(filePath);
     }
 
     @Override
@@ -821,7 +846,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void triggerDiagnostics(Path file, String text) {
         LspService service = lspService;
-        if (service == null || file == null || !isCSharpLike(file)) {
+        if (service == null || file == null || !isCSharpLike(file) || service.isDecompiled(file)) {
             return;
         }
         navigationExecutor().execute(() -> {
@@ -1354,6 +1379,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
                                                  Collection<Diagnostic> previous) {
         LspService service = lspService;
         if (service == null || context == null || !lspHandlesEditor(context.getFilePath())) {
+            return Collections.emptyList();
+        }
+        if (service.isDecompiled(context.getFilePath())) {
             return Collections.emptyList();
         }
         return service.diagnose(context.getFilePath(), context.getText());
@@ -3410,7 +3438,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
         Path buildTarget = resolveMenuBuildTarget(selected);
 
         if (Files.isDirectory(selected)) {
-            menu.into("tree.new").item("C# Class / Interface...", newCSharpItemIcon(), e -> openNewCSharpItem(selected));
+            Path workspaceSolution = resolveWorkspaceSolution();
+            menu.into("tree.new", sub -> {
+                sub.item("C# Class / Interface...", newCSharpItemIcon(), e -> openNewCSharpItem(selected));
+                if (workspaceSolution != null) {
+                    sub.item("Projeto .NET na solução...", newProjectIcon(),
+                            e -> openNewSolutionProject(workspaceSolution));
+                }
+            });
         } else if (buildTarget != null) {
             contributeBuildTargetNewMenu(menu, buildTarget);
         }
@@ -3447,13 +3482,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private void contributeBuildTargetNewMenu(IdeMenuBuilder menu, Path buildTarget) {
         boolean solution = isSolution(buildTarget);
         Path projectDir = buildTarget.getParent();
+        Path workspaceSolution = solution ? buildTarget : resolveWorkspaceSolution();
         menu.submenu("New", newCSharpItemIcon(), sub -> {
             if (solution) {
-                sub.item("Projeto .NET...", newProjectIcon(), e -> openNewSolutionProject(buildTarget));
+                sub.item("Projeto .NET na solução...", newProjectIcon(), e -> openNewSolutionProject(buildTarget));
             } else if (projectDir != null) {
                 sub.item("Classe / Interface C#...", newCSharpItemIcon(), e -> openNewCSharpItem(projectDir));
                 sub.item("Arquivo...", e -> openNewPlainFile(projectDir));
                 sub.item("Pasta...", e -> openNewFolder(projectDir));
+                if (workspaceSolution != null) {
+                    sub.item("Projeto .NET na solução...", newProjectIcon(),
+                            e -> openNewSolutionProject(workspaceSolution));
+                }
                 sub.separator();
                 sub.item("Pacote NuGet...", e -> openNuGetManager(buildTarget));
             }
@@ -3794,21 +3834,27 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private Path resolveBuildTarget() {
+        Path solution = resolveWorkspaceSolution();
+        if (solution != null) {
+            return solution;
+        }
+        Path root = projectPath;
+        return root == null ? null : TargetFramework.findPrimaryProjectFile(root);
+    }
+
+    private Path resolveWorkspaceSolution() {
         Path root = projectPath;
         if (root == null) {
             return null;
         }
         try (var stream = Files.list(root)) {
-            Path solution = stream.filter(java.nio.file.Files::isRegularFile)
+            return stream.filter(Files::isRegularFile)
                     .filter(DotnetIdeAdapter::isSolution)
                     .findFirst()
                     .orElse(null);
-            if (solution != null) {
-                return solution;
-            }
         } catch (Exception ignored) {
+            return null;
         }
-        return TargetFramework.findPrimaryProjectFile(root);
     }
 
     private void buildSolution(String title, List<String> verbAndArgs) {

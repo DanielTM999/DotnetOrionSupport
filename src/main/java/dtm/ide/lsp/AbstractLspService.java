@@ -124,6 +124,9 @@ public abstract class AbstractLspService implements LspService {
 
     private volatile State state = State.NOT_STARTED;
     private volatile CountDownLatch readyLatch = new CountDownLatch(1);
+    private static final int SYNC_FULL = 1;
+    private static final int SYNC_INCREMENTAL = 2;
+    private volatile int documentSyncKind = SYNC_FULL;
     private volatile String lastError;
     private volatile Path projectPath;
     private volatile Path loadTarget;
@@ -855,12 +858,19 @@ public abstract class AbstractLspService implements LspService {
             return false;
         }
         try {
+            Path normalized = filePath.toAbsolutePath().normalize();
             Path cacheDir = metadataCacheDir();
-            if (cacheDir == null) {
-                return false;
+            if (cacheDir != null && normalized.startsWith(cacheDir.toAbsolutePath().normalize())) {
+                return true;
             }
-            return filePath.toAbsolutePath().normalize()
-                    .startsWith(cacheDir.toAbsolutePath().normalize());
+            for (Path segment : normalized) {
+                String name = segment.toString();
+                if (name.equalsIgnoreCase("MetadataAsSource")
+                        || name.equalsIgnoreCase("DecompilationMetadataAsSourceFileProvider")) {
+                    return true;
+                }
+            }
+            return false;
         } catch (Exception e) {
             return false;
         }
@@ -2119,8 +2129,11 @@ public abstract class AbstractLspService implements LspService {
         if (uri == null) {
             return;
         }
-        diagnosticsByUri.put(normalizeUriKey(uri), diagnostics == null ? List.of() : diagnostics);
-        notifyDiagnosticsPublished(uri);
+        List<JsonNode> value = diagnostics == null ? List.of() : diagnostics;
+        List<JsonNode> previous = diagnosticsByUri.put(normalizeUriKey(uri), value);
+        if (!Objects.equals(previous, value)) {
+            notifyDiagnosticsPublished(uri);
+        }
     }
 
     protected Optional<Path> resolveDotnetRoot() {
@@ -2254,6 +2267,7 @@ public abstract class AbstractLspService implements LspService {
                 && node(capabilities, "completionProvider").path("resolveProvider").asBoolean(false);
         workspaceSymbolSupported = supportsProvider(node(capabilities, "workspaceSymbolProvider"));
         inlayHintSupported = supportsProvider(node(capabilities, "inlayHintProvider"));
+        captureDocumentSyncKind(node(capabilities, "textDocumentSync"));
         captureOnTypeFormatting(node(capabilities, "documentOnTypeFormattingProvider"));
         captureSemanticTokensLegend(node(capabilities, "semanticTokensProvider"));
         client.sendNotification("initialized", Map.of());
@@ -2428,6 +2442,9 @@ public abstract class AbstractLspService implements LspService {
     }
 
     protected synchronized void syncDocument(String uri, Path filePath, String text) {
+        if (isDecompiled(filePath)) {
+            return;
+        }
         String safeText = text == null ? "" : text;
         String previous = openedContent.get(uri);
         if (Objects.equals(previous, safeText)) {
@@ -2437,7 +2454,7 @@ public abstract class AbstractLspService implements LspService {
         if (firstOpen) {
             sendDidOpen(uri, safeText);
         } else {
-            sendDidChangeFull(uri, safeText);
+            sendDidChange(uri, previous, safeText);
         }
         openedContent.put(uri, safeText);
         diagnosticsByUri.remove(normalizeUriKey(uri));
@@ -2528,12 +2545,53 @@ public abstract class AbstractLspService implements LspService {
         ));
     }
 
-    private void sendDidChangeFull(String uri, String text) {
+    private void sendDidChange(String uri, String previousText, String text) {
         int version = documentVersions.computeIfAbsent(uri, ignored -> new AtomicInteger()).incrementAndGet();
+        String safeText = text == null ? "" : text;
+        Map<String, Object> change;
+        if (documentSyncKind == SYNC_INCREMENTAL) {
+            Position end = endPosition(previousText);
+            change = Map.of(
+                    "range", Map.of(
+                            "start", LspJsonRpcClient.position(0, 0),
+                            "end", LspJsonRpcClient.position(end.line(), end.col())
+                    ),
+                    "text", safeText
+            );
+        } else {
+            change = Map.of("text", safeText);
+        }
         client.sendNotification("textDocument/didChange", Map.of(
                 "textDocument", Map.of("uri", uri, "version", version),
-                "contentChanges", List.of(Map.of("text", text == null ? "" : text))
+                "contentChanges", List.of(change)
         ));
+    }
+
+    private void captureDocumentSyncKind(JsonNode sync) {
+        int kind = SYNC_FULL;
+        if (sync != null) {
+            if (sync.isInt()) {
+                kind = sync.asInt(SYNC_FULL);
+            } else if (sync.isObject() && sync.has("change")) {
+                kind = sync.path("change").asInt(SYNC_FULL);
+            }
+        }
+        documentSyncKind = kind;
+    }
+
+    private static Position endPosition(String text) {
+        if (text == null || text.isEmpty()) {
+            return new Position(0, 0);
+        }
+        int line = 0;
+        int lastLineStart = 0;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == '\n') {
+                line++;
+                lastLineStart = i + 1;
+            }
+        }
+        return new Position(line, text.length() - lastLineStart);
     }
 
     private List<AutoCompleteItem> parseCompletionResult(JsonNode result) {

@@ -7,6 +7,7 @@ import dtm.stools.component.panels.editor.code.prototype.folding.FoldRule;
 import dtm.stools.utils.ImageUtils;
 
 import javax.swing.Icon;
+import javax.swing.UIManager;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
@@ -91,6 +92,7 @@ final class DotnetProjectConventions {
     );
 
     private static volatile Icon solutionIcon;
+    private static volatile Icon solutionFolderIcon;
     private static volatile Icon projectIcon;
     private static volatile Icon referencesIcon;
     private static volatile Icon assemblyReferenceIcon;
@@ -325,6 +327,13 @@ final class DotnetProjectConventions {
         Path solutionFile = findSolutionFile(root);
         Path rootProjectFile = findProjectFile(root);
 
+        if (solutionFile != null) {
+            DotnetSolutionModel model = DotnetSolutionModel.parse(solutionFile);
+            if (model != null && model.hasProjects()) {
+                return buildFromSolutionModel(rootPath, solutionFile, model, root);
+            }
+        }
+
         if (rootProjectFile != null) {
             if (solutionFile == null) {
                 return buildRootProjectNode(root, rootPath, rootProjectFile);
@@ -367,6 +376,100 @@ final class DotnetProjectConventions {
         sortNodes(children);
         newRoot.children(children);
         return newRoot;
+    }
+
+    private static ProjectTreeNode buildFromSolutionModel(Path rootPath, Path solutionFile,
+                                                          DotnetSolutionModel model, ProjectTreeNode root) {
+        ProjectTreeNode newRoot = ProjectTreeNode.of(rootPath, labelOf(solutionFile));
+        applyLayoutIcon(newRoot, solutionIcon());
+
+        List<ProjectTreeNode> children = new ArrayList<>();
+        for (DotnetSolutionModel.Entry entry : model.roots()) {
+            ProjectTreeNode node = buildModelEntry(entry, rootPath, solutionFile);
+            if (node != null) {
+                children.add(node);
+            }
+        }
+        List<Path> projectDirs = new ArrayList<>();
+        collectProjectDirs(model.roots(), projectDirs);
+        for (ProjectTreeNode child : root.getChildren()) {
+            Path childPath = child.getPath();
+            if (childPath == null || samePath(childPath, solutionFile)) {
+                continue;
+            }
+            if (Files.isRegularFile(childPath) && !isInsideAnyProject(childPath, projectDirs)) {
+                children.add(child);
+            }
+        }
+
+        sortNodes(children);
+        newRoot.children(children);
+        return newRoot;
+    }
+
+    private static void collectProjectDirs(List<DotnetSolutionModel.Entry> entries, List<Path> out) {
+        for (DotnetSolutionModel.Entry entry : entries) {
+            if (entry.folder) {
+                collectProjectDirs(entry.children, out);
+            } else if (entry.projectFile != null && entry.projectFile.getParent() != null) {
+                out.add(entry.projectFile.getParent().toAbsolutePath().normalize());
+            }
+        }
+    }
+
+    private static boolean isInsideAnyProject(Path file, List<Path> projectDirs) {
+        Path normalized = file.toAbsolutePath().normalize();
+        for (Path dir : projectDirs) {
+            if (normalized.startsWith(dir)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static ProjectTreeNode buildModelEntry(DotnetSolutionModel.Entry entry, Path rootPath, Path solutionFile) {
+        if (entry.folder) {
+            return buildSolutionFolderNode(entry, rootPath, solutionFile);
+        }
+        return buildProjectNodeFromFile(entry.projectFile, solutionFile);
+    }
+
+    private static ProjectTreeNode buildSolutionFolderNode(DotnetSolutionModel.Entry entry, Path rootPath,
+                                                           Path solutionFile) {
+        ProjectTreeNode node = ProjectTreeNode.of(solutionFolderPath(rootPath, entry.guid), entry.name, true);
+        applyLayoutIcon(node, solutionFolderIcon());
+
+        List<ProjectTreeNode> children = new ArrayList<>();
+        for (DotnetSolutionModel.Entry child : entry.children) {
+            ProjectTreeNode childNode = buildModelEntry(child, rootPath, solutionFile);
+            if (childNode != null) {
+                children.add(childNode);
+            }
+        }
+        for (Path file : entry.files) {
+            if (file != null && Files.exists(file)) {
+                children.add(ProjectTreeNode.of(file));
+            }
+        }
+        sortNodes(children);
+        node.children(children);
+        return node;
+    }
+
+    private static ProjectTreeNode buildProjectNodeFromFile(Path projectFile, Path solutionFile) {
+        if (projectFile == null || !Files.isRegularFile(projectFile)) {
+            return null;
+        }
+        Path projectDir = projectFile.getParent();
+        ProjectTreeNode folderNode = projectDir != null && Files.isDirectory(projectDir)
+                ? buildFilesystemTree(projectDir)
+                : ProjectTreeNode.of(projectFile);
+        return buildProjectNode(folderNode, projectFile, solutionFile);
+    }
+
+    private static Path solutionFolderPath(Path rootPath, String guid) {
+        String leaf = guid == null ? "folder" : guid.replaceAll("[^A-Za-z0-9]", "_");
+        return rootPath.resolve(".orion-tree").resolve("solution").resolve(leaf);
     }
 
     private static ProjectTreeNode buildSolutionWithRootProject(ProjectTreeNode root, Path rootPath,
@@ -592,6 +695,18 @@ final class DotnetProjectConventions {
         if (icon == null) {
             icon = loadBundledIcon("imgs/dotnet/csProj.svg");
             projectIcon = icon;
+        }
+        return icon;
+    }
+
+    private static Icon solutionFolderIcon() {
+        Icon icon = solutionFolderIcon;
+        if (icon == null) {
+            icon = UIManager.getIcon("Tree.closedIcon");
+            if (icon == null) {
+                icon = UIManager.getIcon("FileView.directoryIcon");
+            }
+            solutionFolderIcon = icon;
         }
         return icon;
     }
