@@ -2498,16 +2498,32 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void openOrReuseEditor(Path targetPath, int targetLine, int targetCol) {
         Path normalized = normalizePath(targetPath);
+        boolean decompiled = isDecompiledFile(targetPath);
         IdeEditorContext open = editorRegistry.editorContext(normalized);
         if (open != null) {
             runOnUiThread(() -> {
                 switchToCenterTab(normalized.toString());
+                if (decompiled) {
+                    open.setReadOnly(true);
+                }
                 open.setCaretPosition(targetLine, targetCol);
+            });
+            return;
+        }
+        if (decompiled) {
+            runOnUiThread(() -> {
+                getEditor(targetPath, context -> context.setReadOnly(true));
+                setCaretPosition(targetLine, targetCol);
             });
             return;
         }
         runOnUiThread(() -> requestOpenFile(targetPath));
         SwingUtilities.invokeLater(() -> setCaretPosition(targetLine, targetCol));
+    }
+
+    private boolean isDecompiledFile(Path file) {
+        LspService service = lspService;
+        return service != null && service.isDecompiled(file);
     }
 
     private ExecutorService navigationExecutor() {

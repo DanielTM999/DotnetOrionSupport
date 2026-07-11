@@ -78,6 +78,10 @@ public interface LspService {
 
     void clearMetadataCache();
 
+    default boolean isDecompiled(Path filePath) {
+        return false;
+    }
+
     List<Location> references(Path filePath, String text, int line, int character);
 
     List<DocumentHighlight> documentHighlights(Path filePath, String text, int line, int character);

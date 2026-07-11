@@ -819,6 +819,23 @@ public abstract class AbstractLspService implements LspService {
         return Path.of(System.getProperty("java.io.tmpdir", "."), "orion-dotnet-metadata");
     }
 
+    @Override
+    public boolean isDecompiled(Path filePath) {
+        if (filePath == null) {
+            return false;
+        }
+        try {
+            Path cacheDir = metadataCacheDir();
+            if (cacheDir == null) {
+                return false;
+            }
+            return filePath.toAbsolutePath().normalize()
+                    .startsWith(cacheDir.toAbsolutePath().normalize());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public void clearMetadataCache() {
         Path cacheDir = metadataCacheDir();
         if (cacheDir == null || !Files.isDirectory(cacheDir)) {
