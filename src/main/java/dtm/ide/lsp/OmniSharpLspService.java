@@ -20,7 +20,7 @@ public final class OmniSharpLspService extends AbstractLspService {
 
     @Override
     protected String serverName() {
-        return "OmniSharp";
+        return "C# IntelliSense";
     }
 
     @Override

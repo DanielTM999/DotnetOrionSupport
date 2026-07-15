@@ -1,7 +1,7 @@
 # .NET / C# Orion Support
 
 Suporte completo para desenvolvimento **.NET / C#** dentro da Orion IDE: reconhecimento de
-projetos, editor C#, IntelliSense com OmniSharp, build/run/test via `dotnet`, depuração com
+projetos, editor C#, IntelliSense C#, build/run/test via `dotnet`, depuração com
 `netcoredbg`, gerenciador NuGet, wizards de projeto e painéis de
 configuração.
 
@@ -16,7 +16,7 @@ configuração.
 | **IDE mínima** | 1.0.0 |
 | **Licença** | MIT |
 | **Plugins** | .NET / C# IDE Adapter · .NET / C# Project Wizard |
-| **Language server** | OmniSharp |
+| **Language server** | IntelliSense C# |
 | **Depurador** | netcoredbg (DAP) |
 
 ---
@@ -25,8 +25,8 @@ configuração.
 
 1. Crie um projeto pelo wizard ou abra uma pasta `.NET`.
 2. O plugin reconhece `.sln`, `.slnx`, `.csproj`, `global.json`, `packages.config` e pastas C#.
-3. O SDK, OmniSharp e netcoredbg são resolvidos ou baixados automaticamente.
-4. O OmniSharp inicia e fornece autocomplete, diagnósticos, navegação e refactors.
+3. O SDK, os componentes do IntelliSense C# e netcoredbg são resolvidos ou baixados automaticamente.
+4. O IntelliSense inicia e fornece autocomplete, diagnósticos, navegação e refactors.
 5. Use Run/Debug/Test, gerencie pacotes NuGet e edite configurações do projeto pela IDE.
 
 ---
@@ -39,14 +39,14 @@ configuração.
 - Comentário de linha com `//`.
 - Dobras para blocos `{}`, comentários `/* */` e `#region/#endregion`.
 - Dobra XML em `.csproj`, `.vbproj`, `.fsproj`, `.props`, `.targets` e `.config`.
-- Lâmpada de ações de código quando o OmniSharp retorna quick fixes/refactors.
+- Lâmpada de ações de código quando o IntelliSense retorna quick fixes/refactors.
 - F2 para rename do símbolo no editor ativo.
 
 ### IntelliSense
 
 | Recurso | Descrição |
 |---|---|
-| Autocomplete | Sugestões do OmniSharp no editor |
+| Autocomplete | Sugestões do IntelliSense no editor |
 | Hover | Tipo, assinatura e documentação quando disponíveis |
 | Diagnósticos | Erros e avisos publicados pelo LSP |
 | Navegação | Ir para definição/implementação |
@@ -116,7 +116,7 @@ O gerenciador NuGet possui:
 - Gerenciador de referências de projeto via `dotnet add/remove reference`.
 - Ocultação de `bin`, `obj` e `.vs` na árvore.
 - Restore manual em **Window → Restaurar pacotes**.
-- Reinício manual do OmniSharp em **Window → Reiniciar OmniSharp**.
+- Reinício manual do IntelliSense em **Window → Reiniciar IntelliSense**.
 
 ---
 
@@ -154,7 +154,7 @@ Frameworks: `net10.0`, `net9.0`, `net8.0`, `net7.0`, `net6.0`, `net48`, `net472`
 | .NET SDK 9 | 9.0.315 |
 | .NET SDK 7 | 7.0.410 |
 | .NET SDK 6 | 6.0.428 |
-| OmniSharp | 1.39.11 |
+| Servidor de linguagem C# | Automático |
 | netcoredbg | 3.1.3-1062 |
 
 O plugin usa ferramentas instaladas quando compatíveis e baixa o que faltar para a área de
@@ -166,7 +166,7 @@ recursos da coleção.
 
 Em **Settings → .NET / C#**:
 
-- formatar ao salvar via OmniSharp;
+- formatar ao salvar;
 - incluir versões prerelease no NuGet por padrão;
 - configuração padrão de build: Debug ou Release.
 

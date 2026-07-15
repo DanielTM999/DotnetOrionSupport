@@ -29,7 +29,7 @@ public final class RoslynLspService extends AbstractLspService {
 
     @Override
     protected String serverName() {
-        return "Roslyn Language Server";
+        return "C# IntelliSense";
     }
 
     @Override
@@ -42,7 +42,7 @@ public final class RoslynLspService extends AbstractLspService {
         Path dotnet = sdkService().getDotnetPath(DotnetSdkService.ROSLYN_RUNTIME_SDK_VERSION)
                 .or(() -> sdkService().getDotnetPath(projectPath()))
                 .orElseThrow(() -> new IllegalStateException(
-                        "dotnet não encontrado para executar o Roslyn Language Server."));
+                        "dotnet não encontrado para executar o IntelliSense C#."));
         List<String> command = new ArrayList<>();
         command.add(dotnet.toAbsolutePath().toString());
         command.add(binary.toAbsolutePath().toString());

@@ -617,7 +617,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             missing.add(".NET SDK " + dotnetSdkVersion);
         }
         if (needServer) {
-            missing.add(text("toolchain.intellisense", "IntelliSense (C# language server)"));
+            missing.add(text("toolchain.intellisense", "C# IntelliSense"));
         }
         String message = text("toolchain.message", "Orion needs to download {0} to enable C# support (IntelliSense and build) for this project. All components are free for commercial use.")
                 .replace("{0}", String.join(text("toolchain.and", " and "), missing));
@@ -2696,8 +2696,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
                                 .onClick(e -> restorePackages())
                 )
                 .add(
-                        MenuNode.item("dotnetRestartLsp", text("menu.restartLsp", "Restart OmniSharp"))
-                                .tooltip(text("menu.restartLsp.tip", "Restarts the C# language server"))
+                        MenuNode.item("dotnetRestartLsp", text("menu.restartLsp", "Restart IntelliSense"))
+                                .tooltip(text("menu.restartLsp.tip", "Restarts C# IntelliSense"))
                                 .onClick(e -> restartLanguageServer())
                 );
     }

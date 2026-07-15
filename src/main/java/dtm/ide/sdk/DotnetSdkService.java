@@ -175,7 +175,7 @@ public class DotnetSdkService {
         Path root = omniSharpRoot(DEFAULT_OMNISHARP_VERSION);
         downloadToRoot(omniSharpArtifact(DEFAULT_OMNISHARP_VERSION), root, listener);
         return getOmniSharpPath().orElseThrow(() ->
-                displayException("OmniSharp foi baixado, mas o executável não foi encontrado.", null));
+                displayException("Componente do IntelliSense C# foi baixado, mas o executável não foi encontrado.", null));
     }
 
     public Optional<Path> getRoslynLanguageServerPath() {
@@ -202,7 +202,7 @@ public class DotnetSdkService {
         Path root = roslynRoot(DEFAULT_ROSLYN_LS_VERSION);
         downloadToRoot(roslynArtifact(DEFAULT_ROSLYN_LS_VERSION), root, listener);
         return getRoslynLanguageServerPath().orElseThrow(() ->
-                displayException("Roslyn Language Server foi baixado, mas o binário não foi encontrado.", null));
+                displayException("Componente do IntelliSense C# foi baixado, mas o binário não foi encontrado.", null));
     }
 
     public Optional<Path> getRoslynRuntimeRoot() {
@@ -216,7 +216,7 @@ public class DotnetSdkService {
         }
         ensureDotnet(ROSLYN_RUNTIME_SDK_VERSION, progressListener);
         return getRoslynRuntimeRoot().orElseThrow(() ->
-                displayException("Runtime .NET para o Roslyn Language Server não foi encontrado.", null));
+                displayException("Runtime .NET para o IntelliSense C# não foi encontrado.", null));
     }
 
     public Optional<Path> getNetcoredbgPath() {
@@ -524,7 +524,7 @@ public class DotnetSdkService {
         String fileName = "omnisharp-" + os + "-" + arch + "-net6.0." + ext;
         String url = "https://github.com/OmniSharp/omnisharp-roslyn/releases/download/v"
                 + version + "/" + fileName;
-        return new SdkArtifact(version, fileName, url, OMNISHARP_PROGRESS_ID, "Baixando OmniSharp " + version);
+        return new SdkArtifact(version, fileName, url, OMNISHARP_PROGRESS_ID, "Baixando IntelliSense C# " + version);
     }
 
     private static SdkArtifact roslynArtifact(String version) {
@@ -537,7 +537,7 @@ public class DotnetSdkService {
         String url = "https://github.com/" + ROSLYN_LS_RELEASE_REPOSITORY + "/releases/download/"
                 + version + "/" + fileName;
         return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
-                "Baixando Roslyn Language Server " + version);
+                "Baixando IntelliSense C# " + version);
     }
 
     private static SdkArtifact netcoredbgArtifact(String version) {

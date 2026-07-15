@@ -21,7 +21,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
     private final DotnetPluginSettings settings;
     private final Runnable onTreeLayoutChanged;
 
-    private final JCheckBox formatOnSave = new JCheckBox(text("checkbox.formatOnSave", "Format on save (OmniSharp)"));
+    private final JCheckBox formatOnSave = new JCheckBox(text("checkbox.formatOnSave", "Format on save"));
     private final JCheckBox onTypeFormatting = new JCheckBox(text("checkbox.onTypeFormatting", "Format while typing (; } and new line)"));
     private final JCheckBox includePrerelease = new JCheckBox(text("checkbox.includePrerelease", "Include prerelease versions in NuGet by default"));
     private final JCheckBox ghostText = new JCheckBox(text("checkbox.ghostText", "Inline suggestions (ghost text) while typing"));
