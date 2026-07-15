@@ -1,5 +1,6 @@
 package dtm.ide.ui;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -18,11 +19,15 @@ public final class RunProjectChooserPanel extends JPanel {
 
     private final JComboBox<Path> combo = new JComboBox<>();
 
+    private static String text(String key, String def) {
+        return I18n.getText(RunProjectChooserPanel.class, key, def);
+    }
+
     public RunProjectChooserPanel(List<Path> projects) {
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
-        JLabel title = new JLabel("Qual projeto você quer executar?");
+        JLabel title = new JLabel(text("title", "Which project do you want to run?"));
         title.setFont(title.getFont().deriveFont(Font.BOLD, 13f));
         title.setAlignmentX(Component.LEFT_ALIGNMENT);
         add(title);
@@ -44,7 +49,7 @@ public final class RunProjectChooserPanel extends JPanel {
 
     private static String projectName(Path file) {
         if (file == null || file.getFileName() == null) {
-            return "projeto";
+            return text("projectFallback", "project");
         }
         return file.getFileName().toString().replaceFirst("(?i)\\.(csproj|vbproj|fsproj)$", "");
     }

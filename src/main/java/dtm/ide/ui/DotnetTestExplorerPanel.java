@@ -2,6 +2,7 @@ package dtm.ide.ui;
 
 import dtm.ide.run.DotnetBuild;
 import dtm.ide.sdk.DotnetSdkService;
+import dtm.stools.i18n.I18n;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.swing.BorderFactory;
@@ -64,6 +65,10 @@ public final class DotnetTestExplorerPanel extends JPanel {
 
     private enum Status { UNKNOWN, RUNNING, PASSED, FAILED }
 
+    private static String text(String key, String def) {
+        return I18n.getText(DotnetTestExplorerPanel.class, key, def);
+    }
+
     private static final Pattern RESULT_LINE = Pattern.compile("^(Passed|Failed|Skipped)\\s+(\\S+)");
     private static final Pattern WARNING_LINE = Pattern.compile(":\\s*warning\\s+[A-Z]{2}\\d+", Pattern.CASE_INSENSITIVE);
     private static final Pattern WIN_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\s\"]+");
@@ -84,7 +89,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private final LongConsumer debugProcessHandler;
     private final DotnetBuild build = new DotnetBuild();
 
-    private final DefaultMutableTreeNode root = new DefaultMutableTreeNode("Testes");
+    private final DefaultMutableTreeNode root = new DefaultMutableTreeNode(text("tree.root", "Tests"));
     private final DefaultTreeModel treeModel = new DefaultTreeModel(root);
     private final JTree tree = new JTree(treeModel);
     private final JTextPane console = new JTextPane() {
@@ -94,7 +99,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
             return parent == null || getUI().getPreferredSize(this).width < parent.getWidth();
         }
     };
-    private final JLabel status = new JLabel("Pronto.");
+    private final JLabel status = new JLabel(text("status.ready", "Ready."));
     private final JLabel passedLabel = new JLabel("0", new StatusIcon(Status.PASSED, 13), SwingConstants.LEADING);
     private final JLabel failedLabel = new JLabel("0", new StatusIcon(Status.FAILED, 13), SwingConstants.LEADING);
     private final JLabel runningLabel = new JLabel("0", new StatusIcon(Status.RUNNING, 13), SwingConstants.LEADING);
@@ -103,11 +108,11 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private final Map<String, Status> statuses = new LinkedHashMap<>();
     private final List<String> allTests = new ArrayList<>();
 
-    private final JButton refreshButton = new JButton("Atualizar");
-    private final JButton runAllButton = new JButton("Rodar todos", new PlayIcon(11, new Color(0x4CAF50)));
-    private final JButton runSelectedButton = new JButton("Rodar selecionado");
-    private final JButton debugSelectedButton = new JButton("Depurar selecionado");
-    private final JButton stopButton = new JButton("Parar");
+    private final JButton refreshButton = new JButton(text("button.refresh", "Refresh"));
+    private final JButton runAllButton = new JButton(text("button.runAll", "Run all"), new PlayIcon(11, new Color(0x4CAF50)));
+    private final JButton runSelectedButton = new JButton(text("button.runSelected", "Run selected"));
+    private final JButton debugSelectedButton = new JButton(text("button.debugSelected", "Debug selected"));
+    private final JButton stopButton = new JButton(text("button.stop", "Stop"));
     private final JTextField filterField = new JTextField(20);
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
@@ -147,14 +152,14 @@ public final class DotnetTestExplorerPanel extends JPanel {
         toolbar.add(debugSelectedButton);
         toolbar.add(stopButton);
         toolbar.add(refreshButton);
-        toolbar.add(new JLabel("Filtro:"));
-        filterField.putClientProperty("JTextField.placeholderText", "FullyQualifiedName~... ou trait");
+        toolbar.add(new JLabel(text("label.filter", "Filter:")));
+        filterField.putClientProperty("JTextField.placeholderText", text("filter.placeholder", "FullyQualifiedName~... or trait"));
         toolbar.add(filterField);
         toolbar.add(Box.createHorizontalStrut(12));
         summary.setOpaque(false);
-        passedLabel.setToolTipText("Passaram");
-        failedLabel.setToolTipText("Falharam");
-        runningLabel.setToolTipText("Em execução");
+        passedLabel.setToolTipText(text("tooltip.passed", "Passed"));
+        failedLabel.setToolTipText(text("tooltip.failed", "Failed"));
+        runningLabel.setToolTipText(text("tooltip.running", "Running"));
         totalLabel.setForeground(mutedColor());
         summary.add(passedLabel);
         summary.add(failedLabel);
@@ -167,8 +172,8 @@ public final class DotnetTestExplorerPanel extends JPanel {
         debugSelectedButton.addActionListener(e -> debugSelected());
         stopButton.addActionListener(e -> stop());
         stopButton.setEnabled(false);
-        runAllButton.setToolTipText("Executa todos os testes do projeto");
-        refreshButton.setToolTipText("Redescobre os testes (dotnet test --list-tests)");
+        runAllButton.setToolTipText(text("tooltip.runAll", "Runs all tests in the project"));
+        refreshButton.setToolTipText(text("tooltip.refresh", "Rediscovers tests (dotnet test --list-tests)"));
 
         tree.setRootVisible(false);
         tree.setShowsRootHandles(true);
@@ -208,11 +213,11 @@ public final class DotnetTestExplorerPanel extends JPanel {
         UiSupport.styleScroll(consoleScroll);
 
         JPanel treePanel = new JPanel(new BorderLayout());
-        treePanel.add(sectionHeader("Testes"), BorderLayout.NORTH);
+        treePanel.add(sectionHeader(text("tree.root", "Tests")), BorderLayout.NORTH);
         treePanel.add(treeScroll, BorderLayout.CENTER);
 
         JPanel consolePanel = new JPanel(new BorderLayout());
-        consolePanel.add(sectionHeader("Saída"), BorderLayout.NORTH);
+        consolePanel.add(sectionHeader(text("section.output", "Output")), BorderLayout.NORTH);
         consolePanel.add(consoleScroll, BorderLayout.CENTER);
 
         JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treePanel, consolePanel);
@@ -264,11 +269,11 @@ public final class DotnetTestExplorerPanel extends JPanel {
         Path project = projectSupplier == null ? null : projectSupplier.get();
         Optional<Path> dotnet = resolveDotnet(project);
         if (project == null || dotnet.isEmpty()) {
-            setStatus("Toolchain .NET indisponível. Abra um projeto .NET.");
+            setStatus(text("status.toolchainUnavailableOpen", ".NET toolchain unavailable. Open a .NET project."));
             return;
         }
         autoDiscovered = true;
-        setBusy(true, "Descobrindo testes...");
+        setBusy(true, text("status.discovering", "Discovering tests..."));
         clearConsole();
         appendConsole("> dotnet test --list-tests" + System.lineSeparator());
         String configuration = config();
@@ -284,20 +289,20 @@ public final class DotnetTestExplorerPanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 populateTree(found);
                 setBusy(false, found.isEmpty()
-                        ? "Nenhum teste encontrado (há um projeto de teste na pasta?)."
-                        : found.size() + " teste(s) encontrado(s).");
+                        ? text("status.noTestsFound", "No tests found (is there a test project in the folder?).")
+                        : text("status.testsFound", "{0} test(s) found.").replace("{0}", String.valueOf(found.size())));
             });
         });
     }
 
     private void runAll() {
         if (allTests.isEmpty()) {
-            setStatus("Nenhum teste descoberto. Use Atualizar primeiro.");
+            setStatus(text("status.noneDiscovered", "No tests discovered. Use Refresh first."));
             return;
         }
         String filter = filterField.getText() == null ? "" : filterField.getText().trim();
         runFilter(filter.isEmpty() ? null : filter,
-                filter.isEmpty() ? new ArrayList<>(allTests) : List.of(), "Rodando todos os testes...");
+                filter.isEmpty() ? new ArrayList<>(allTests) : List.of(), text("status.runningAll", "Running all tests..."));
     }
 
     private void runSelected() {
@@ -306,19 +311,19 @@ public final class DotnetTestExplorerPanel extends JPanel {
             runNode(path);
             return;
         }
-        setStatus("Selecione um teste na árvore.");
+        setStatus(text("status.selectTree", "Select a test in the tree."));
     }
 
     private void debugSelected() {
         TreePath path = tree.getSelectionPath();
         if (path == null || !(path.getLastPathComponent() instanceof DefaultMutableTreeNode node)
                 || !(node.getUserObject() instanceof TestLeaf leaf)) {
-            setStatus("Selecione um teste individual para depurar.");
+            setStatus(text("status.selectIndividual", "Select an individual test to debug."));
             return;
         }
         String test = leaf.fullName();
         runFilter("FullyQualifiedName~" + filterValue(test), List.of(test),
-                "Aguardando debugger para " + shortName(test) + "...", true);
+                text("status.waitingDebugger", "Waiting for debugger for {0}...").replace("{0}", shortName(test)), true);
     }
 
     private void runNode(TreePath path) {
@@ -342,7 +347,8 @@ public final class DotnetTestExplorerPanel extends JPanel {
             return;
         }
         String type = String.valueOf(treeNode.getUserObject());
-        runFilter("FullyQualifiedName~" + filterValue(type), scope, "Rodando " + shortName(type) + "...");
+        runFilter("FullyQualifiedName~" + filterValue(type), scope,
+                text("status.runningNode", "Running {0}...").replace("{0}", shortName(type)));
     }
 
     public void runTest(String fullyQualifiedName) {
@@ -351,7 +357,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
         }
         ensureTestVisible(fullyQualifiedName);
         runFilter("FullyQualifiedName~" + filterValue(fullyQualifiedName), List.of(fullyQualifiedName),
-                "Rodando " + shortName(fullyQualifiedName) + "...");
+                text("status.runningNode", "Running {0}...").replace("{0}", shortName(fullyQualifiedName)));
     }
 
     private void runFilter(String filter, List<String> scope, String message) {
@@ -365,7 +371,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
         Path project = projectSupplier == null ? null : projectSupplier.get();
         Optional<Path> dotnet = resolveDotnet(project);
         if (project == null || dotnet.isEmpty()) {
-            setStatus("Toolchain .NET indisponível.");
+            setStatus(text("status.toolchainUnavailable", ".NET toolchain unavailable."));
             return;
         }
         setBusy(true, message);
@@ -422,7 +428,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
 
     private void stop() {
         build.stopTests();
-        setBusy(false, "Execução interrompida.");
+        setBusy(false, text("status.stopped", "Run stopped."));
     }
 
     private void populateTree(List<String> tests) {
@@ -617,7 +623,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
         passedLabel.setText(String.valueOf(passed));
         failedLabel.setText(String.valueOf(failed));
         runningLabel.setText(String.valueOf(running));
-        totalLabel.setText("Total: " + statuses.size());
+        totalLabel.setText(text("label.total", "Total: ") + statuses.size());
         summary.revalidate();
         summary.repaint();
     }
@@ -739,15 +745,15 @@ public final class DotnetTestExplorerPanel extends JPanel {
 
     private static String runSummary(List<String> failed, int exit) {
         if (exit == 0) {
-            return "Concluído: todos passaram.";
+            return text("summary.allPassed", "Done: all passed.");
         }
         if (!failed.isEmpty()) {
-            return "Concluído: " + failed.size() + " falha(s).";
+            return text("summary.failures", "Done: {0} failure(s).").replace("{0}", String.valueOf(failed.size()));
         }
         if (exit < 0) {
-            return "Falha ao executar (veja o console).";
+            return text("summary.runFailed", "Failed to run (see console).");
         }
-        return "Concluído com erros (código " + exit + ").";
+        return text("summary.doneWithErrors", "Done with errors (code {0}).").replace("{0}", String.valueOf(exit));
     }
 
     private static Color color(Status state) {

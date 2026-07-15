@@ -2,6 +2,7 @@ package dtm.ide.run;
 
 import dtm.ide.api.extension.runconfig.RunConfigurationData;
 import dtm.ide.api.extension.runconfig.RunConfigurationForm;
+import dtm.stools.i18n.I18n;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -26,8 +27,12 @@ import java.util.function.Supplier;
 
 public final class DotnetRunConfigurationForm implements RunConfigurationForm {
 
-    private static final String DEFAULT_PROFILE = "(padrão)";
-    private static final String DEFAULT_TFM = "(automático)";
+    private static String text(String key, String def) {
+        return I18n.getText(DotnetRunConfigurationForm.class, key, def);
+    }
+
+    private static final String DEFAULT_PROFILE = text("profile.default", "(default)");
+    private static final String DEFAULT_TFM = text("tfm.automatic", "(automatic)");
 
     private final JPanel panel = new JPanel();
     private final JComboBox<Path> projectCombo = new JComboBox<>();
@@ -127,21 +132,21 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
     private void build() {
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
-        panel.add(labeled("Projeto executável", projectCombo));
+        panel.add(labeled(text("label.project", "Executable project"), projectCombo));
         panel.add(Box.createVerticalStrut(8));
-        panel.add(labeled("Configuração", configCombo));
+        panel.add(labeled(text("label.configuration", "Configuration"), configCombo));
         panel.add(Box.createVerticalStrut(8));
-        panel.add(labeled("Target framework", frameworkCombo));
+        panel.add(labeled(text("label.framework", "Target framework"), frameworkCombo));
         if (DotnetRunSupport.TYPE_RUN.equals(type)) {
             panel.add(Box.createVerticalStrut(8));
-            panel.add(labeled("Perfil de launch", profileCombo));
+            panel.add(labeled(text("label.launchProfile", "Launch profile"), profileCombo));
             panel.add(Box.createVerticalStrut(8));
-            panel.add(labeled("Argumentos do programa", argumentsField));
+            panel.add(labeled(text("label.programArgs", "Program arguments"), argumentsField));
             panel.add(Box.createVerticalStrut(8));
-            panel.add(labeled("Diretório de trabalho", workingDirectoryField));
+            panel.add(labeled(text("label.workingDir", "Working directory"), workingDirectoryField));
             panel.add(Box.createVerticalStrut(8));
             environmentArea.setLineWrap(false);
-            panel.add(labeledArea("Variáveis de ambiente (uma NOME=VALOR por linha)", environmentArea));
+            panel.add(labeledArea(text("label.environment", "Environment variables (one NAME=VALUE per line)"), environmentArea));
         }
     }
 
@@ -232,7 +237,7 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
 
     private static String projectName(Path file) {
         if (file == null || file.getFileName() == null) {
-            return "projeto";
+            return text("projectFallback", "project");
         }
         return file.getFileName().toString().replaceFirst("(?i)\\.(csproj|vbproj|fsproj)$", "");
     }

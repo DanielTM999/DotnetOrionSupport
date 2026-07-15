@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JLabel;
@@ -126,9 +127,9 @@ public final class DebugExceptionPopup {
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
         actions.setOpaque(false);
-        JButton copy = button("Copiar");
+        JButton copy = button(text("button.copy", "Copy"));
         copy.addActionListener(e -> copyCurrent());
-        JButton close = button("Fechar");
+        JButton close = button(text("button.close", "Close"));
         close.addActionListener(e -> hide());
         actions.add(copy);
         actions.add(close);
@@ -143,6 +144,10 @@ public final class DebugExceptionPopup {
             return;
         }
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(info.copyText()), null);
+    }
+
+    private static String text(String key, String def) {
+        return I18n.getText(DebugExceptionPopup.class, key, def);
     }
 
     private static JButton button(String text) {

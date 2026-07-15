@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListModel;
@@ -29,9 +30,13 @@ import java.util.function.IntConsumer;
 
 public final class DebugCallStackPanel extends JPanel {
 
+    private static String text(String key, String def) {
+        return I18n.getText(DebugCallStackPanel.class, key, def);
+    }
+
     private final DefaultListModel<DebugFrame> model = new DefaultListModel<>();
     private final JList<DebugFrame> list = new JList<>(model);
-    private final JLabel emptyLabel = new JLabel("Nenhuma sessão de debug ativa", SwingConstants.CENTER);
+    private final JLabel emptyLabel = new JLabel(text("empty.noSession", "No active debug session"), SwingConstants.CENTER);
     private final CardLayout cards = new CardLayout();
     private final JPanel content = new JPanel(cards);
     private volatile IntConsumer onSelectFrame;
@@ -64,7 +69,7 @@ public final class DebugCallStackPanel extends JPanel {
         SwingUtilities.invokeLater(() -> {
             model.clear();
             if (frames == null || frames.isEmpty()) {
-                emptyLabel.setText("Sem frames na parada atual");
+                emptyLabel.setText(text("empty.noFrames", "No frames at the current stop"));
                 cards.show(content, "empty");
                 return;
             }
@@ -79,7 +84,7 @@ public final class DebugCallStackPanel extends JPanel {
     public void clear() {
         SwingUtilities.invokeLater(() -> {
             model.clear();
-            emptyLabel.setText("Nenhuma sessão de debug ativa");
+            emptyLabel.setText(text("empty.noSession", "No active debug session"));
             cards.show(content, "empty");
         });
     }
@@ -183,15 +188,15 @@ public final class DebugCallStackPanel extends JPanel {
                 }
 
                 JPopupMenu menu = new JPopupMenu();
-                JMenuItem copyFrame = new JMenuItem("Copiar frame");
+                JMenuItem copyFrame = new JMenuItem(text("menu.copyFrame", "Copy frame"));
                 copyFrame.addActionListener(a -> copyText(copyFrameOf(frame)));
                 menu.add(copyFrame);
 
-                JMenuItem copyName = new JMenuItem("Copiar nome");
+                JMenuItem copyName = new JMenuItem(text("menu.copyName", "Copy name"));
                 copyName.addActionListener(a -> copyText(frame.name()));
                 menu.add(copyName);
 
-                JMenuItem copyLocation = new JMenuItem("Copiar local");
+                JMenuItem copyLocation = new JMenuItem(text("menu.copyLocation", "Copy location"));
                 copyLocation.setEnabled(hasLocation(frame));
                 copyLocation.addActionListener(a -> copyText(copyLocationOf(frame)));
                 menu.add(copyLocation);

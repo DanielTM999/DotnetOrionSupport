@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
 import javax.swing.JComponent;
@@ -38,10 +39,14 @@ import java.util.function.Function;
 
 public final class DebugVariablesPanel extends JPanel {
 
+    private static String text(String key, String def) {
+        return I18n.getText(DebugVariablesPanel.class, key, def);
+    }
+
     private final DefaultMutableTreeNode root = new DefaultMutableTreeNode("root");
     private final DefaultTreeModel model = new DefaultTreeModel(root);
     private final JTree tree = new JTree(model);
-    private final JLabel emptyLabel = new JLabel("Nenhuma sessão de debug ativa", SwingConstants.CENTER);
+    private final JLabel emptyLabel = new JLabel(text("empty.noSession", "No active debug session"), SwingConstants.CENTER);
     private final CardLayout cards = new CardLayout();
     private final JPanel content = new JPanel(cards);
     private final ExecutorService loader = Executors.newSingleThreadExecutor(r -> {
@@ -80,7 +85,7 @@ public final class DebugVariablesPanel extends JPanel {
         SwingUtilities.invokeLater(() -> {
             root.removeAllChildren();
             if (scopes == null || scopes.isEmpty()) {
-                emptyLabel.setText("Nenhuma variável no frame atual");
+                emptyLabel.setText(text("empty.noVariables", "No variables in the current frame"));
                 model.reload();
                 cards.show(content, "empty");
                 return;
@@ -104,7 +109,7 @@ public final class DebugVariablesPanel extends JPanel {
         SwingUtilities.invokeLater(() -> {
             root.removeAllChildren();
             model.reload();
-            emptyLabel.setText("Carregando variaveis...");
+            emptyLabel.setText(text("empty.loading", "Loading variables..."));
             cards.show(content, "empty");
         });
     }
@@ -113,7 +118,7 @@ public final class DebugVariablesPanel extends JPanel {
         SwingUtilities.invokeLater(() -> {
             root.removeAllChildren();
             model.reload();
-            emptyLabel.setText("Nenhuma sessão de debug ativa");
+            emptyLabel.setText(text("empty.noSession", "No active debug session"));
             cards.show(content, "empty");
         });
     }
@@ -179,16 +184,17 @@ public final class DebugVariablesPanel extends JPanel {
                 }
 
                 JPopupMenu menu = new JPopupMenu();
-                JMenuItem copyValue = new JMenuItem("Copiar valor");
+                JMenuItem copyValue = new JMenuItem(text("menu.copyValue", "Copy value"));
                 copyValue.setEnabled(!node.isScope() && hasText(node.value()));
                 copyValue.addActionListener(a -> copyText(node.value()));
                 menu.add(copyValue);
 
-                JMenuItem copyName = new JMenuItem(node.isScope() ? "Copiar escopo" : "Copiar nome");
+                JMenuItem copyName = new JMenuItem(node.isScope()
+                        ? text("menu.copyScope", "Copy scope") : text("menu.copyName", "Copy name"));
                 copyName.addActionListener(a -> copyText(node.name()));
                 menu.add(copyName);
 
-                JMenuItem copyLine = new JMenuItem("Copiar linha");
+                JMenuItem copyLine = new JMenuItem(text("menu.copyLine", "Copy line"));
                 copyLine.addActionListener(a -> copyText(copyLineOf(node)));
                 menu.add(copyLine);
 
@@ -294,7 +300,7 @@ public final class DebugVariablesPanel extends JPanel {
             }
             if (node.isPlaceholder()) {
                 setIcon(null);
-                setText(html(span(DebugTheme.mutedColor(), "Carregando…")));
+                setText(html(span(DebugTheme.mutedColor(), text("placeholder.loading", "Loading…"))));
                 return this;
             }
             if (node.isScope()) {

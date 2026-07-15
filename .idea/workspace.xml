@@ -5,9 +5,30 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/AbstractLspService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/AbstractLspService.java" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/LspService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/LspService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugCallStackPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugCallStackPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugExceptionPopup.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugExceptionPopup.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugExpressionField.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugExpressionField.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugObjectTreePanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugObjectTreePanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugToolbar.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugToolbar.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugVariablesPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugVariablesPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugWatchPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DebugWatchPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunConfigurationForm.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunConfigurationForm.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetSettingsPage.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetSettingsPage.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetProcessPickerPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetProcessPickerPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetProjectConfigPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetProjectConfigPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetPublishPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetPublishPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetTestExplorerPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/DotnetTestExplorerPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/NewCSharpItemPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/NewCSharpItemPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/NuGetManagerPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/NuGetManagerPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/ProjectReferenceDialog.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/ProjectReferenceDialog.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/ProjectSelector.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/ProjectSelector.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/RunProjectChooserPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/RunProjectChooserPanel.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/SolutionReferenceDialog.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/ui/SolutionReferenceDialog.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/wizard/DotnetProjectWizardView.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/wizard/DotnetProjectWizardView.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/wizard/DotnetTemplate.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/wizard/DotnetTemplate.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/wizard/NewSolutionProjectPanel.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/wizard/NewSolutionProjectPanel.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -45,7 +66,7 @@
   <component name="PropertiesComponent">{
   &quot;keyToString&quot;: {
     &quot;JAR Application.AppJar.executor&quot;: &quot;Debug&quot;,
-    &quot;Maven.DotnetOrionSupport [clean,compile...].executor&quot;: &quot;Run&quot;,
+    &quot;Maven.DotnetOrionSupport [clean,compile...].executor&quot;: &quot;Debug&quot;,
     &quot;Maven.DotnetOrionSupport [compile].executor&quot;: &quot;Run&quot;,
     &quot;Maven.DotnetOrionSupport [validate].executor&quot;: &quot;Run&quot;,
     &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
@@ -65,7 +86,7 @@
     &quot;onboarding.tips.debug.path&quot;: &quot;C:/Users/danie/Documents/development/java/DotnetOrionSupport/src/main/java/dtm/ide/Main.java&quot;
   }
 }</component>
-  <component name="RunManager" selected="Maven.DotnetOrionSupport [clean,compile...]">
+  <component name="RunManager" selected="Remote JVM Debug.buildDebugPlugin">
     <configuration name="AppJar" type="JarApplication">
       <option name="JAR_PATH" value="$USER_HOME$/Orion/app/Orion.jar" />
       <option name="VM_PARAMETERS" value="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005" />

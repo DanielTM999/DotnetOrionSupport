@@ -1,5 +1,6 @@
 package dtm.ide.ui;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListModel;
 import javax.swing.JList;
@@ -31,7 +32,8 @@ public final class DotnetProcessPickerPanel extends JPanel {
                 .map(DotnetProcessPickerPanel::itemOf)
                 .sorted(Comparator.comparing(ProcessItem::display, String.CASE_INSENSITIVE_ORDER))
                 .toList();
-        filter.putClientProperty("JTextField.placeholderText", "Filtrar por nome, comando ou PID");
+        filter.putClientProperty("JTextField.placeholderText",
+                I18n.getText(DotnetProcessPickerPanel.class, "filter.placeholder", "Filter by name, command or PID"));
         filter.getDocument().addDocumentListener(new DocumentListener() {
             @Override public void insertUpdate(DocumentEvent e) { refresh(); }
             @Override public void removeUpdate(DocumentEvent e) { refresh(); }
@@ -67,7 +69,9 @@ public final class DotnetProcessPickerPanel extends JPanel {
         ProcessHandle.Info info = process.info();
         String command = info.command().orElse("");
         String commandLine = info.commandLine().orElse(command);
-        String name = command.isBlank() ? "processo" : java.nio.file.Path.of(command).getFileName().toString();
+        String name = command.isBlank()
+                ? I18n.getText(DotnetProcessPickerPanel.class, "processFallback", "process")
+                : java.nio.file.Path.of(command).getFileName().toString();
         return new ProcessItem(process.pid(), name + "  [PID " + process.pid() + "]  " + commandLine);
     }
 

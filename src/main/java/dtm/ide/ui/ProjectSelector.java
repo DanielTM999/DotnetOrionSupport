@@ -1,5 +1,6 @@
 package dtm.ide.ui;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -38,6 +39,10 @@ final class ProjectSelector extends JButton {
 
     private final List<Entry> entries = new ArrayList<>();
     private Runnable onChange;
+
+    private static String text(String key, String def) {
+        return I18n.getText(ProjectSelector.class, key, def);
+    }
 
     ProjectSelector() {
         setHorizontalAlignment(SwingConstants.LEFT);
@@ -121,7 +126,7 @@ final class ProjectSelector extends JButton {
         panel.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
 
         List<JCheckBox> boxes = new ArrayList<>();
-        JCheckBox all = new JCheckBox("Todos os projetos");
+        JCheckBox all = new JCheckBox(text("allProjects", "All projects"));
         all.setSelected(allChecked());
         all.setAlignmentX(LEFT_ALIGNMENT);
         panel.add(all);
@@ -181,15 +186,15 @@ final class ProjectSelector extends JButton {
         long checked = entries.stream().filter(e -> e.checked).count();
         String text;
         if (total == 0) {
-            text = "Nenhum projeto";
+            text = text("noProjects", "No projects");
         } else if (checked == 0) {
-            text = "Nenhum selecionado";
+            text = text("noneSelected", "None selected");
         } else if (checked == total && total > 1) {
-            text = "Todos os projetos";
+            text = text("allProjects", "All projects");
         } else if (checked == 1) {
             text = projectName(firstChecked());
         } else {
-            text = checked + " projetos";
+            text = checked + " " + text("projectsWord", "projects");
         }
         setText(text);
     }
@@ -205,7 +210,7 @@ final class ProjectSelector extends JButton {
 
     static String projectName(Path file) {
         if (file == null || file.getFileName() == null) {
-            return "projeto";
+            return text("projectFallback", "project");
         }
         return file.getFileName().toString().replaceFirst("(?i)\\.(csproj|vbproj|fsproj)$", "");
     }

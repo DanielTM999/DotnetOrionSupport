@@ -1,5 +1,6 @@
 package dtm.ide.ui;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.Icon;
@@ -27,6 +28,10 @@ import java.awt.RenderingHints;
 
 public final class NewCSharpItemPanel extends JPanel {
 
+    private static String text(String key, String def) {
+        return I18n.getText(NewCSharpItemPanel.class, key, def);
+    }
+
     public enum Kind {
         CLASS("Class", "class", new Color(78, 201, 176), 'C'),
         INTERFACE("Interface", "interface", new Color(184, 215, 163), 'I'),
@@ -53,7 +58,7 @@ public final class NewCSharpItemPanel extends JPanel {
 
         @Override
         public String toString() {
-            return label;
+            return text("kind." + name().toLowerCase(), label);
         }
     }
 
@@ -178,7 +183,7 @@ public final class NewCSharpItemPanel extends JPanel {
                                                       boolean isSelected, boolean cellHasFocus) {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
             Kind kind = (Kind) value;
-            setText(kind.label);
+            setText(text("kind." + kind.name().toLowerCase(), kind.label));
             setIcon(new BadgeIcon(kind.color, kind.badge));
             setIconTextGap(10);
             setBorder(BorderFactory.createEmptyBorder(4, 10, 4, 10));

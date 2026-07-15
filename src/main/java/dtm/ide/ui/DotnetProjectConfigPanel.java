@@ -1,6 +1,7 @@
 package dtm.ide.ui;
 
 import dtm.ide.project.DotnetProjectConfig;
+import dtm.stools.i18n.I18n;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.swing.BorderFactory;
@@ -42,7 +43,10 @@ public final class DotnetProjectConfigPanel extends JPanel {
 
     private static final int PAGE_MAX_WIDTH = 680;
     private static final int CONTROL_HEIGHT = 34;
-    private static final String PLACEHOLDER = "Padrão do SDK";
+
+    private static String text(String key, String def) {
+        return I18n.getText(DotnetProjectConfigPanel.class, key, def);
+    }
 
     private final Supplier<Path> projectSupplier;
 
@@ -76,30 +80,30 @@ public final class DotnetProjectConfigPanel extends JPanel {
         column.add(Box.createVerticalStrut(18));
 
         Card build = new Card();
-        build.add(sectionTitle("Framework e build"));
+        build.add(sectionTitle(text("section.build", "Framework and build")));
         build.add(Box.createVerticalStrut(16));
-        build.add(fieldRow("Target Framework",
-                "Versão do .NET usada para compilar e executar o projeto.", targetFramework));
+        build.add(fieldRow(text("field.targetFramework.title", "Target Framework"),
+                text("field.targetFramework.desc", ".NET version used to build and run the project."), targetFramework));
         build.add(Box.createVerticalStrut(16));
-        build.add(fieldRow("Output Type",
-                "Saída do build: executável (Exe/WinExe) ou biblioteca (Library).", outputType));
+        build.add(fieldRow(text("field.outputType.title", "Output Type"),
+                text("field.outputType.desc", "Build output: executable (Exe/WinExe) or library (Library)."), outputType));
         build.add(Box.createVerticalStrut(16));
-        build.add(fieldRow("Language Version (C#)",
-                "Versão da linguagem C# habilitada na compilação.", langVersion));
+        build.add(fieldRow(text("field.langVersion.title", "Language Version (C#)"),
+                text("field.langVersion.desc", "C# language version enabled during compilation."), langVersion));
         build.add(Box.createVerticalStrut(16));
-        build.add(fieldRow("Versão do .NET SDK",
-                "Fixa a versão do SDK via global.json. Opcional.", sdkVersion));
+        build.add(fieldRow(text("field.sdkVersion.title", ".NET SDK version"),
+                text("field.sdkVersion.desc", "Pins the SDK version via global.json. Optional."), sdkVersion));
         column.add(build);
         column.add(Box.createVerticalStrut(14));
 
         Card language = new Card();
-        language.add(sectionTitle("Recursos de linguagem"));
+        language.add(sectionTitle(text("section.language", "Language features")));
         language.add(Box.createVerticalStrut(16));
-        language.add(fieldRow("Nullable",
-                "Contexto de tipos de referência anuláveis.", nullable));
+        language.add(fieldRow(text("field.nullable.title", "Nullable"),
+                text("field.nullable.desc", "Nullable reference types context."), nullable));
         language.add(Box.createVerticalStrut(16));
-        language.add(fieldRow("Implicit Usings",
-                "Importa namespaces comuns automaticamente (using implícito).", implicitUsings));
+        language.add(fieldRow(text("field.implicitUsings.title", "Implicit Usings"),
+                text("field.implicitUsings.desc", "Imports common namespaces automatically (implicit using)."), implicitUsings));
         column.add(language);
         column.add(Box.createVerticalStrut(8));
 
@@ -130,14 +134,14 @@ public final class DotnetProjectConfigPanel extends JPanel {
         header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
         header.setAlignmentX(LEFT_ALIGNMENT);
 
-        JLabel title = new JLabel("Configuração do projeto");
+        JLabel title = new JLabel(text("header.title", "Project configuration"));
         title.setFont(Theme.uiFont().deriveFont(Font.BOLD, 19f));
         title.setForeground(Theme.text());
         title.setAlignmentX(LEFT_ALIGNMENT);
         header.add(title);
 
         header.add(Box.createVerticalStrut(4));
-        JLabel subtitle = new JLabel("Ajuste o destino, a saída e os recursos de linguagem do projeto .NET.");
+        JLabel subtitle = new JLabel(text("header.subtitle", "Adjust the target, output and language features of the .NET project."));
         subtitle.setFont(Theme.uiFont().deriveFont(Font.PLAIN, 12.5f));
         subtitle.setForeground(Theme.muted());
         subtitle.setAlignmentX(LEFT_ALIGNMENT);
@@ -156,9 +160,9 @@ public final class DotnetProjectConfigPanel extends JPanel {
         statusLabel.setForeground(Theme.muted());
         footer.add(statusLabel, BorderLayout.WEST);
 
-        FlatButton reload = new FlatButton("Recarregar", false);
+        FlatButton reload = new FlatButton(text("button.reload", "Reload"), false);
         reload.addActionListener(e -> reload());
-        FlatButton save = new FlatButton("Salvar", true);
+        FlatButton save = new FlatButton(text("button.save", "Save"), true);
         save.addActionListener(e -> save());
 
         JPanel buttons = new JPanel();
@@ -244,7 +248,7 @@ public final class DotnetProjectConfigPanel extends JPanel {
     public void reload() {
         Path project = project();
         if (project == null) {
-            setStatus("Abra um projeto .NET.", Theme.muted());
+            setStatus(text("status.openProject", "Open a .NET project."), Theme.muted());
             return;
         }
         DotnetProjectConfig config = new DotnetProjectConfig(project);
@@ -255,14 +259,14 @@ public final class DotnetProjectConfigPanel extends JPanel {
         nullable.setSelectedItem(props.getOrDefault(DotnetProjectConfig.NULLABLE, ""));
         implicitUsings.setSelectedItem(props.getOrDefault(DotnetProjectConfig.IMPLICIT_USINGS, ""));
         sdkVersion.setText(config.readSdkVersion());
-        setStatus(config.projectFile().map(p -> "Editando: " + p.getFileName())
-                .orElse("Nenhum .csproj encontrado."), Theme.muted());
+        setStatus(config.projectFile().map(p -> text("status.editing", "Editing: ") + p.getFileName())
+                .orElse(text("status.noCsproj", "No .csproj found.")), Theme.muted());
     }
 
     private void save() {
         Path project = project();
         if (project == null) {
-            setStatus("Abra um projeto .NET.", Theme.muted());
+            setStatus(text("status.openProject", "Open a .NET project."), Theme.muted());
             return;
         }
         DotnetProjectConfig config = new DotnetProjectConfig(project);
@@ -275,9 +279,9 @@ public final class DotnetProjectConfigPanel extends JPanel {
         try {
             config.writeProperties(props);
             config.writeSdkVersion(sdkVersion.getText());
-            setStatus("Configuração salva. Reabra/rebuild para aplicar.", Theme.success());
+            setStatus(text("status.saved", "Configuration saved. Reopen/rebuild to apply."), Theme.success());
         } catch (Exception e) {
-            setStatus("Falha ao salvar: " + e.getMessage(), Theme.error());
+            setStatus(text("status.saveFailed", "Failed to save: ") + e.getMessage(), Theme.error());
         }
     }
 
@@ -381,7 +385,7 @@ public final class DotnetProjectConfigPanel extends JPanel {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
             String text = value == null ? "" : value.toString();
             if (text.isEmpty()) {
-                setText(PLACEHOLDER);
+                setText(text("placeholder.sdkDefault", "SDK default"));
                 if (!isSelected) {
                     setForeground(Theme.muted());
                 }

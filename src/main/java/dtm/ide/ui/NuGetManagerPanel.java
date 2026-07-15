@@ -9,6 +9,7 @@ import dtm.ide.nuget.models.NuGetPackage;
 import dtm.ide.run.TargetFramework;
 import dtm.ide.sdk.DotnetSdkService;
 import dtm.stools.component.inputfields.textfield.MaskedTextField;
+import dtm.stools.i18n.I18n;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.swing.BorderFactory;
@@ -72,6 +73,10 @@ public final class NuGetManagerPanel extends JPanel {
 
     private enum Tab {BROWSE, INSTALLED, UPDATES}
 
+    private static String text(String key, String def) {
+        return I18n.getText(NuGetManagerPanel.class, key, def);
+    }
+
     private final Supplier<Path> projectSupplier;
     private final Supplier<DotnetSdkService> sdkSupplier;
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
@@ -85,10 +90,10 @@ public final class NuGetManagerPanel extends JPanel {
     private final JComboBox<NuGetSource> sourceCombo = new JComboBox<>();
     private final ProjectSelector projectSelector = new ProjectSelector();
     private final MaskedTextField searchField = new MaskedTextField();
-    private final JCheckBox prereleaseCheck = new JCheckBox("Incluir prerelease");
-    private final JToggleButton browseTab = new JToggleButton("Browse", true);
-    private final JToggleButton installedTab = new JToggleButton("Installed");
-    private final JToggleButton updatesTab = new JToggleButton("Updates");
+    private final JCheckBox prereleaseCheck = new JCheckBox(text("check.prerelease", "Include prerelease"));
+    private final JToggleButton browseTab = new JToggleButton(text("tab.browse", "Browse"), true);
+    private final JToggleButton installedTab = new JToggleButton(text("tab.installed", "Installed"));
+    private final JToggleButton updatesTab = new JToggleButton(text("tab.updates", "Updates"));
 
     private final DefaultListModel<Object> listModel = new DefaultListModel<>();
     private final JList<Object> packageList = new JList<>(listModel);
@@ -98,8 +103,8 @@ public final class NuGetManagerPanel extends JPanel {
     private final JLabel authorsLabel = new JLabel(" ");
     private final JTextArea descriptionArea = new JTextArea();
     private final JComboBox<String> versionCombo = new JComboBox<>();
-    private final JButton installButton = new JButton("Instalar");
-    private final JButton uninstallButton = new JButton("Desinstalar");
+    private final JButton installButton = new JButton(text("button.install", "Install"));
+    private final JButton uninstallButton = new JButton(text("button.uninstall", "Uninstall"));
     private final JLabel statusLabel = new JLabel(" ");
 
     private Tab currentTab = Tab.BROWSE;
@@ -141,12 +146,12 @@ public final class NuGetManagerPanel extends JPanel {
             return label;
         });
 
-        JButton manageSources = new JButton("Gerenciar...");
-        manageSources.setToolTipText("Gerenciar fontes de pacotes");
+        JButton manageSources = new JButton(text("button.manage", "Manage..."));
+        manageSources.setToolTipText(text("tooltip.manageSources", "Manage package sources"));
         manageSources.addActionListener(e -> manageSources());
 
         JPanel sourcePanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
-        sourcePanel.add(new JLabel("Origem do pacote:"));
+        sourcePanel.add(new JLabel(text("label.packageSource", "Package source:")));
         sourcePanel.add(sourceCombo);
         sourcePanel.add(manageSources);
 
@@ -155,15 +160,15 @@ public final class NuGetManagerPanel extends JPanel {
         commandRow.add(sourcePanel, BorderLayout.EAST);
 
         projectSelector.setPreferredSize(new Dimension(280, 26));
-        projectSelector.setToolTipText("Projetos alvo das instalacoes (marque um ou mais)");
+        projectSelector.setToolTipText(text("tooltip.targetProjects", "Target projects for installs (check one or more)"));
 
         JPanel projectRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        projectRow.add(new JLabel("Projeto:"));
+        projectRow.add(new JLabel(text("label.project", "Project:")));
         projectRow.add(projectSelector);
 
-        searchField.setToolTipText("Buscar pacotes");
-        searchField.setPlaceholder("Buscar pacotes no NuGet (ex: Newtonsoft.Json)");
-        JButton searchButton = new JButton("Buscar");
+        searchField.setToolTipText(text("tooltip.search", "Search packages"));
+        searchField.setPlaceholder(text("search.placeholder", "Search NuGet packages (e.g.: Newtonsoft.Json)"));
+        JButton searchButton = new JButton(text("button.search", "Search"));
         searchButton.addActionListener(e -> refreshCurrentTab());
 
         JPanel searchPanel = new JPanel(new BorderLayout(6, 0));
@@ -258,11 +263,11 @@ public final class NuGetManagerPanel extends JPanel {
 
         JScrollPane descriptionScroll = new JScrollPane(descriptionArea);
         descriptionScroll.setBorder(BorderFactory.createTitledBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, borderColor()),
-                "Descricao"));
+                text("border.description", "Description")));
         UiSupport.styleScroll(descriptionScroll);
 
         JPanel versionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        versionRow.add(new JLabel("Versao:"));
+        versionRow.add(new JLabel(text("label.version", "Version:")));
         versionCombo.setPreferredSize(new Dimension(190, 26));
         versionRow.add(versionCombo);
         versionRow.add(installButton);
@@ -331,7 +336,7 @@ public final class NuGetManagerPanel extends JPanel {
         browseTab.setSelected(tab == Tab.BROWSE);
         installedTab.setSelected(tab == Tab.INSTALLED);
         updatesTab.setSelected(tab == Tab.UPDATES);
-        installButton.setText(tab == Tab.UPDATES ? "Atualizar" : "Instalar");
+        installButton.setText(tab == Tab.UPDATES ? text("button.update", "Update") : text("button.install", "Install"));
         searchField.setEnabled(tab != Tab.INSTALLED);
         reloadProjects();
         refreshCurrentTab();
@@ -376,13 +381,14 @@ public final class NuGetManagerPanel extends JPanel {
         }
         boolean prerelease = prereleaseCheck.isSelected();
         String query = searchField.getText();
-        setStatus("Buscando em " + source.name() + "...");
+        setStatus(text("status.searchingIn", "Searching in {0}...").replace("{0}", source.name()));
         clearList();
         executor.execute(() -> {
             List<NuGetPackage> packages = NuGetClient.forSource(source).search(query, prerelease, 0, 50);
             SwingUtilities.invokeLater(() -> {
                 populate(packages.toArray());
-                setStatus(packages.isEmpty() ? "Nenhum pacote encontrado." : packages.size() + " pacotes.");
+                setStatus(packages.isEmpty() ? text("status.noPackages", "No packages found.")
+                        : text("status.packagesCount", "{0} packages.").replace("{0}", String.valueOf(packages.size())));
             });
         });
     }
@@ -390,13 +396,13 @@ public final class NuGetManagerPanel extends JPanel {
     private void loadInstalled() {
         List<Path> targets = installedScopeProjects();
         if (targets.isEmpty()) {
-            setStatus("Abra um projeto .NET para ver os pacotes instalados.");
+            setStatus(text("status.openForInstalled", "Open a .NET project to see installed packages."));
             clearList();
             return;
         }
         Path project = project();
         DotnetSdkService sdk = sdk();
-        setStatus("Carregando pacotes instalados...");
+        setStatus(text("status.loadingInstalled", "Loading installed packages..."));
         clearList();
         executor.execute(() -> {
             List<InstalledPackage> installed = new ArrayList<>();
@@ -405,7 +411,8 @@ public final class NuGetManagerPanel extends JPanel {
             }
             SwingUtilities.invokeLater(() -> {
                 populate(installed.toArray());
-                setStatus(installed.isEmpty() ? "Nenhum pacote instalado." : installed.size() + " pacotes instalados.");
+                setStatus(installed.isEmpty() ? text("status.noneInstalled", "No packages installed.")
+                        : text("status.installedCount", "{0} packages installed.").replace("{0}", String.valueOf(installed.size())));
             });
         });
     }
@@ -413,7 +420,7 @@ public final class NuGetManagerPanel extends JPanel {
     private void loadUpdates() {
         List<Path> targets = installedScopeProjects();
         if (targets.isEmpty()) {
-            setStatus("Abra um projeto .NET para ver atualizacoes.");
+            setStatus(text("status.openForUpdates", "Open a .NET project to see updates."));
             clearList();
             return;
         }
@@ -421,7 +428,7 @@ public final class NuGetManagerPanel extends JPanel {
         DotnetSdkService sdk = sdk();
         NuGetSource source = (NuGetSource) sourceCombo.getSelectedItem();
         boolean prerelease = prereleaseCheck.isSelected();
-        setStatus("Procurando atualizacoes...");
+        setStatus(text("status.searchingUpdates", "Searching for updates..."));
         clearList();
         executor.execute(() -> {
             NuGetClient client = NuGetClient.forSource(source == null ? NuGetSource.nugetOrg() : source);
@@ -436,7 +443,8 @@ public final class NuGetManagerPanel extends JPanel {
             }
             SwingUtilities.invokeLater(() -> {
                 populate(updatable.toArray());
-                setStatus(updatable.isEmpty() ? "Tudo atualizado." : updatable.size() + " atualizacoes disponiveis.");
+                setStatus(updatable.isEmpty() ? text("status.upToDate", "Everything up to date.")
+                        : text("status.updatesAvailable", "{0} updates available.").replace("{0}", String.valueOf(updatable.size())));
             });
         });
     }
@@ -457,17 +465,18 @@ public final class NuGetManagerPanel extends JPanel {
         } else if (selected instanceof InstalledPackage pkg) {
             titleLabel.setText(pkg.id());
             String mode = pkg.mode() == InstalledPackage.Mode.PACKAGES_CONFIG
-                    ? "packages.config (legado)" : "PackageReference (SDK-style)";
-            authorsLabel.setText("Projeto " + projectName(pkg.projectFile()) + " | " + mode);
-            descriptionArea.setText("Versao instalada: " + pkg.version());
+                    ? text("mode.packagesConfigLegacy", "packages.config (legacy)") : "PackageReference (SDK-style)";
+            authorsLabel.setText(text("detail.projectPrefix", "Project ") + projectName(pkg.projectFile()) + " | " + mode);
+            descriptionArea.setText(text("detail.installedVersion", "Installed version: ") + pkg.version());
             versionCombo.setModel(new DefaultComboBoxModel<>(new String[]{pkg.version()}));
             uninstallButton.setEnabled(true);
             installButton.setEnabled(false);
         } else if (selected instanceof UpdateRow row) {
             titleLabel.setText(row.installed().id());
-            authorsLabel.setText("Projeto " + projectName(row.installed().projectFile())
+            authorsLabel.setText(text("detail.projectPrefix", "Project ") + projectName(row.installed().projectFile())
                     + " | " + row.installed().version() + " -> " + row.latest());
-            descriptionArea.setText("Atualizar de " + row.installed().version() + " para " + row.latest() + "?");
+            descriptionArea.setText(text("detail.updateFromTo", "Update from {0} to {1}?")
+                    .replace("{0}", row.installed().version()).replace("{1}", row.latest()));
             versionCombo.setModel(new DefaultComboBoxModel<>(new String[]{row.latest()}));
             uninstallButton.setEnabled(true);
             installButton.setEnabled(true);
@@ -481,7 +490,7 @@ public final class NuGetManagerPanel extends JPanel {
             versionCombo.setModel(new DefaultComboBoxModel<>(embedded.toArray(new String[0])));
             return;
         }
-        versionCombo.setModel(new DefaultComboBoxModel<>(new String[]{"carregando..."}));
+        versionCombo.setModel(new DefaultComboBoxModel<>(new String[]{text("version.loading", "loading...")}));
         NuGetClient client = currentClient();
         String id = pkg.id();
         executor.execute(() -> {
@@ -515,7 +524,7 @@ public final class NuGetManagerPanel extends JPanel {
         Object selected = packageList.getSelectedValue();
         Path project = project();
         if (project == null) {
-            setStatus("Abra um projeto .NET primeiro.");
+            setStatus(text("status.openFirst", "Open a .NET project first."));
             return;
         }
         String id;
@@ -532,13 +541,14 @@ public final class NuGetManagerPanel extends JPanel {
             return;
         }
         if (targets.isEmpty()) {
-            setStatus("Marque ao menos um projeto de destino para instalar " + id + ".");
+            setStatus(text("status.checkTarget", "Check at least one target project to install {0}.").replace("{0}", id));
             return;
         }
         String version = (String) versionCombo.getSelectedItem();
         setBusy(true);
-        setStatus("Instalando " + id + (version == null ? "" : " " + version)
-                + " em " + targets.size() + " projeto(s)...");
+        setStatus(text("status.installing", "Installing {0} in {1} project(s)...")
+                .replace("{0}", id + (version == null ? "" : " " + version))
+                .replace("{1}", String.valueOf(targets.size())));
         DotnetSdkService sdk = sdk();
         executor.execute(() -> {
             String message = runForEach(targets, target ->
@@ -589,11 +599,12 @@ public final class NuGetManagerPanel extends JPanel {
             return;
         }
         if (targets.isEmpty()) {
-            setStatus(id + " nao esta instalado nos projetos selecionados.");
+            setStatus(text("status.notInstalled", "{0} is not installed in the selected projects.").replace("{0}", id));
             return;
         }
         setBusy(true);
-        setStatus("Removendo " + id + " de " + targets.size() + " projeto(s)...");
+        setStatus(text("status.removing", "Removing {0} from {1} project(s)...")
+                .replace("{0}", id).replace("{1}", String.valueOf(targets.size())));
         DotnetSdkService sdk = sdk();
         executor.execute(() -> {
             String message = runForEach(targets, target ->
@@ -654,7 +665,7 @@ public final class NuGetManagerPanel extends JPanel {
         dialog.setVisible(true);
         if (dialog.changed()) {
             reloadSources();
-            setStatus("Fontes NuGet atualizadas.");
+            setStatus(text("status.sourcesUpdated", "NuGet sources updated."));
             refreshCurrentTab();
         }
     }
@@ -718,7 +729,7 @@ public final class NuGetManagerPanel extends JPanel {
     private void applyInstalledState(NuGetPackage pkg) {
         List<InstalledPackage> here = installedIndex.getOrDefault(pkg.id().toLowerCase(Locale.ROOT), List.of());
         uninstallButton.setEnabled(!here.isEmpty());
-        String author = pkg.authors() == null || pkg.authors().isBlank() ? "" : "por " + pkg.authors();
+        String author = pkg.authors() == null || pkg.authors().isBlank() ? "" : text("detail.by", "by ") + pkg.authors();
         if (here.isEmpty()) {
             authorsLabel.setText(author.isBlank() ? " " : author);
             return;
@@ -727,7 +738,7 @@ public final class NuGetManagerPanel extends JPanel {
                 .map(ip -> projectName(ip.projectFile()) + " " + ip.version())
                 .distinct()
                 .collect(Collectors.joining(", "));
-        authorsLabel.setText((author.isBlank() ? "" : author + "   |   ") + "instalado: " + where);
+        authorsLabel.setText((author.isBlank() ? "" : author + "   |   ") + text("detail.installed", "installed: ") + where);
     }
 
     private Icon rowIcon(Object value) {
@@ -901,15 +912,15 @@ public final class NuGetManagerPanel extends JPanel {
         private final JTable table = new JTable(tableModel);
         private final JTextField nameField = new JTextField();
         private final JTextField urlField = new JTextField();
-        private final JCheckBox enabledField = new JCheckBox("Ativa", true);
+        private final JCheckBox enabledField = new JCheckBox(text("source.active", "Active"), true);
         private final JLabel messageLabel = new JLabel(" ");
-        private final JButton addButton = new JButton("Adicionar");
-        private final JButton updateButton = new JButton("Atualizar");
-        private final JButton removeButton = new JButton("Remover");
+        private final JButton addButton = new JButton(text("source.add", "Add"));
+        private final JButton updateButton = new JButton(text("source.update", "Update"));
+        private final JButton removeButton = new JButton(text("source.remove", "Remove"));
         private boolean changed;
 
         private SourceManagementDialog(Window owner, NuGetConfig config) {
-            super(owner, "Gerenciar fontes NuGet", Dialog.ModalityType.APPLICATION_MODAL);
+            super(owner, text("source.dialogTitle", "Manage NuGet sources"), Dialog.ModalityType.APPLICATION_MODAL);
             this.config = config;
             setContentPane(buildContent());
             setMinimumSize(new Dimension(720, 430));
@@ -933,17 +944,17 @@ public final class NuGetManagerPanel extends JPanel {
             table.getColumnModel().getColumn(3).setPreferredWidth(90);
 
             JScrollPane tableScroll = new JScrollPane(table);
-            tableScroll.setBorder(BorderFactory.createTitledBorder("Fontes de pacote"));
+            tableScroll.setBorder(BorderFactory.createTitledBorder(text("source.packageSources", "Package sources")));
             UiSupport.styleScroll(tableScroll);
 
             JPanel form = new JPanel(new GridBagLayout());
-            form.setBorder(BorderFactory.createTitledBorder("Detalhes"));
+            form.setBorder(BorderFactory.createTitledBorder(text("source.details", "Details")));
             GridBagConstraints gbc = new GridBagConstraints();
             gbc.insets = new Insets(4, 4, 4, 4);
             gbc.fill = GridBagConstraints.HORIZONTAL;
 
-            addFormRow(form, gbc, 0, "Nome:", nameField);
-            addFormRow(form, gbc, 1, "Origem:", urlField);
+            addFormRow(form, gbc, 0, text("source.name", "Name:"), nameField);
+            addFormRow(form, gbc, 1, text("source.source", "Source:"), urlField);
 
             gbc.gridx = 1;
             gbc.gridy = 2;
@@ -959,7 +970,7 @@ public final class NuGetManagerPanel extends JPanel {
             bottom.add(form, BorderLayout.CENTER);
             bottom.add(buttons, BorderLayout.SOUTH);
 
-            JButton close = new JButton("Fechar");
+            JButton close = new JButton(text("source.close", "Close"));
             close.addActionListener(e -> dispose());
             JPanel footer = new JPanel(new BorderLayout(8, 0));
             footer.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, borderColor()));
@@ -1028,7 +1039,7 @@ public final class NuGetManagerPanel extends JPanel {
             updateButton.setEnabled(!readOnly);
             removeButton.setEnabled(!readOnly);
             messageLabel.setText(readOnly
-                    ? " nuget.org e a fonte padrao e nao pode ser alterada ou removida."
+                    ? text("source.msg.readonlyFull", " nuget.org is the default source and cannot be changed or removed.")
                     : " ");
         }
 
@@ -1048,7 +1059,7 @@ public final class NuGetManagerPanel extends JPanel {
                 return;
             }
             if (tableModel.findByName(fields.name()) != null) {
-                messageLabel.setText(" Fonte ja existe. Selecione a linha e use Atualizar.");
+                messageLabel.setText(text("source.msg.exists", " Source already exists. Select the row and use Update."));
                 return;
             }
             try {
@@ -1056,9 +1067,9 @@ public final class NuGetManagerPanel extends JPanel {
                 config.setEnabled(fields.name(), fields.enabled());
                 changed = true;
                 reloadSources(fields.name());
-                messageLabel.setText(" Fonte adicionada.");
+                messageLabel.setText(text("source.msg.added", " Source added."));
             } catch (Exception e) {
-                messageLabel.setText(" Falha ao adicionar fonte: " + e.getMessage());
+                messageLabel.setText(text("source.msg.addFailed", " Failed to add source: ") + e.getMessage());
             }
         }
 
@@ -1069,7 +1080,7 @@ public final class NuGetManagerPanel extends JPanel {
                 return;
             }
             if (selected.isNugetOrg()) {
-                messageLabel.setText(" nuget.org e somente leitura.");
+                messageLabel.setText(text("source.msg.readonly", " nuget.org is read-only."));
                 return;
             }
             try {
@@ -1080,9 +1091,9 @@ public final class NuGetManagerPanel extends JPanel {
                 config.setEnabled(fields.name(), fields.enabled());
                 changed = true;
                 reloadSources(fields.name());
-                messageLabel.setText(" Fonte atualizada.");
+                messageLabel.setText(text("source.msg.updated", " Source updated."));
             } catch (Exception e) {
-                messageLabel.setText(" Falha ao atualizar fonte: " + e.getMessage());
+                messageLabel.setText(text("source.msg.updateFailed", " Failed to update source: ") + e.getMessage());
             }
         }
 
@@ -1092,12 +1103,12 @@ public final class NuGetManagerPanel extends JPanel {
                 return;
             }
             if (selected.isNugetOrg()) {
-                messageLabel.setText(" nuget.org e somente leitura.");
+                messageLabel.setText(text("source.msg.readonly", " nuget.org is read-only."));
                 return;
             }
             int answer = JOptionPane.showConfirmDialog(this,
-                    "Remover a fonte '" + selected.name() + "'?",
-                    "Remover fonte",
+                    text("source.confirmRemove", "Remove source '{0}'?").replace("{0}", selected.name()),
+                    text("source.confirmRemoveTitle", "Remove source"),
                     JOptionPane.YES_NO_OPTION,
                     JOptionPane.WARNING_MESSAGE);
             if (answer != JOptionPane.YES_OPTION) {
@@ -1107,9 +1118,9 @@ public final class NuGetManagerPanel extends JPanel {
                 config.removeSource(selected.name());
                 changed = true;
                 reloadSources(null);
-                messageLabel.setText(" Fonte removida.");
+                messageLabel.setText(text("source.msg.removed", " Source removed."));
             } catch (Exception e) {
-                messageLabel.setText(" Falha ao remover fonte: " + e.getMessage());
+                messageLabel.setText(text("source.msg.removeFailed", " Failed to remove source: ") + e.getMessage());
             }
         }
 
@@ -1117,11 +1128,11 @@ public final class NuGetManagerPanel extends JPanel {
             String name = nameField.getText() == null ? "" : nameField.getText().trim();
             String url = urlField.getText() == null ? "" : urlField.getText().trim();
             if (name.isBlank() || url.isBlank()) {
-                messageLabel.setText(" Nome e origem sao obrigatorios.");
+                messageLabel.setText(text("source.msg.required", " Name and source are required."));
                 return null;
             }
             if (NuGetSource.isNugetOrg(name, url)) {
-                messageLabel.setText(" nuget.org e a fonte padrao e nao pode ser alterada.");
+                messageLabel.setText(text("source.msg.readonlyChange", " nuget.org is the default source and cannot be changed."));
                 return null;
             }
             return new SourceFields(name, url, enabledField.isSelected());
@@ -1145,7 +1156,8 @@ public final class NuGetManagerPanel extends JPanel {
 
     private static final class SourceTableModel extends AbstractTableModel {
 
-        private final String[] columns = {"Ativa", "Nome", "Origem", "Tipo"};
+        private final String[] columns = {text("column.active", "Active"), text("column.name", "Name"),
+                text("column.source", "Source"), text("column.type", "Type")};
         private final List<NuGetSource> sources = new ArrayList<>();
 
         private void setSources(List<NuGetSource> values) {
@@ -1194,7 +1206,7 @@ public final class NuGetManagerPanel extends JPanel {
                 case 0 -> source.enabled();
                 case 1 -> source.name();
                 case 2 -> source.url();
-                case 3 -> source.isNugetOrg() ? "Padrao" : "Customizada";
+                case 3 -> source.isNugetOrg() ? text("type.default", "Default") : text("type.custom", "Custom");
                 default -> "";
             };
         }

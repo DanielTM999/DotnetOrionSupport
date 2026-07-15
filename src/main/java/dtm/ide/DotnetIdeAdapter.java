@@ -230,6 +230,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private static final String NAV_PROGRESS_ID = "dotnetNavigate";
     private static final String HOT_RELOAD_PROGRESS_ID = "dotnetHotReload";
 
+    private static String text(String key, String def) {
+        return dtm.stools.i18n.I18n.getText(DotnetIdeAdapter.class, key, def);
+    }
+
     @Override
     public boolean supports(Path path) {
         return DotnetProjectConventions.supports(path);
@@ -390,8 +394,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
                 analyzeProgressShown.set(true);
                 SwingUtilities.invokeLater(() -> {
-                    showProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C#");
-                    updateProgress(LSP_ANALYZE_PROGRESS_ID, "Carregando projeto C#", 0);
+                    showProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# project"));
+                    updateProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# project"), 0);
                 });
                 service.start();
                 if (!isProjectCurrent(ticket, project)) {
@@ -400,7 +404,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 }
                 if (service.isRunning()) {
                     SwingUtilities.invokeLater(() -> {
-                        createNotification(new NotificationContext("C#", "IntelliSense ativo."));
+                        createNotification(new NotificationContext("C#", text("notif.intellisenseActive", "IntelliSense active.")));
                     });
 
                     refreshOpenEditors();
@@ -410,7 +414,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         SwingUtilities.invokeLater(() -> hideProgress(LSP_ANALYZE_PROGRESS_ID));
                     }
                     String error = service.getLastError();
-                    SwingUtilities.invokeLater(() -> setStatusBarText("C#: falha ao iniciar Intellisense" + (error == null ? "." : " — " + error)));
+                    SwingUtilities.invokeLater(() -> setStatusBarText(text("status.intellisenseFailed", "C#: failed to start IntelliSense") + (error == null ? "." : " — " + error)));
                 }
             } catch (Exception e) {
                 log.warn("Falha ao iniciar serviços de linguagem .NET: {}", e.getMessage());
@@ -430,7 +434,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (dotnet == null || !isProjectCurrent(ticket, project)) {
             return;
         }
-        SwingUtilities.invokeLater(() -> showProgress(LSP_PROGRESS_ID, "Restaurando pacotes (dotnet restore)..."));
+        SwingUtilities.invokeLater(() -> showProgress(LSP_PROGRESS_ID, text("progress.restoring", "Restoring packages (dotnet restore)...")));
         try {
             for (Path projectFile : projectFiles) {
                 if (!isProjectCurrent(ticket, project) || !needsRestore(projectFile)) {
@@ -554,9 +558,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
             lspLoadPercent = percent;
             if (analyzeProgressShown.compareAndSet(false, true)) {
-                showProgress(LSP_ANALYZE_PROGRESS_ID, "Analisando projeto");
+                showProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.analyzing", "Analyzing project"));
             }
-            updateProgress(LSP_ANALYZE_PROGRESS_ID, "Analisando projeto", percent);
+            updateProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.analyzing", "Analyzing project"), percent);
             log.debug("Analisando projeto {}%", percent);
         }));
         return lspService;
@@ -613,19 +617,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
             missing.add(".NET SDK " + dotnetSdkVersion);
         }
         if (needServer) {
-            missing.add("IntelliSense (language server C#)");
+            missing.add(text("toolchain.intellisense", "IntelliSense (C# language server)"));
         }
-        String message = "O Orion precisa baixar " + String.join(" e ", missing)
-                + " para habilitar o suporte a C# (IntelliSense e build) deste projeto."
-                + " Todos os componentes têm licença livre para uso comercial.";
+        String message = text("toolchain.message", "Orion needs to download {0} to enable C# support (IntelliSense and build) for this project. All components are free for commercial use.")
+                .replace("{0}", String.join(text("toolchain.and", " and "), missing));
         final int[] result = {-1};
         Runnable show = () -> result[0] = createModernDialogBuilder()
-                .title("Toolchain .NET não encontrada")
+                .title(text("toolchain.title", ".NET toolchain not found"))
                 .draggable(true)
                 .message(message)
                 .accentColor(new Color(59, 130, 246))
-                .option("Baixar", 0, new Color(59, 130, 246), Color.WHITE)
-                .option("Cancelar", 1, new Color(220, 53, 69), Color.WHITE)
+                .option(text("action.download", "Download"), 0, new Color(59, 130, 246), Color.WHITE)
+                .option(text("action.cancel", "Cancel"), 1, new Color(220, 53, 69), Color.WHITE)
                 .type(ModernDialog.Type.QUESTION)
                 .show();
         try {
@@ -1027,8 +1030,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private HoverInfo lspLoadingHover() {
         int percent = lspLoadPercent;
         String suffix = percent > 0 && percent < 100 ? " (" + percent + "%)" : "";
-        return HoverInfo.markdown("**Carregando IntelliSense C#…" + suffix + "**\n\n"
-                + "As informações aparecem assim que o projeto terminar de analisar.");
+        return HoverInfo.markdown("**" + text("hover.loadingIntellisense", "Loading C# IntelliSense…") + suffix + "**\n\n"
+                + text("hover.loadingInfo", "Information will appear once the project finishes analyzing."));
     }
 
     @Override
@@ -1079,18 +1082,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
         boolean enabled = debugActive.get();
         String expression = expressionAtEditorContext(editorContext);
         menu.separator()
-                .item("Go to Implementation", isImplementationAvailable(editorContext),
+                .item(text("editor.goToImplementation", "Go to Implementation"), isImplementationAvailable(editorContext),
                         e -> onGoToImplementation(editorContext))
-                .item("Go to Type Definition", isTypeDefinitionAvailable(editorContext),
+                .item(text("editor.goToTypeDefinition", "Go to Type Definition"), isTypeDefinitionAvailable(editorContext),
                         e -> onGoToTypeDefinition(editorContext))
-                .item("Rename Symbol...", isRenameAvailable(editorContext),
+                .item(text("editor.renameSymbol", "Rename Symbol..."), isRenameAvailable(editorContext),
                         e -> showRenameSymbolDialog(editorContext))
-                .item("Run to Cursor", enabled,
+                .item(text("editor.runToCursor", "Run to Cursor"), enabled,
                         e -> runToCursor(editorContext))
-                .item("Set Next Statement", enabled,
+                .item(text("editor.setNextStatement", "Set Next Statement"), enabled,
                         e -> setNextStatement(editorContext))
-                .item("Evaluate Expression...", enabled, e -> showEvaluateDialog(editorContext, expression))
-                .item("Add Watch", enabled && expression != null && !expression.isBlank(),
+                .item(text("editor.evaluateExpression", "Evaluate Expression..."), enabled, e -> showEvaluateDialog(editorContext, expression))
+                .item(text("editor.addWatch", "Add Watch"), enabled && expression != null && !expression.isBlank(),
                         e -> addWatchExpression(expression));
     }
 
@@ -1098,7 +1101,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         boolean sent = context != null && runSupport.runToCursor(
                 context.filePath(), context.getCaretLine());
         if (!sent) {
-            setStatusBarText("Run to Cursor exige uma sessão de debug pausada.");
+            setStatusBarText(text("status.runToCursorNeedsPaused", "Run to Cursor requires a paused debug session."));
         }
     }
 
@@ -1106,7 +1109,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         boolean sent = context != null && runSupport.setNextStatement(
                 context.filePath(), context.getCaretLine());
         if (!sent) {
-            setStatusBarText("Set Next Statement exige uma sessão de debug pausada.");
+            setStatusBarText(text("status.setNextStatementNeedsPaused", "Set Next Statement requires a paused debug session."));
         }
     }
 
@@ -1179,18 +1182,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         String current = identifierAt(context.getText(), context.getCaretOffset());
         if (current == null || current.isBlank()) {
-            setStatusBarText("Nenhum simbolo C# no cursor para renomear.");
+            setStatusBarText(text("status.noSymbolToRename", "No C# symbol at the cursor to rename."));
             return;
         }
         JTextField field = new JTextField(current, Math.max(18, current.length() + 4));
         field.selectAll();
         Component parent = resolveEditorComponent(context);
         String value = createModernInputDialogBuilder()
-                .title("Rename Symbol")
-                .message("Novo nome para '" + current + "'")
+                .title(text("editor.renameSymbol.title", "Rename Symbol"))
+                .message(text("dialog.renameMessage", "New name for '{0}'").replace("{0}", current))
                 .input(field)
-                .confirmText("Rename")
-                .cancelText("Cancel")
+                .confirmText(text("action.rename", "Rename"))
+                .cancelText(text("action.cancel", "Cancel"))
                 .draggable(true)
                 .show(parent);
         String newName = value == null ? "" : value.trim();
@@ -1198,7 +1201,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         if (!isValidCSharpIdentifier(newName)) {
-            setStatusBarText("Nome invalido para simbolo C#: " + newName);
+            setStatusBarText(text("status.invalidSymbolName", "Invalid name for C# symbol: ") + newName);
             return;
         }
         renameSymbol(context, newName);
@@ -1211,17 +1214,17 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Path file = normalizePath(context.filePath());
         navigationExecutor().execute(() -> {
-            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, "Renomeando simbolo..."));
+            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, text("progress.renaming", "Renaming symbol...")));
             try {
                 DotnetWorkspaceEdit workspaceEdit = service.renameWorkspace(
                         file, context.getText(), context.getCaretLine(), context.getCaretCol(), newName);
                 if (workspaceEdit.isEmpty()) {
-                    SwingUtilities.invokeLater(() -> setStatusBarText("Rename nao retornou alteracoes."));
+                    SwingUtilities.invokeLater(() -> setStatusBarText(text("status.renameNoChanges", "Rename returned no changes.")));
                     return;
                 }
                 Map<Path, String> updated = computeWorkspaceEditTexts(workspaceEdit);
                 if (!confirmRenamePreview(workspaceEdit, newName)) {
-                    SwingUtilities.invokeLater(() -> setStatusBarText("Rename cancelado."));
+                    SwingUtilities.invokeLater(() -> setStatusBarText(text("status.renameCancelled", "Rename cancelled.")));
                     return;
                 }
                 SwingUtilities.invokeAndWait(() -> applyWorkspaceEditTexts(updated));
@@ -1230,7 +1233,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 });
             } catch (Exception e) {
                 log.debug("Falha ao renomear simbolo: {}", e.getMessage());
-                SwingUtilities.invokeLater(() -> setStatusBarText("Falha ao renomear: " + e.getMessage()));
+                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.renameFailed", "Failed to rename: ") + e.getMessage()));
             } finally {
                 SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
             }
@@ -1238,14 +1241,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean confirmRenamePreview(DotnetWorkspaceEdit edit, String newName) {
-        StringBuilder message = new StringBuilder("Renomear para '")
-                .append(newName).append("' fará ")
-                .append(edit.editCount()).append(" alteração(ões) em ")
-                .append(edit.changes().size()).append(" arquivo(s):");
+        StringBuilder message = new StringBuilder(text("rename.summary", "Renaming to '{0}' will make {1} change(s) in {2} file(s):")
+                .replace("{0}", newName)
+                .replace("{1}", String.valueOf(edit.editCount()))
+                .replace("{2}", String.valueOf(edit.changes().size())));
         int shown = 0;
         for (Map.Entry<Path, List<TextEdit>> entry : edit.changes().entrySet()) {
             if (shown++ == 8) {
-                message.append("\n… e mais ").append(edit.changes().size() - 8).append(" arquivo(s)");
+                message.append("\n").append(text("rename.andMore", "… and {0} more file(s)")
+                        .replace("{0}", String.valueOf(edit.changes().size() - 8)));
                 break;
             }
             message.append("\n• ").append(entry.getKey().getFileName())
@@ -1253,12 +1257,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         final int[] result = {-1};
         Runnable show = () -> result[0] = createModernDialogBuilder()
-                .title("Preview de Rename")
+                .title(text("rename.previewTitle", "Rename Preview"))
                 .draggable(true)
                 .message(message.toString())
                 .accentColor(new Color(59, 130, 246))
-                .option("Aplicar", 0, new Color(59, 130, 246), Color.WHITE)
-                .option("Cancelar", 1, new Color(220, 53, 69), Color.WHITE)
+                .option(text("action.apply", "Apply"), 0, new Color(59, 130, 246), Color.WHITE)
+                .option(text("action.cancel", "Cancel"), 1, new Color(220, 53, 69), Color.WHITE)
                 .type(ModernDialog.Type.QUESTION)
                 .show();
         try {
@@ -1280,7 +1284,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             Path file = normalizePath(entry.getKey());
             String original = currentTextOf(file);
             if (original == null) {
-                throw new IllegalStateException("Nao foi possivel ler " + file);
+                throw new IllegalStateException(text("error.couldNotRead", "Could not read ") + file);
             }
             updated.put(file, applyTextEdits(original, entry.getValue()));
         }
@@ -1298,7 +1302,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 try {
                     Files.writeString(file, text, StandardCharsets.UTF_8);
                 } catch (Exception e) {
-                    throw new RuntimeException("Falha ao gravar " + file.getFileName() + ": " + e.getMessage(), e);
+                    throw new RuntimeException(text("error.couldNotWrite", "Failed to write ") + file.getFileName() + ": " + e.getMessage(), e);
                 }
             }
         }
@@ -1316,7 +1320,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             int start = offsetOf(lineStarts, text, edit.range().start().line(), edit.range().start().col());
             int end = offsetOf(lineStarts, text, edit.range().end().line(), edit.range().end().col());
             if (start < 0 || end < start || end > sb.length()) {
-                throw new IllegalArgumentException("Range de rename invalido.");
+                throw new IllegalArgumentException(text("error.invalidRenameRange", "Invalid rename range."));
             }
             sb.replace(start, end, edit.newText() == null ? "" : edit.newText());
         }
@@ -1425,7 +1429,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         navigationExecutor().execute(() -> {
-            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, "Aplicando ação de código..."));
+            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, text("progress.applyingCodeAction", "Applying code action...")));
             try {
                 DotnetWorkspaceEdit edit = service.resolveCodeActionEdit(rawAction);
                 if (!edit.isEmpty()) {
@@ -1437,7 +1441,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 }
             } catch (Exception e) {
                 log.debug("Falha ao aplicar code action: {}", e.getMessage());
-                SwingUtilities.invokeLater(() -> setStatusBarText("Falha ao aplicar ação: " + e.getMessage()));
+                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.applyActionFailed", "Failed to apply action: ") + e.getMessage()));
             } finally {
                 SwingUtilities.invokeLater(() -> hideProgress(NAV_PROGRESS_ID));
             }
@@ -1560,8 +1564,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     && isTestMethod(lines, symbol.selectionRange().start().line())) {
                 String testId = stripSignature(qualified);
                 CodeLensItem run = CodeLensItem.builder()
-                        .text("▶ Run")
-                        .tooltip("Executar " + testId)
+                        .text("▶ " + text("lens.run", "Run"))
+                        .tooltip(text("lens.runTooltip", "Run {0}").replace("{0}", testId))
                         .cursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
                         .onClick(event -> runTestFromLens(testId))
                         .build();
@@ -1626,8 +1630,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 if (!usages.isEmpty()) {
                     int count = usages.size();
                     CodeLensItem item = CodeLensItem.builder()
-                            .text(count == 1 ? "1 usage" : count + " usages")
-                            .tooltip("Mostrar usos de " + symbol.name())
+                            .text(count == 1 ? text("lens.usageOne", "1 usage")
+                                    : text("lens.usages", "{0} usages").replace("{0}", String.valueOf(count)))
+                            .tooltip(text("lens.usagesTooltip", "Show usages of {0}").replace("{0}", symbol.name()))
                             .cursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
                             .onClick(event -> {
                                 MouseEvent me = event.mouseEvent();
@@ -1960,7 +1965,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private void showEvaluateDialog(IdeEditorContext context, String initialExpression) {
         Component editor = resolveEditorComponent(context);
         java.awt.Window owner = editor == null ? null : SwingUtilities.getWindowAncestor(editor);
-        JDialog dialog = new JDialog(owner, "Evaluate Expression");
+        JDialog dialog = new JDialog(owner, text("eval.title", "Evaluate Expression"));
         dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         dialog.setModal(false);
 
@@ -1994,8 +1999,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
         evaluationProgress.setVisible(false);
         evaluationProgress.setPreferredSize(new Dimension(120, 14));
 
-        JButton evaluate = new JButton("Evaluate");
-        JButton addWatch = new JButton("Add Watch");
+        JButton evaluate = new JButton(text("eval.evaluate", "Evaluate"));
+        JButton addWatch = new JButton(text("eval.addWatch", "Add Watch"));
         JPanel actions = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 6, 0));
         actions.setOpaque(false);
         actions.add(addWatch);
@@ -2003,7 +2008,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
         JPanel top = new JPanel(new BorderLayout(8, 6));
         top.setOpaque(false);
-        JLabel label = new JLabel("Expression");
+        JLabel label = new JLabel(text("eval.expression", "Expression"));
         label.setForeground(textColor);
         top.add(label, BorderLayout.NORTH);
         top.add(expression, BorderLayout.CENTER);
@@ -2023,7 +2028,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             if (expr.isEmpty()) {
                 return;
             }
-            status.setText("Evaluating...");
+            status.setText(text("eval.evaluating", "Evaluating..."));
             expression.setError(false);
             evaluationProgress.setVisible(true);
             evaluate.setEnabled(false);
@@ -2034,7 +2039,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 SwingUtilities.invokeLater(() -> {
                     try {
                         if (value == null) {
-                            status.setText("Expression returned no value in the current frame.");
+                            status.setText(text("eval.noValue", "Expression returned no value in the current frame."));
                             expression.setError(true);
                             result.setValue(null);
                         } else {
@@ -2057,7 +2062,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             String expr = expression.text();
             if (!expr.isEmpty()) {
                 boolean added = addWatchExpression(expr);
-                status.setText(added ? "Added to Watch." : "Already in Watch.");
+                status.setText(added ? text("eval.addedToWatch", "Added to Watch.") : text("eval.alreadyInWatch", "Already in Watch."));
             }
         });
 
@@ -2112,11 +2117,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
         String token = expressionCompletionToken(text).toLowerCase(Locale.ROOT);
         TreeSet<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         List<DebugCompletion> result = new ArrayList<>();
-        addLocalCompletion(result, names, "this", "current instance");
-        addLocalCompletion(result, names, "base", "base instance");
-        addLocalCompletion(result, names, "args", "argument array");
+        addLocalCompletion(result, names, "this", text("completion.currentInstance", "current instance"));
+        addLocalCompletion(result, names, "base", text("completion.baseInstance", "base instance"));
+        addLocalCompletion(result, names, "args", text("completion.argumentArray", "argument array"));
         for (String watch : debugWatchPanel.expressions()) {
-            addLocalCompletion(result, names, watch, "Watch");
+            addLocalCompletion(result, names, watch, text("completion.watch", "Watch"));
         }
         try {
             for (DebugScope scope : runSupport.debugScopes()) {
@@ -2383,7 +2388,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             this.icon = icon;
             setOpaque(false);
             setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            setToolTipText("Mostrar ações de código (Alt+Enter)");
+            setToolTipText(text("tooltip.codeActions", "Show code actions (Alt+Enter)"));
             int w = (icon == null ? 16 : icon.getIconWidth()) + 8;
             int h = (icon == null ? 16 : icon.getIconHeight()) + 4;
             Dimension size = new Dimension(w, h);
@@ -2477,7 +2482,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         LspService service = lspService;
         if (service == null) return;
         navigationExecutor().execute(() -> {
-            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, "Abrindo definição (descompilando se necessário)..."));
+            SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, text("progress.openingDefinition", "Opening definition (decompiling if necessary)...")));
             try {
                 List<Location> targets = service.definitions(file, text, line, col);
                 if (!targets.isEmpty()) {
@@ -2498,7 +2503,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         navigationExecutor().execute(() -> {
             SwingUtilities.invokeLater(() ->
-                    showProgress(NAV_PROGRESS_ID, "Procurando implementações..."));
+                    showProgress(NAV_PROGRESS_ID, text("progress.searchingImplementations", "Searching implementations...")));
             try {
                 List<Location> targets = service.implementations(file, text, line, col);
                 if (targets.isEmpty()) {
@@ -2522,7 +2527,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         navigationExecutor().execute(() -> {
             SwingUtilities.invokeLater(() ->
-                    showProgress(NAV_PROGRESS_ID, "Procurando definição de tipo..."));
+                    showProgress(NAV_PROGRESS_ID, text("progress.searchingTypeDefinition", "Searching type definition...")));
             try {
                 List<Location> targets = service.typeDefinitions(file, text, line, col);
                 if (!targets.isEmpty()) {
@@ -2649,50 +2654,50 @@ public class DotnetIdeAdapter extends IdeAdapter {
         menu.into("file")
                 .separator()
                 .add(
-                        MenuNode.item("dotnetProjectConfig", "Configuração do Projeto (.NET)")
-                                .tooltip("Mudar TargetFramework/SDK, OutputType, LangVersion...")
+                        MenuNode.item("dotnetProjectConfig", text("menu.projectConfig", "Project Configuration (.NET)"))
+                                .tooltip(text("menu.projectConfig.tip", "Change TargetFramework/SDK, OutputType, LangVersion..."))
                                 .onClick(e -> openProjectConfig())
                 );
 
-        menu.submenu("dotnetBuildMenu", "Build", build -> build
-                .item("dotnetBuildDebug", "Compilar (Debug)",
-                        e -> buildSolution("Compilar (Debug)", List.of("build", "-c", "Debug")))
-                .item("dotnetBuildRelease", "Compilar (Release)",
-                        e -> buildSolution("Compilar (Release)", List.of("build", "-c", "Release")))
-                .item("dotnetPublishRelease", "Publicar...",
+        menu.submenu("dotnetBuildMenu", text("menu.build", "Build"), build -> build
+                .item("dotnetBuildDebug", text("menu.build.debug", "Build (Debug)"),
+                        e -> buildSolution(text("menu.build.debug", "Build (Debug)"), List.of("build", "-c", "Debug")))
+                .item("dotnetBuildRelease", text("menu.build.release", "Build (Release)"),
+                        e -> buildSolution(text("menu.build.release", "Build (Release)"), List.of("build", "-c", "Release")))
+                .item("dotnetPublishRelease", text("menu.publish", "Publish..."),
                         e -> openPublishDialog())
-                .item("dotnetPackRelease", "Empacotar NuGet (Release)",
-                        e -> buildSolution("Empacotar NuGet (Release)", List.of("pack", "-c", "Release")))
+                .item("dotnetPackRelease", text("menu.pack", "Pack NuGet (Release)"),
+                        e -> buildSolution(text("menu.pack", "Pack NuGet (Release)"), List.of("pack", "-c", "Release")))
                 .separator()
-                .item("dotnetRebuildMenu", "Recompilar",
-                        e -> buildSolution("Recompilar", List.of("build", "--no-incremental")))
-                .item("dotnetCleanMenu", "Limpar",
-                        e -> buildSolution("Limpar", List.of("clean"))));
+                .item("dotnetRebuildMenu", text("menu.rebuild", "Rebuild"),
+                        e -> buildSolution(text("menu.rebuild", "Rebuild"), List.of("build", "--no-incremental")))
+                .item("dotnetCleanMenu", text("menu.clean", "Clean"),
+                        e -> buildSolution(text("menu.clean", "Clean"), List.of("clean"))));
 
         menu.into("window")
                 .add(
-                        MenuNode.item("dotnetNuget", "Gerenciar NuGet")
-                                .tooltip("Gerenciar pacotes NuGet do projeto")
+                        MenuNode.item("dotnetNuget", text("menu.nuget", "Manage NuGet"))
+                                .tooltip(text("menu.nuget.tip", "Manage the project's NuGet packages"))
                                 .onClick(e -> openNuGetManager())
                 )
                 .add(
-                        MenuNode.item("dotnetTests", "Testes .NET")
-                                .tooltip("Descobrir e executar testes do projeto")
+                        MenuNode.item("dotnetTests", text("menu.tests", ".NET Tests"))
+                                .tooltip(text("menu.tests.tip", "Discover and run the project's tests"))
                                 .onClick(e -> openTestExplorer())
                 )
                 .add(
-                        MenuNode.item("dotnetAttachProcess", "Attach ao processo .NET...")
-                                .tooltip("Selecionar um processo em execução e anexar o netcoredbg")
+                        MenuNode.item("dotnetAttachProcess", text("menu.attach", "Attach to .NET process..."))
+                                .tooltip(text("menu.attach.tip", "Select a running process and attach netcoredbg"))
                                 .onClick(e -> openAttachProcessPicker())
                 )
                 .add(
-                        MenuNode.item("dotnetRestore", "Restaurar pacotes (dotnet restore)")
-                                .tooltip("Executa dotnet restore no projeto")
+                        MenuNode.item("dotnetRestore", text("menu.restore", "Restore packages (dotnet restore)"))
+                                .tooltip(text("menu.restore.tip", "Runs dotnet restore on the project"))
                                 .onClick(e -> restorePackages())
                 )
                 .add(
-                        MenuNode.item("dotnetRestartLsp", "Reiniciar OmniSharp")
-                                .tooltip("Reinicia o language server C#")
+                        MenuNode.item("dotnetRestartLsp", text("menu.restartLsp", "Restart OmniSharp"))
+                                .tooltip(text("menu.restartLsp.tip", "Restarts the C# language server"))
                                 .onClick(e -> restartLanguageServer())
                 );
     }
@@ -2728,12 +2733,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runOnUiThread(() -> {
             DotnetProcessPickerPanel picker = new DotnetProcessPickerPanel();
             Long pid = createModernComponentDialogBuilder(Long.class)
-                    .title("Attach ao processo .NET")
+                    .title(text("dialog.attach", "Attach to .NET process"))
                     .draggable(true)
                     .showIcon(false)
                     .accentColor(new Color(59, 130, 246))
-                    .confirmText("Attach")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.attach", "Attach"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .component(picker)
                     .result(ctx -> picker.selectedPid())
                     .show();
@@ -2772,7 +2777,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (testPanel == null) {
             testPanel = new DotnetTestExplorerPanel(() -> projectPath, this::ensureSdkService,
                     () -> ensurePluginSettings().getDefaultConfiguration(), this::attachTestProcess);
-            testToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Testes", ToolIconType.INFO, testPanel);
+            testToolPanelId = registerToolPanel(DockRegion.BOTTOM, text("panel.tests", "Tests"), ToolIconType.INFO, testPanel);
         }
     }
 
@@ -2799,7 +2804,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         } else {
             projectConfigPanel.reload();
         }
-        openCenterTab(PROJECT_CONFIG_TAB_ID, "Projeto .NET", projectConfigPanel, true);
+        openCenterTab(PROJECT_CONFIG_TAB_ID, text("tab.projectConfig", ".NET Project"), projectConfigPanel, true);
         switchToCenterTab(PROJECT_CONFIG_TAB_ID);
     }
 
@@ -2821,7 +2826,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         languageSetupExecutor().execute(() -> {
             DotnetSdkService sdk = ensureSdkService();
             if (sdk == null) {
-                SwingUtilities.invokeLater(() -> setStatusBarText("dotnet não encontrado para restaurar pacotes."));
+                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.dotnetNotFoundRestore", "dotnet not found to restore packages.")));
                 return;
             }
             SwingUtilities.invokeLater(() -> showProgress("dotnetRestore", "dotnet restore..."));
@@ -2839,14 +2844,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 if (process.waitFor(RESTORE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                     int code = process.exitValue();
                     SwingUtilities.invokeLater(() -> setStatusBarText(
-                            code == 0 ? "Pacotes restaurados." : "dotnet restore falhou (código " + code + ")."));
+                            code == 0 ? text("status.packagesRestored", "Packages restored.")
+                                    : text("status.restoreFailed", "dotnet restore failed (code {0}).").replace("{0}", String.valueOf(code))));
                 } else {
                     process.destroyForcibly();
                     SwingUtilities.invokeLater(() -> setStatusBarText(
-                            "dotnet restore excedeu o tempo limite e foi abortado."));
+                            text("status.restoreTimeout", "dotnet restore timed out and was aborted.")));
                 }
             } catch (Exception e) {
-                SwingUtilities.invokeLater(() -> setStatusBarText("Falha no restore: " + e.getMessage()));
+                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.restoreError", "Restore failed: ") + e.getMessage()));
             } finally {
                 if (process != null && process.isAlive()) {
                     process.destroyForcibly();
@@ -2887,12 +2893,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
         Runnable prompt = () -> {
             RunProjectChooserPanel panel = new RunProjectChooserPanel(projects);
             result[0] = createModernComponentDialogBuilder(Path.class)
-                    .title("Selecionar projeto para executar")
+                    .title(text("dialog.selectRunProject", "Select project to run"))
                     .draggable(true)
                     .showIcon(false)
                     .accentColor(new Color(59, 130, 246))
-                    .confirmText("Executar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.run", "Run"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .enterConfirms(true)
                     .component(panel)
                     .result(ctx -> panel.getSelected())
@@ -2951,7 +2957,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             selectedRunConfig = runConfiguration;
         }
         if (!hotReloadBusy.compareAndSet(false, true)) {
-            runOnUiThread(() -> setStatusBarText("Hot Reload ja esta em execucao."));
+            runOnUiThread(() -> setStatusBarText(text("hr.alreadyRunning", "Hot Reload is already running.")));
             return;
         }
         if (!runSupport.isDebugging()) {
@@ -2959,7 +2965,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             runOnUiThread(() -> {
                 requestSetHotReloadButtonEnabled(false);
                 debugToolbar.finishHotReloadBusy(false);
-                setStatusBarText("Hot Reload disponivel apenas durante debug .NET.");
+                setStatusBarText(text("hr.onlyDuringDebug", "Hot Reload is only available during .NET debugging."));
             });
             return;
         }
@@ -2968,7 +2974,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (!sent) {
             finishHotReloadUi();
             runOnUiThread(() ->
-                setStatusBarText("Hot Reload nao foi enviado: sessao de debug indisponivel."));
+                setStatusBarText(text("hr.notSent", "Hot Reload was not sent: debug session unavailable.")));
         }
     }
 
@@ -3070,15 +3076,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
         debugToolbar.bindCommandSink(this::onDebugCommand);
 
         JTabbedPane tabs = new JTabbedPane();
-        tabs.addTab("Variáveis", debugVariablesPanel);
-        tabs.addTab("Watch", debugWatchPanel);
+        tabs.addTab(text("debug.tab.variables", "Variables"), debugVariablesPanel);
+        tabs.addTab(text("debug.tab.watch", "Watch"), debugWatchPanel);
         debugTabs = tabs;
-        tabs.addTab("Pilha de chamadas", debugCallStackPanel);
+        tabs.addTab(text("debug.tab.callStack", "Call stack"), debugCallStackPanel);
 
         JPanel debugRoot = new JPanel(new BorderLayout());
         debugRoot.add(debugToolbar, BorderLayout.NORTH);
         debugRoot.add(tabs, BorderLayout.CENTER);
-        debugToolPanelId = registerToolPanel(DockRegion.BOTTOM, "Debug", ToolIconType.DEBUG, debugRoot);
+        debugToolPanelId = registerToolPanel(DockRegion.BOTTOM, text("panel.debug", "Debug"), ToolIconType.DEBUG, debugRoot);
     }
 
     private void requestShowDebugVariablesPanel() {
@@ -3121,7 +3127,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 onHotReload(selectedRunConfig);
             } catch (Exception e) {
                 finishHotReloadUi();
-                setStatusBarText("Falha ao iniciar Hot Reload: " + e.getMessage());
+                setStatusBarText(text("hr.startFailed", "Failed to start Hot Reload: ") + e.getMessage());
             }
             return;
         }
@@ -3241,10 +3247,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         switch (result.status()) {
-            case APPLIED -> setStatusBarText("Hot Reload aplicado.");
-            case NO_CHANGES -> setStatusBarText("Hot Reload: sem alteracoes.");
-            case BLOCKED -> showHotReloadDialog("Hot Reload nao aplicado", result.message());
-            case ERROR -> showHotReloadDialog("Falha no Hot Reload", result.message());
+            case APPLIED -> setStatusBarText(text("hr.applied", "Hot Reload applied."));
+            case NO_CHANGES -> setStatusBarText(text("hr.noChanges", "Hot Reload: no changes."));
+            case BLOCKED -> showHotReloadDialog(text("hr.notApplied", "Hot Reload not applied"), result.message());
+            case ERROR -> showHotReloadDialog(text("hr.failed", "Hot Reload failed"), result.message());
         }
     }
 
@@ -3252,7 +3258,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         createModernDialogBuilder()
                 .title(title)
                 .draggable(true)
-                .message(message == null || message.isBlank() ? "Nao foi possivel aplicar Hot Reload." : message)
+                .message(message == null || message.isBlank() ? text("hr.couldNotApply", "Could not apply Hot Reload.") : message)
                 .accentColor(new Color(220, 53, 69))
                 .option("OK", 0, new Color(59, 130, 246), Color.WHITE)
                 .type(ModernDialog.Type.ERROR)
@@ -3264,7 +3270,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runOnUiThread(() -> {
             debugToolbar.startHotReloadBusy();
             requestSetHotReloadButtonEnabled(false);
-            showProgress(HOT_RELOAD_PROGRESS_ID, "Aplicando Hot Reload...");
+            showProgress(HOT_RELOAD_PROGRESS_ID, text("progress.applyingHotReload", "Applying Hot Reload..."));
         });
         debugRefreshDelayExecutor.schedule(() -> {
             if (!hotReloadBusy.get() || hotReloadUiTicket.get() != ticket) {
@@ -3278,7 +3284,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 debugToolbar.finishHotReloadBusy(isHotReloadButtonEnabledNow());
                 refreshHotReloadButton();
                 hideProgress(HOT_RELOAD_PROGRESS_ID);
-                setStatusBarText("Hot Reload: tempo esgotado aguardando resposta.");
+                setStatusBarText(text("hr.timeout", "Hot Reload: timed out waiting for a response."));
             });
         }, 90, TimeUnit.SECONDS);
     }
@@ -3440,9 +3446,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (Files.isDirectory(selected)) {
             Path workspaceSolution = resolveWorkspaceSolution();
             menu.into("tree.new", sub -> {
-                sub.item("C# Class / Interface...", newCSharpItemIcon(), e -> openNewCSharpItem(selected));
+                sub.item(text("ctx.newCSharpClass", "C# Class / Interface..."), newCSharpItemIcon(), e -> openNewCSharpItem(selected));
                 if (workspaceSolution != null) {
-                    sub.item("Projeto .NET na solução...", newProjectIcon(),
+                    sub.item(text("ctx.newSolutionProject", ".NET project in the solution..."), newProjectIcon(),
                             e -> openNewSolutionProject(workspaceSolution));
                 }
             });
@@ -3455,14 +3461,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
 
         boolean solution = isSolution(buildTarget);
-        String suffix = solution ? " Solução" : " Projeto";
+        String suffix = solution ? text("scope.solution", " Solution") : text("scope.project", " Project");
         menu.separator();
         if (solution) {
-            menu.item("Abrir arquivo da solução", e -> requestOpenFile(buildTarget));
+            menu.item(text("ctx.openSolutionFile", "Open solution file"), e -> requestOpenFile(buildTarget));
         }
-        menu.item(solution ? "Gerenciar pacotes NuGet da Solução" : "Gerenciar pacotes NuGet",
+        menu.item(solution ? text("ctx.manageNugetSolution", "Manage Solution NuGet packages")
+                        : text("ctx.manageNuget", "Manage NuGet packages"),
                 e -> openNuGetManager(buildTarget));
-        menu.item("Adicionar referência de projeto...",
+        menu.item(text("ctx.addProjectReference", "Add project reference..."),
                 e -> {
                     if (solution) {
                         openSolutionReferenceManager(buildTarget);
@@ -3471,31 +3478,31 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     }
                 });
         menu.separator();
-        menu.item("Compilar" + suffix,
-                e -> runDotnetOnTarget(buildTarget, "Compilar", List.of("build")));
-        menu.item("Recompilar" + suffix,
-                e -> runDotnetOnTarget(buildTarget, "Recompilar", List.of("build", "--no-incremental")));
-        menu.item("Limpar" + suffix,
-                e -> runDotnetOnTarget(buildTarget, "Limpar", List.of("clean")));
+        menu.item(text("action.build", "Build") + suffix,
+                e -> runDotnetOnTarget(buildTarget, text("action.build", "Build"), List.of("build")));
+        menu.item(text("action.rebuild", "Rebuild") + suffix,
+                e -> runDotnetOnTarget(buildTarget, text("action.rebuild", "Rebuild"), List.of("build", "--no-incremental")));
+        menu.item(text("action.clean", "Clean") + suffix,
+                e -> runDotnetOnTarget(buildTarget, text("action.clean", "Clean"), List.of("clean")));
     }
 
     private void contributeBuildTargetNewMenu(IdeMenuBuilder menu, Path buildTarget) {
         boolean solution = isSolution(buildTarget);
         Path projectDir = buildTarget.getParent();
         Path workspaceSolution = solution ? buildTarget : resolveWorkspaceSolution();
-        menu.submenu("New", newCSharpItemIcon(), sub -> {
+        menu.submenu(text("ctx.new", "New"), newCSharpItemIcon(), sub -> {
             if (solution) {
-                sub.item("Projeto .NET na solução...", newProjectIcon(), e -> openNewSolutionProject(buildTarget));
+                sub.item(text("ctx.newSolutionProject", ".NET project in the solution..."), newProjectIcon(), e -> openNewSolutionProject(buildTarget));
             } else if (projectDir != null) {
-                sub.item("Classe / Interface C#...", newCSharpItemIcon(), e -> openNewCSharpItem(projectDir));
-                sub.item("Arquivo...", e -> openNewPlainFile(projectDir));
-                sub.item("Pasta...", e -> openNewFolder(projectDir));
+                sub.item(text("ctx.newCSharpClass2", "C# Class / Interface..."), newCSharpItemIcon(), e -> openNewCSharpItem(projectDir));
+                sub.item(text("ctx.newFile", "File..."), e -> openNewPlainFile(projectDir));
+                sub.item(text("ctx.newFolder", "Folder..."), e -> openNewFolder(projectDir));
                 if (workspaceSolution != null) {
-                    sub.item("Projeto .NET na solução...", newProjectIcon(),
+                    sub.item(text("ctx.newSolutionProject", ".NET project in the solution..."), newProjectIcon(),
                             e -> openNewSolutionProject(workspaceSolution));
                 }
                 sub.separator();
-                sub.item("Pacote NuGet...", e -> openNuGetManager(buildTarget));
+                sub.item(text("ctx.newNuget", "NuGet package..."), e -> openNuGetManager(buildTarget));
             }
         });
     }
@@ -3504,11 +3511,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runOnUiThread(() -> {
             JTextField field = new JTextField(24);
             String value = createModernInputDialogBuilder()
-                    .title("Novo arquivo")
-                    .message("Nome do arquivo (com extensão)")
+                    .title(text("dialog.newFile.title", "New file"))
+                    .message(text("dialog.newFile.message", "File name (with extension)"))
                     .input(field)
-                    .confirmText("Criar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.create", "Create"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .draggable(true)
                     .enterConfirms(true)
                     .show();
@@ -3518,7 +3525,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
             Path file = dir.resolve(name);
             if (Files.exists(file)) {
-                setStatusBarText("Já existe " + file.getFileName());
+                setStatusBarText(text("status.alreadyExists", "Already exists ") + file.getFileName());
                 requestOpenFile(file);
                 return;
             }
@@ -3529,9 +3536,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 Files.writeString(file, "", StandardCharsets.UTF_8);
                 requestProjectTreeViewRefresh();
                 requestOpenFile(file);
-                setStatusBarText("Criado " + file.getFileName());
+                setStatusBarText(text("status.created", "Created ") + file.getFileName());
             } catch (Exception e) {
-                setStatusBarText("Falha ao criar arquivo: " + e.getMessage());
+                setStatusBarText(text("status.createFileFailed", "Failed to create file: ") + e.getMessage());
             }
         });
     }
@@ -3540,11 +3547,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runOnUiThread(() -> {
             JTextField field = new JTextField(24);
             String value = createModernInputDialogBuilder()
-                    .title("Nova pasta")
-                    .message("Nome da pasta")
+                    .title(text("dialog.newFolder.title", "New folder"))
+                    .message(text("dialog.newFolder.message", "Folder name"))
                     .input(field)
-                    .confirmText("Criar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.create", "Create"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .draggable(true)
                     .enterConfirms(true)
                     .show();
@@ -3554,15 +3561,15 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
             Path folder = dir.resolve(name);
             if (Files.exists(folder)) {
-                setStatusBarText("Já existe " + folder.getFileName());
+                setStatusBarText(text("status.alreadyExists", "Already exists ") + folder.getFileName());
                 return;
             }
             try {
                 Files.createDirectories(folder);
                 requestProjectTreeViewRefresh();
-                setStatusBarText("Criada pasta " + folder.getFileName());
+                setStatusBarText(text("status.folderCreated", "Created folder ") + folder.getFileName());
             } catch (Exception e) {
-                setStatusBarText("Falha ao criar pasta: " + e.getMessage());
+                setStatusBarText(text("status.createFolderFailed", "Failed to create folder: ") + e.getMessage());
             }
         });
     }
@@ -3595,18 +3602,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private void openNewSolutionProject(Path solution) {
         Path solutionDir = solution.getParent() != null ? solution.getParent() : projectPath;
         if (solutionDir == null) {
-            setStatusBarText("Pasta da solução indisponível.");
+            setStatusBarText(text("status.solutionUnavailable", "Solution folder unavailable."));
             return;
         }
         runOnUiThread(() -> {
             NewSolutionProjectPanel panel = new NewSolutionProjectPanel(solutionDir);
             NewSolutionProjectPanel.Spec spec = createModernComponentDialogBuilder(NewSolutionProjectPanel.Spec.class)
-                    .title("Novo projeto .NET na solução")
+                    .title(text("dialog.newSolutionProject", "New .NET project in the solution"))
                     .draggable(true)
                     .showIcon(false)
                     .accentColor(new Color(59, 130, 246))
-                    .confirmText("Criar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.create", "Create"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .enterConfirms(true)
                     .component(panel)
                     .result(ctx -> panel.getSpec())
@@ -3628,10 +3635,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
             Path csproj;
             try {
                 csproj = spec.scaffold();
-                writeLine(out, "Projeto criado em " + csproj);
+                writeLine(out, text("output.projectCreatedAt", "Project created at ") + csproj);
             } catch (Exception e) {
-                writeLine(out, "[erro] Falha ao criar projeto: " + e.getMessage());
-                SwingUtilities.invokeLater(() -> setStatusBarText("Falha ao criar projeto: " + e.getMessage()));
+                writeLine(out, "[erro] " + text("status.createProjectFailed", "Failed to create project: ") + e.getMessage());
+                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.createProjectFailed", "Failed to create project: ") + e.getMessage()));
                 return;
             }
             DotnetSdkService sdk = ensureSdkService();
@@ -3645,7 +3652,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             if (dotnet != null) {
                 code = ProjectReferenceService.addProjectToSolution(dotnet, solution, csproj, out);
             } else {
-                writeLine(out, "[erro] dotnet não encontrado para adicionar o projeto à solução.");
+                writeLine(out, "[erro] " + text("output.dotnetNotFoundAddSolution", "dotnet not found to add the project to the solution."));
             }
             int result = code;
             Path created = csproj;
@@ -3653,9 +3660,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 requestProjectTreeViewRefresh();
                 requestOpenFile(created);
                 if (result == 0) {
-                    setStatusBarText("Projeto adicionado à solução.");
+                    setStatusBarText(text("status.projectAdded", "Project added to the solution."));
                 } else {
-                    setStatusBarText("Projeto criado, mas falhou ao adicionar à solução.");
+                    setStatusBarText(text("status.projectAddFailed", "Project created, but failed to add it to the solution."));
                 }
             });
         }, "dotnet-solution-new-project");
@@ -3669,18 +3676,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 .distinct()
                 .toList();
         if (projects.size() < 2) {
-            setStatusBarText("A solução precisa de pelo menos dois projetos para configurar referências.");
+            setStatusBarText(text("status.needTwoProjects", "The solution needs at least two projects to configure references."));
             return;
         }
         runOnUiThread(() -> {
             SolutionReferenceDialog panel = new SolutionReferenceDialog(projects);
             Boolean ok = createModernComponentDialogBuilder(Boolean.class)
-                    .title("Gerenciar referências de projeto da solução")
+                    .title(text("dialog.solutionReferences", "Manage solution project references"))
                     .draggable(true)
                     .showIcon(false)
                     .accentColor(new Color(59, 130, 246))
-                    .confirmText("Aplicar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.apply", "Apply"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .component(panel)
                     .result(ctx -> Boolean.TRUE)
                     .show();
@@ -3699,12 +3706,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runOnUiThread(() -> {
             NewCSharpItemPanel panel = new NewCSharpItemPanel();
             NewCSharpItemPanel.Result result = createModernComponentDialogBuilder(NewCSharpItemPanel.Result.class)
-                    .title("Novo item C#")
+                    .title(text("dialog.newCSharpItem", "New C# item"))
                     .draggable(true)
                     .showIcon(false)
                     .accentColor(new Color(59, 130, 246))
-                    .confirmText("Criar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.create", "Create"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .enterConfirms(true)
                     .component(panel)
                     .result(ctx -> panel.getResult())
@@ -3719,7 +3726,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         String typeName = effectiveTypeName(name, kind);
         Path file = dir.resolve(typeName + ".cs");
         if (Files.exists(file)) {
-            setStatusBarText("Já existe " + file.getFileName());
+            setStatusBarText(text("status.alreadyExists", "Already exists ") + file.getFileName());
             requestOpenFile(file);
             return;
         }
@@ -3728,9 +3735,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
             Files.writeString(file, content, StandardCharsets.UTF_8);
             requestProjectTreeViewRefresh();
             requestOpenFile(file);
-            setStatusBarText("Criado " + file.getFileName());
+            setStatusBarText(text("status.created", "Created ") + file.getFileName());
         } catch (Exception e) {
-            setStatusBarText("Falha ao criar arquivo: " + e.getMessage());
+            setStatusBarText(text("status.createFileFailed", "Failed to create file: ") + e.getMessage());
         }
     }
 
@@ -3860,7 +3867,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private void buildSolution(String title, List<String> verbAndArgs) {
         Path target = resolveBuildTarget();
         if (target == null) {
-            SwingUtilities.invokeLater(() -> setStatusBarText("Nenhuma solução/projeto .NET aberto."));
+            SwingUtilities.invokeLater(() -> setStatusBarText(text("status.noProjectOpen", "No .NET solution/project open.")));
             return;
         }
         runDotnetOnTarget(target, title, verbAndArgs);
@@ -3869,7 +3876,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private void openPublishDialog() {
         Path target = resolveBuildTarget();
         if (target == null) {
-            SwingUtilities.invokeLater(() -> setStatusBarText("Nenhuma solução/projeto .NET aberto."));
+            SwingUtilities.invokeLater(() -> setStatusBarText(text("status.noProjectOpen", "No .NET solution/project open.")));
             return;
         }
         List<String> tfms = TargetFramework.resolveTfms(target);
@@ -3879,17 +3886,17 @@ public class DotnetIdeAdapter extends IdeAdapter {
             DotnetPublishPanel panel = new DotnetPublishPanel(tfms, netFrameworkOnly, projectDir);
             DotnetPublishPanel.PublishOptions options = createModernComponentDialogBuilder(
                     DotnetPublishPanel.PublishOptions.class)
-                    .title("Publicar projeto .NET")
+                    .title(text("dialog.publish", "Publish .NET project"))
                     .draggable(true)
                     .showIcon(false)
                     .accentColor(new Color(59, 130, 246))
-                    .confirmText("Publicar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.publish", "Publish"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .component(panel)
                     .result(ctx -> panel.getOptions())
                     .show();
             if (options != null) {
-                runDotnetOnTarget(target, "Publicar (" + options.configuration() + ")",
+                runDotnetOnTarget(target, text("action.publish", "Publish") + " (" + options.configuration() + ")",
                         buildPublishArgs(options));
             }
         });
@@ -3934,19 +3941,19 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 .filter(p -> !p.equals(targetNorm))
                 .toList();
         if (candidates.isEmpty()) {
-            setStatusBarText("Nenhum outro projeto encontrado para referenciar.");
+            setStatusBarText(text("status.noOtherProjects", "No other project found to reference."));
             return;
         }
         Set<Path> referenced = new HashSet<>(ProjectReferenceService.listProjectReferences(csproj));
         runOnUiThread(() -> {
             ProjectReferenceDialog panel = new ProjectReferenceDialog(csproj, candidates, referenced);
             Boolean ok = createModernComponentDialogBuilder(Boolean.class)
-                    .title("Gerenciar referências de projeto")
+                    .title(text("dialog.projectReferences", "Manage project references"))
                     .draggable(true)
                     .showIcon(false)
                     .accentColor(new Color(59, 130, 246))
-                    .confirmText("Aplicar")
-                    .cancelText("Cancelar")
+                    .confirmText(text("action.apply", "Apply"))
+                    .cancelText(text("action.cancel", "Cancel"))
                     .component(panel)
                     .result(ctx -> Boolean.TRUE)
                     .show();
@@ -3966,7 +3973,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 dotnet = null;
             }
             if (dotnet == null) {
-                SwingUtilities.invokeLater(() -> setStatusBarText("dotnet não encontrado para referência de projeto."));
+                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.dotnetNotFoundRef", "dotnet not found for project reference.")));
                 return;
             }
             OutputPanelHandle panel = requestOutputPanel("dotnet");
@@ -3991,8 +3998,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
             SwingUtilities.invokeLater(() -> {
                 requestProjectTreeViewRefresh();
                 setStatusBarText(total == 0
-                        ? "Nenhuma alteração de referência."
-                        : "Referências de projeto atualizadas (" + total + ").");
+                        ? text("status.noReferenceChanges", "No reference changes.")
+                        : text("status.referencesUpdated", "Project references updated ({0}).").replace("{0}", String.valueOf(total)));
             });
         }, "dotnet-project-reference");
         thread.setDaemon(true);
@@ -4010,7 +4017,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 dotnet = java.util.Optional.empty();
             }
             if (dotnet.isEmpty()) {
-                SwingUtilities.invokeLater(() -> setStatusBarText("dotnet não encontrado para " + title + "."));
+                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.dotnetNotFoundFor", "dotnet not found for {0}.").replace("{0}", title)));
                 return;
             }
             OutputPanelHandle panel = requestOutputPanel("dotnet");
@@ -4041,9 +4048,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     }
                 }
                 int code = process.waitFor();
-                writeLine(out, System.lineSeparator() + "[" + title + "] finalizado com código " + code);
+                writeLine(out, System.lineSeparator() + "[" + title + "] "
+                        + text("output.finishedWithCode", "finished with code ") + code);
                 SwingUtilities.invokeLater(() -> setStatusBarText(
-                        title + (code == 0 ? " concluído." : " falhou (código " + code + ").")));
+                        title + (code == 0 ? text("status.doneSuffix", " done.")
+                                : text("status.failedSuffix", " failed (code {0}).").replace("{0}", String.valueOf(code)))));
             } catch (Exception e) {
                 writeLine(out, System.lineSeparator() + "[erro] " + e.getMessage());
             }

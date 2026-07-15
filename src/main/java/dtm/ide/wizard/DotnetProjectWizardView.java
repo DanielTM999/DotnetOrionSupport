@@ -2,6 +2,7 @@ package dtm.ide.wizard;
 
 import dtm.ide.api.extension.wizard.ProjectWizardCallback;
 import dtm.stools.component.inputfields.osfilepicker.OsFilePicker;
+import dtm.stools.i18n.I18n;
 import lombok.extern.slf4j.Slf4j;
 
 import javax.swing.BorderFactory;
@@ -28,8 +29,12 @@ import java.nio.file.Paths;
 @Slf4j
 class DotnetProjectWizardView extends JPanel {
 
-    private static final String STRUCT_SAME = "Projeto único (.sln + .csproj na mesma pasta)";
-    private static final String STRUCT_SEPARATE = "Solução com módulos (.sln na raiz + projeto em subpasta)";
+    private static String text(String key, String def) {
+        return I18n.getText(DotnetProjectWizardView.class, key, def);
+    }
+
+    private static final String STRUCT_SAME = text("struct.same", "Single project (.sln + .csproj in the same folder)");
+    private static final String STRUCT_SEPARATE = text("struct.separate", "Solution with modules (.sln at root + project in subfolder)");
 
     private static final int FIELD_WIDTH = 420;
     private static final int ROW_HEIGHT = 30;
@@ -42,11 +47,11 @@ class DotnetProjectWizardView extends JPanel {
     private final JTextField locationField = new JTextField();
     private final JComboBox<String> frameworkCombo = new JComboBox<>();
     private final JComboBox<String> structureCombo = new JComboBox<>(new String[]{STRUCT_SAME, STRUCT_SEPARATE});
-    private final JCheckBox gitCheckbox = new JCheckBox("Criar .gitignore", true);
-    private final JCheckBox openCheckbox = new JCheckBox("Abrir após criar", true);
+    private final JCheckBox gitCheckbox = new JCheckBox(text("checkbox.gitignore", "Create .gitignore"), true);
+    private final JCheckBox openCheckbox = new JCheckBox(text("checkbox.openAfter", "Open after creating"), true);
     private final JLabel statusLabel = new JLabel(" ");
-    private final JButton createButton = new JButton("Criar");
-    private final JButton cancelButton = new JButton("Cancelar");
+    private final JButton createButton = new JButton(text("button.create", "Create"));
+    private final JButton cancelButton = new JButton(text("button.cancel", "Cancel"));
 
     DotnetProjectWizardView(DotnetTemplate template, ProjectWizardCallback callback) {
         super(new BorderLayout(8, 8));
@@ -82,13 +87,13 @@ class DotnetProjectWizardView extends JPanel {
         locationRow.add(locationField, BorderLayout.CENTER);
         locationRow.add(browse, BorderLayout.EAST);
 
-        form.add(labeled("Nome", nameField));
+        form.add(labeled(text("label.name", "Name"), nameField));
         form.add(Box.createVerticalStrut(8));
-        form.add(labeled("Local", locationRow));
+        form.add(labeled(text("label.location", "Location"), locationRow));
         form.add(Box.createVerticalStrut(8));
-        form.add(labeled("Framework", frameworkCombo));
+        form.add(labeled(text("label.framework", "Framework"), frameworkCombo));
         form.add(Box.createVerticalStrut(8));
-        form.add(labeled("Estrutura", structureCombo));
+        form.add(labeled(text("label.structure", "Structure"), structureCombo));
         form.add(Box.createVerticalStrut(8));
         gitCheckbox.setAlignmentX(Component.LEFT_ALIGNMENT);
         openCheckbox.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -126,17 +131,17 @@ class DotnetProjectWizardView extends JPanel {
     private void onCreate() {
         String name = sanitizeName(nameField.getText());
         if (name.isEmpty()) {
-            showError("Nome do projeto é obrigatório.");
+            showError(text("error.nameRequired", "Project name is required."));
             return;
         }
         Path location = parseLocation(locationField.getText());
         if (location == null) {
-            showError("Escolha um local existente.");
+            showError(text("error.chooseLocation", "Choose an existing location."));
             return;
         }
         Path rootDir = location.resolve(name);
         if (Files.exists(rootDir)) {
-            showError("Já existe uma pasta '" + name + "' nesse local.");
+            showError(text("error.folderExists", "A folder '{0}' already exists at this location.").replace("{0}", name));
             return;
         }
         String framework = String.valueOf(frameworkCombo.getSelectedItem());
@@ -166,7 +171,7 @@ class DotnetProjectWizardView extends JPanel {
                 } catch (Exception e) {
                     setBusy(false);
                     log.error("Erro ao criar solução .NET", e);
-                    showError("Falha ao criar: " + e.getMessage());
+                    showError(text("error.createFailed", "Failed to create: ") + e.getMessage());
                 }
             }
         }.execute();
@@ -177,7 +182,7 @@ class DotnetProjectWizardView extends JPanel {
         File initial = current != null && Files.isDirectory(current)
                 ? current.toFile()
                 : new File(System.getProperty("user.home"));
-        File selected = OsFilePicker.openDirectory("Selecionar local do projeto", initial);
+        File selected = OsFilePicker.openDirectory(text("picker.title", "Select the project location"), initial);
         if (selected != null) {
             locationField.setText(selected.toPath().toAbsolutePath().normalize().toString());
         }
@@ -191,7 +196,7 @@ class DotnetProjectWizardView extends JPanel {
         frameworkCombo.setEnabled(!busy);
         structureCombo.setEnabled(!busy);
         if (busy) {
-            statusLabel.setText("Criando…");
+            statusLabel.setText(text("status.creating", "Creating…"));
         }
     }
 

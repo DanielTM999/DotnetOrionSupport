@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -27,7 +28,7 @@ public final class DebugObjectTreePanel extends JPanel {
     private final DefaultMutableTreeNode root = new DefaultMutableTreeNode("root");
     private final DefaultTreeModel model = new DefaultTreeModel(root);
     private final JTree tree = new JTree(model);
-    private final JLabel empty = new JLabel("Sem valor", SwingConstants.CENTER);
+    private final JLabel empty = new JLabel(text("empty.noValue", "No value"), SwingConstants.CENTER);
     private final ExecutorService loader = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "dotnet-debug-object-tree");
         t.setDaemon(true);
@@ -35,6 +36,10 @@ public final class DebugObjectTreePanel extends JPanel {
     });
 
     private volatile Function<Integer, List<DebugVar>> childrenProvider;
+
+    private static String text(String key, String def) {
+        return I18n.getText(DebugObjectTreePanel.class, key, def);
+    }
 
     public DebugObjectTreePanel() {
         super(new BorderLayout());
@@ -142,7 +147,7 @@ public final class DebugObjectTreePanel extends JPanel {
                 return this;
             }
             if (node.isPlaceholder()) {
-                setText(html(span(DebugTheme.mutedColor(), "Carregando...")));
+                setText(html(span(DebugTheme.mutedColor(), text("placeholder.loading", "Loading..."))));
                 setIcon(null);
                 return this;
             }

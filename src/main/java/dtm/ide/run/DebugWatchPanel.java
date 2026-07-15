@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
 import javax.swing.JComponent;
@@ -32,8 +33,13 @@ import java.util.function.Function;
 
 public final class DebugWatchPanel extends JPanel {
 
+    private static String text(String key, String def) {
+        return I18n.getText(DebugWatchPanel.class, key, def);
+    }
+
     private final List<String> expressions = new CopyOnWriteArrayList<>();
-    private final DefaultTableModel model = new DefaultTableModel(new Object[]{"Expressão", "Valor", "Tipo"}, 0) {
+    private final DefaultTableModel model = new DefaultTableModel(new Object[]{
+            text("column.expression", "Expression"), text("column.value", "Value"), text("column.type", "Type")}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
@@ -116,7 +122,7 @@ public final class DebugWatchPanel extends JPanel {
         input.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(0, 0, 1, 0, DebugTheme.borderColor()),
                 BorderFactory.createEmptyBorder(7, 12, 7, 12)));
-        input.setToolTipText("Adicionar watch (Enter)");
+        input.setToolTipText(text("input.tooltip", "Add watch (Enter)"));
         input.addActionListener(e -> {
             addExpression(input.getText().trim());
             input.setText("");
@@ -145,7 +151,7 @@ public final class DebugWatchPanel extends JPanel {
         });
 
         JPopupMenu menu = new JPopupMenu();
-        JMenuItem remove = new JMenuItem("Remover");
+        JMenuItem remove = new JMenuItem(text("menu.remove", "Remove"));
         remove.addActionListener(e -> removeSelected());
         menu.add(remove);
         table.addMouseListener(new MouseAdapter() {

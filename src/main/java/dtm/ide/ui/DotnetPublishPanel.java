@@ -2,6 +2,7 @@ package dtm.ide.ui;
 
 import dtm.stools.component.inputfields.osfilepicker.OsFilePicker;
 import dtm.stools.component.inputfields.textfield.PathTextField;
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -42,6 +43,10 @@ public final class DotnetPublishPanel extends JPanel {
     private static final Color ACCENT = new Color(59, 130, 246);
     private static final Color MUTED = new Color(120, 120, 130);
 
+    private static String text(String key, String def) {
+        return I18n.getText(DotnetPublishPanel.class, key, def);
+    }
+
     private static final List<Rid> RIDS = List.of(
             new Rid("win-x64", "Windows 64 bits (win-x64)"),
             new Rid("win-x86", "Windows 32 bits (win-x86)"),
@@ -55,12 +60,12 @@ public final class DotnetPublishPanel extends JPanel {
     private final JComboBox<String> configCombo = new JComboBox<>(new String[] {"Release", "Debug"});
     private final JComboBox<String> frameworkCombo = new JComboBox<>();
     private final JRadioButton frameworkDependent =
-            new JRadioButton("Dependente do framework (precisa do runtime .NET instalado)");
+            new JRadioButton(text("mode.frameworkDependent", "Framework-dependent (requires the .NET runtime installed)"));
     private final JRadioButton selfContained =
-            new JRadioButton("Autocontido (self-contained, empacota o runtime junto)");
+            new JRadioButton(text("mode.selfContained", "Self-contained (bundles the runtime together)"));
     private final JComboBox<Rid> runtimeCombo = new JComboBox<>();
-    private final JCheckBox singleFile = new JCheckBox("Publicar como arquivo único (single file)");
-    private final JCheckBox trimmed = new JCheckBox("Recortar assemblies não usados (trim)");
+    private final JCheckBox singleFile = new JCheckBox(text("option.singleFile", "Publish as a single file"));
+    private final JCheckBox trimmed = new JCheckBox(text("option.trimmed", "Trim unused assemblies"));
     private final PathTextField outputField = new PathTextField(File.separator);
 
     private final boolean netFrameworkOnly;
@@ -72,14 +77,14 @@ public final class DotnetPublishPanel extends JPanel {
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(14, 16, 14, 16));
 
-        addTitle("Configuração");
+        addTitle(text("section.configuration", "Configuration"));
         configCombo.setSelectedItem("Release");
         addField(configCombo);
 
         List<String> frameworks = tfms == null ? List.of() : tfms;
         if (!frameworks.isEmpty()) {
             addGap();
-            addTitle("Framework de destino");
+            addTitle(text("section.targetFramework", "Target framework"));
             for (String tfm : frameworks) {
                 frameworkCombo.addItem(tfm);
             }
@@ -88,7 +93,7 @@ public final class DotnetPublishPanel extends JPanel {
         }
 
         addGap();
-        addTitle("Tipo de publicação");
+        addTitle(text("section.publishType", "Publish type"));
         ButtonGroup modeGroup = new ButtonGroup();
         modeGroup.add(frameworkDependent);
         modeGroup.add(selfContained);
@@ -100,7 +105,7 @@ public final class DotnetPublishPanel extends JPanel {
         add(selfContained);
 
         addGap();
-        addTitle("Runtime de destino");
+        addTitle(text("section.targetRuntime", "Target runtime"));
         for (Rid rid : RIDS) {
             runtimeCombo.addItem(rid);
         }
@@ -116,9 +121,9 @@ public final class DotnetPublishPanel extends JPanel {
         add(trimmed);
 
         addGap();
-        addTitle("Pasta de saída (opcional)");
-        outputField.setPlaceholder("Padrão do projeto (bin/<Configuração>/.../publish)");
-        JButton browse = new JButton("Procurar...");
+        addTitle(text("section.outputFolder", "Output folder (optional)"));
+        outputField.setPlaceholder(text("output.placeholder", "Project default (bin/<Configuration>/.../publish)"));
+        JButton browse = new JButton(text("button.browse", "Browse..."));
         browse.addActionListener(e -> chooseOutputDir());
         JPanel outputRow = new JPanel();
         outputRow.setLayout(new BoxLayout(outputRow, BoxLayout.X_AXIS));
@@ -134,9 +139,9 @@ public final class DotnetPublishPanel extends JPanel {
 
         if (netFrameworkOnly) {
             addGap();
-            JLabel note = new JLabel(
-                    "<html>Projeto .NET Framework: a publicação é apenas para Windows"
-                            + " e sempre dependente do framework.</html>");
+            JLabel note = new JLabel(text("note.netFrameworkOnly",
+                    "<html>.NET Framework project: publishing is Windows-only"
+                            + " and always framework-dependent.</html>"));
             note.setForeground(MUTED);
             alignLeft(note);
             add(note);
@@ -161,9 +166,10 @@ public final class DotnetPublishPanel extends JPanel {
         if (initial == null && projectDir != null && Files.isDirectory(projectDir)) {
             initial = projectDir.toFile();
         }
+        String pickerTitle = text("picker.selectOutput", "Select publish folder");
         File selected = initial != null
-                ? OsFilePicker.openDirectory("Selecionar pasta de publicação", initial)
-                : OsFilePicker.openDirectory("Selecionar pasta de publicação");
+                ? OsFilePicker.openDirectory(pickerTitle, initial)
+                : OsFilePicker.openDirectory(pickerTitle);
         if (selected != null) {
             outputField.setText(selected.toPath().toAbsolutePath().normalize().toString());
         }
@@ -251,7 +257,7 @@ public final class DotnetPublishPanel extends JPanel {
                                                       boolean isSelected, boolean cellHasFocus) {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
             if (value instanceof Rid rid) {
-                setText(rid.label());
+                setText(text("rid." + rid.id(), rid.label()));
             }
             return this;
         }

@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JLabel;
@@ -16,8 +17,12 @@ import java.util.function.Consumer;
 
 public final class DebugToolbar extends JPanel {
 
-    private static final String HOT_RELOAD_TEXT = "Hot Reload";
+    private static final String HOT_RELOAD_TEXT = text("button.hotReload", "Hot Reload");
     private static final String HOT_RELOAD_SHORTCUT = "Ctrl+F5";
+
+    private static String text(String key, String def) {
+        return I18n.getText(DebugToolbar.class, key, def);
+    }
 
     private volatile Consumer<String> commandSink;
     private JButton hotReloadButton;
@@ -30,23 +35,23 @@ public final class DebugToolbar extends JPanel {
         setBackground(DebugTheme.headerBg());
         setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, DebugTheme.borderColor()));
 
-        JLabel title = new JLabel("Debug");
+        JLabel title = new JLabel(text("title", "Debug"));
         title.setFont(DebugTheme.uiFont().deriveFont(Font.BOLD, 12f));
         title.setForeground(DebugTheme.textColor());
         title.setBorder(BorderFactory.createEmptyBorder(0, 4, 0, 6));
         add(title);
-        add(button("Continue", "F5", "continue", DebugTheme.numberColor()));
-        add(button("Pause", "F6", "pause", DebugTheme.accentColor()));
+        add(button(text("button.continue", "Continue"), "F5", "continue", DebugTheme.numberColor()));
+        add(button(text("button.pause", "Pause"), "F6", "pause", DebugTheme.accentColor()));
         add(separator());
-        add(button("Step Over", "F10", "next", DebugTheme.accentColor()));
-        add(button("Step In", "F11", "stepIn", DebugTheme.accentColor()));
-        add(button("Step Out", "Shift+F11", "stepOut", DebugTheme.accentColor()));
+        add(button(text("button.stepOver", "Step Over"), "F10", "next", DebugTheme.accentColor()));
+        add(button(text("button.stepIn", "Step In"), "F11", "stepIn", DebugTheme.accentColor()));
+        add(button(text("button.stepOut", "Step Out"), "Shift+F11", "stepOut", DebugTheme.accentColor()));
         add(separator());
         hotReloadButton = button(HOT_RELOAD_TEXT, HOT_RELOAD_SHORTCUT, "hotReload", DebugTheme.numberColor());
         add(hotReloadButton);
         add(separator());
-        add(button("Restart", "Ctrl+Shift+F5", "restart", DebugTheme.accentColor()));
-        add(button("Stop", "Shift+F5", "stop", DebugTheme.nullColor()));
+        add(button(text("button.restart", "Restart"), "Ctrl+Shift+F5", "restart", DebugTheme.accentColor()));
+        add(button(text("button.stop", "Stop"), "Shift+F5", "stop", DebugTheme.nullColor()));
     }
 
     public void bindCommandSink(Consumer<String> commandSink) {
@@ -72,7 +77,7 @@ public final class DebugToolbar extends JPanel {
             hotReloadBusyTick = 0;
             hotReloadButton.setEnabled(false);
             hotReloadButton.setForeground(DebugTheme.accentColor());
-            hotReloadButton.setToolTipText("Aplicando Hot Reload...");
+            hotReloadButton.setToolTipText(text("tooltip.applyingHotReload", "Applying Hot Reload..."));
             hotReloadButton.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
             updateHotReloadBusyText();
             if (hotReloadBusyTimer != null) {
@@ -108,7 +113,7 @@ public final class DebugToolbar extends JPanel {
         }
         String dots = ".".repeat(hotReloadBusyTick % 4);
         hotReloadBusyTick++;
-        hotReloadButton.setText("Aplicando" + dots);
+        hotReloadButton.setText(text("busy.applying", "Applying") + dots);
     }
 
     private JPanel separator() {

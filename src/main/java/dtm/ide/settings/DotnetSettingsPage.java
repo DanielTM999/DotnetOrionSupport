@@ -1,6 +1,7 @@
 package dtm.ide.settings;
 
 import dtm.ide.api.extension.settings.PluginSettingsPage;
+import dtm.stools.i18n.I18n;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -20,15 +21,19 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
     private final DotnetPluginSettings settings;
     private final Runnable onTreeLayoutChanged;
 
-    private final JCheckBox formatOnSave = new JCheckBox("Formatar ao salvar (OmniSharp)");
-    private final JCheckBox onTypeFormatting = new JCheckBox("Formatar enquanto digita (; } e nova linha)");
-    private final JCheckBox includePrerelease = new JCheckBox("Incluir versões prerelease no NuGet por padrão");
-    private final JCheckBox ghostText = new JCheckBox("Sugestões inline (ghost text) enquanto digita");
-    private final JCheckBox breakOnAllExceptions = new JCheckBox("Pausar em todas as exceções lançadas (debug)");
+    private final JCheckBox formatOnSave = new JCheckBox(text("checkbox.formatOnSave", "Format on save (OmniSharp)"));
+    private final JCheckBox onTypeFormatting = new JCheckBox(text("checkbox.onTypeFormatting", "Format while typing (; } and new line)"));
+    private final JCheckBox includePrerelease = new JCheckBox(text("checkbox.includePrerelease", "Include prerelease versions in NuGet by default"));
+    private final JCheckBox ghostText = new JCheckBox(text("checkbox.ghostText", "Inline suggestions (ghost text) while typing"));
+    private final JCheckBox breakOnAllExceptions = new JCheckBox(text("checkbox.breakOnAllExceptions", "Break on all thrown exceptions (debug)"));
     private final JComboBox<String> defaultConfiguration = new JComboBox<>(new String[]{"Debug", "Release"});
     private final JComboBox<TreeLayoutOption> treeLayout = new JComboBox<>(TreeLayoutOption.values());
 
     private JComponent view;
+
+    private static String text(String key, String def) {
+        return I18n.getText(DotnetSettingsPage.class, key, def);
+    }
 
     public DotnetSettingsPage(DotnetPluginSettings settings) {
         this(settings, null);
@@ -65,7 +70,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
         gbc.fill = GridBagConstraints.NONE;
 
         gbc.insets = new Insets(0, 0, 4, 0);
-        panel.add(sectionLabel("Editor"), gbc);
+        panel.add(sectionLabel(text("section.editor", "Editor")), gbc);
 
         gbc.insets = new Insets(0, 0, 6, 0);
         nextRow(gbc);
@@ -77,7 +82,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
 
         gbc.insets = new Insets(16, 0, 4, 0);
         nextRow(gbc);
-        panel.add(sectionLabel("NuGet"), gbc);
+        panel.add(sectionLabel(text("section.nuget", "NuGet")), gbc);
 
         gbc.insets = new Insets(0, 0, 6, 0);
         nextRow(gbc);
@@ -85,7 +90,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
 
         gbc.insets = new Insets(16, 0, 4, 0);
         nextRow(gbc);
-        panel.add(sectionLabel("Depuração"), gbc);
+        panel.add(sectionLabel(text("section.debug", "Debugging")), gbc);
 
         gbc.insets = new Insets(0, 0, 6, 0);
         nextRow(gbc);
@@ -93,10 +98,10 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
 
         gbc.insets = new Insets(16, 0, 4, 0);
         nextRow(gbc);
-        panel.add(sectionLabel("Projeto"), gbc);
+        panel.add(sectionLabel(text("section.project", "Project")), gbc);
 
-        addLabeledRow(panel, gbc, "Configuração padrão de build:", defaultConfiguration);
-        addLabeledRow(panel, gbc, "Organização da árvore de projeto:", treeLayout);
+        addLabeledRow(panel, gbc, text("label.defaultConfiguration", "Default build configuration:"), defaultConfiguration);
+        addLabeledRow(panel, gbc, text("label.treeLayout", "Project tree layout:"), treeLayout);
 
         nextRow(gbc);
         gbc.gridwidth = 2;
@@ -191,14 +196,16 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
     }
 
     private enum TreeLayoutOption {
-        DEFAULT(TreeLayout.DEFAULT, "Padrão (Orion)"),
-        VISUAL_STUDIO(TreeLayout.VISUAL_STUDIO, "Visual Studio (Solução / Projetos)");
+        DEFAULT(TreeLayout.DEFAULT, "treeLayout.default", "Default (Orion)"),
+        VISUAL_STUDIO(TreeLayout.VISUAL_STUDIO, "treeLayout.visualStudio", "Visual Studio (Solution / Projects)");
 
         private final TreeLayout layout;
+        private final String key;
         private final String label;
 
-        TreeLayoutOption(TreeLayout layout, String label) {
+        TreeLayoutOption(TreeLayout layout, String key, String label) {
             this.layout = layout;
+            this.key = key;
             this.label = label;
         }
 
@@ -217,7 +224,7 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
 
         @Override
         public String toString() {
-            return label;
+            return text(key, label);
         }
     }
 }

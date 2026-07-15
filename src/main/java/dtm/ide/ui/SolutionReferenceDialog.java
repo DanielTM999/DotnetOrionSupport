@@ -1,6 +1,7 @@
 package dtm.ide.ui;
 
 import dtm.ide.reference.ProjectReferenceService;
+import dtm.stools.i18n.I18n;
 
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
@@ -32,18 +33,22 @@ public final class SolutionReferenceDialog extends JPanel {
     private final JPanel listPanel = new JPanel();
     private final Map<Path, JCheckBox> checks = new LinkedHashMap<>();
 
+    private static String text(String key, String def) {
+        return I18n.getText(SolutionReferenceDialog.class, key, def);
+    }
+
     public SolutionReferenceDialog(List<Path> projects) {
         super(new BorderLayout(0, 10));
         this.projects = new ArrayList<>(projects);
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-        JLabel title = new JLabel("Referências de projeto da solução");
+        JLabel title = new JLabel(text("title", "Solution project references"));
         title.setFont(title.getFont().deriveFont(Font.BOLD, 13f));
 
         JPanel header = new JPanel(new BorderLayout(0, 6));
         header.add(title, BorderLayout.NORTH);
         JPanel sourceRow = new JPanel(new BorderLayout(8, 0));
-        sourceRow.add(new JLabel("Projeto:"), BorderLayout.WEST);
+        sourceRow.add(new JLabel(text("project", "Project:")), BorderLayout.WEST);
         for (Path project : this.projects) {
             sourceCombo.addItem(project);
         }
@@ -111,7 +116,7 @@ public final class SolutionReferenceDialog extends JPanel {
 
     private static String projectName(Path file) {
         if (file == null || file.getFileName() == null) {
-            return "projeto";
+            return text("projectFallback", "project");
         }
         return file.getFileName().toString().replaceFirst("(?i)\\.(csproj|vbproj|fsproj)$", "");
     }

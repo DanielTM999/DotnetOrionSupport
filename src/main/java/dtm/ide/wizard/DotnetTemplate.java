@@ -1,5 +1,7 @@
 package dtm.ide.wizard;
 
+import dtm.stools.i18n.I18n;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -49,11 +51,11 @@ public enum DotnetTemplate {
     }
 
     String displayName() {
-        return displayName;
+        return I18n.getText(DotnetTemplate.class, "template." + name() + ".displayName", displayName);
     }
 
     String description() {
-        return description;
+        return I18n.getText(DotnetTemplate.class, "template." + name() + ".description", description);
     }
 
     Channel channel() {

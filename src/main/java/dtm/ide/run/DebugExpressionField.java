@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.AbstractAction;
 import javax.swing.ActionMap;
 import javax.swing.BorderFactory;
@@ -56,8 +57,12 @@ public final class DebugExpressionField extends JPanel {
             "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using",
             "virtual", "void", "volatile", "while", "nameof");
 
+    private static String text(String key, String def) {
+        return I18n.getText(DebugExpressionField.class, key, def);
+    }
+
     private final JTextPane field = new JTextPane();
-    private final JButton expand = new JButton("Expand");
+    private final JButton expand = new JButton(text("button.expand", "Expand"));
     private final JPopupMenu popup = new JPopupMenu();
     private final DefaultListModel<DebugCompletion> model = new DefaultListModel<>();
     private final JList<DebugCompletion> list = new JList<>(model);
@@ -167,7 +172,7 @@ public final class DebugExpressionField extends JPanel {
         field.setFocusTraversalKeysEnabled(false);
         field.setPreferredSize(new Dimension(0, 32));
         field.setFont(DebugTheme.monoFont());
-        field.setToolTipText("Ctrl+Space abre sugestoes. Digitar '.' abre membros automaticamente.");
+        field.setToolTipText(text("field.tooltip", "Ctrl+Space opens suggestions. Typing '.' opens members automatically."));
         setBorder(BorderFactory.createLineBorder(normalBorder));
     }
 
@@ -256,7 +261,7 @@ public final class DebugExpressionField extends JPanel {
         String text = field.getText();
         long ticket = completionTicket.incrementAndGet();
         if (explicit) {
-            showCompletionStatus("Carregando sugestoes...");
+            showCompletionStatus(text("completion.loading", "Loading suggestions..."));
         }
         completionExecutor.execute(() -> {
             List<DebugCompletion> loaded;
@@ -278,7 +283,7 @@ public final class DebugExpressionField extends JPanel {
         model.clear();
         if (completions == null || completions.isEmpty() || !field.hasFocus()) {
             if (explicit && field.hasFocus()) {
-                showCompletionStatus("Nenhuma sugestao encontrada.");
+                showCompletionStatus(text("completion.none", "No suggestions found."));
             } else {
                 popup.setVisible(false);
             }
@@ -381,7 +386,7 @@ public final class DebugExpressionField extends JPanel {
 
     private void openExpandedEditor() {
         Window owner = SwingUtilities.getWindowAncestor(this);
-        JDialog dialog = new JDialog(owner, "Expression");
+        JDialog dialog = new JDialog(owner, text("dialog.expression", "Expression"));
         dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         dialog.setModal(true);
         JTextArea area = new JTextArea(field.getText(), 6, 72);
@@ -392,8 +397,8 @@ public final class DebugExpressionField extends JPanel {
         area.setLineWrap(false);
         JScrollPane scroll = new JScrollPane(area);
 
-        JButton ok = new JButton("OK");
-        JButton cancel = new JButton("Cancel");
+        JButton ok = new JButton(text("button.ok", "OK"));
+        JButton cancel = new JButton(text("button.cancel", "Cancel"));
         ok.addActionListener(e -> {
             field.setText(area.getText());
             dialog.dispose();

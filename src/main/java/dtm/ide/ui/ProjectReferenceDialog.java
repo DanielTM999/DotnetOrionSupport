@@ -1,5 +1,6 @@
 package dtm.ide.ui;
 
+import dtm.stools.i18n.I18n;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.JCheckBox;
@@ -27,7 +28,7 @@ public final class ProjectReferenceDialog extends JPanel {
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
         String targetName = target.getFileName() == null ? target.toString() : target.getFileName().toString();
-        JLabel title = new JLabel("Referências de projeto de " + targetName);
+        JLabel title = new JLabel(I18n.getText(ProjectReferenceDialog.class, "title", "Project references of ") + targetName);
         title.setFont(title.getFont().deriveFont(Font.BOLD, 13f));
         add(title, BorderLayout.NORTH);
 
