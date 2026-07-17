@@ -1,12 +1,12 @@
 # DotnetOrionSupport
 
 Plugin de suporte a **.NET / C#** para a **Orion IDE**. Ele adiciona reconhecimento
-de projetos .NET, edição C#, IntelliSense via OmniSharp, build/run/test com `dotnet`,
+de projetos .NET, edição C# e Razor, IntelliSense via Roslyn LS/OmniSharp, build/run/test com `dotnet`,
 depuração com `netcoredbg`, gerenciador NuGet, criação de projetos
 por wizard e utilitários de projeto integrados aos menus da IDE.
 
 O objetivo é abrir uma pasta .NET e trabalhar nela sem montar a toolchain manualmente:
-quando `dotnet`, OmniSharp ou `netcoredbg` não estão disponíveis no sistema, o plugin
+quando `dotnet`, Roslyn LS, OmniSharp ou `netcoredbg` não estão disponíveis no sistema, o plugin
 baixa e usa cópias gerenciadas dentro da área de recursos da Orion.
 
 ## Visão geral
@@ -14,8 +14,8 @@ baixa e usa cópias gerenciadas dentro da área de recursos da Orion.
 | Área | O que o plugin entrega |
 |---|---|
 | Adapter de projeto | Reconhece projetos `.sln`, `.slnx`, `.csproj`, `.vbproj`, `.fsproj` e pastas C# |
-| Editor | Realce C#, dobras, comentário de linha, XML em arquivos de projeto e ações de código |
-| IntelliSense | OmniSharp para completions, hover, diagnósticos, navegação, rename, formatting e símbolos |
+| Editor | Realce C#, Razor, dobras, comentário de linha, XML em arquivos de projeto e ações de código |
+| IntelliSense | Roslyn LS para projetos modernos, OmniSharp para legado/fallback; completions, hover, diagnósticos, navegação, rename, formatting e símbolos |
 | Execução | Build, Run, Test, execução do arquivo atual e comandos de build no menu |
 | Depuração | `netcoredbg` com breakpoints, variáveis, call stack, watches, avaliação e atalhos |
 | NuGet | Busca, versões, instalados, updates, install/update/uninstall e gestão de fontes |
@@ -41,24 +41,26 @@ Windows clássico.
 
 Arquivos C# recebem recursos de edição próprios:
 
-- realce de sintaxe via tokenizer C#;
+- realce de sintaxe via tokenizer C# e tokenizer Razor para `.razor`/`.cshtml`;
 - comentário de linha com `//`;
 - dobras para blocos `{ ... }`, comentários `/* ... */` e regiões `#region/#endregion`;
 - associação XML para `.csproj` e `.slnx`;
 - rastreamento de editores abertos para sincronizar textos com o LSP;
-- atualização de diagnósticos publicados pelo OmniSharp;
+- atualização de diagnósticos publicados pelo language server;
 - lâmpada de ações de código próxima ao caret quando há quick fixes/refactors disponíveis;
 - F2 para renomear símbolo no editor ativo.
 
 Arquivos XML de projeto (`.csproj`, `.vbproj`, `.fsproj`, `.props`, `.targets`, `.config`)
 recebem regras de dobra por tags.
 
-## IntelliSense com OmniSharp
+## IntelliSense com Roslyn LS / OmniSharp
 
-O plugin inicia o OmniSharp automaticamente ao abrir o projeto. Antes disso ele:
+O plugin inicia um language server automaticamente ao abrir o projeto. Projetos modernos usam
+Roslyn LS por padrão; projetos legados que exigem compatibilidade continuam usando OmniSharp.
+Antes disso ele:
 
 1. resolve o SDK exigido pelo projeto, incluindo `global.json`;
-2. baixa o SDK/OmniSharp se necessário;
+2. baixa o SDK e o language server necessário se necessário;
 3. executa restore automático quando não há `obj/project.assets.json`;
 4. inicia o language server e conecta os provedores da Orion.
 
@@ -66,7 +68,7 @@ Recursos integrados:
 
 | Recurso | Descrição |
 |---|---|
-| Autocomplete | Sugestões do OmniSharp para C# e completions em contexto de debug |
+| Autocomplete | Sugestões do language server para C#/Razor e completions em contexto de debug |
 | Hover | Informações de símbolos e tipos |
 | Diagnósticos | Erros e avisos publicados pelo LSP no editor |
 | Ir para definição | Abre o destino local ou navega para fonte/metadata quando disponível |
@@ -75,8 +77,17 @@ Recursos integrados:
 | Document symbols | Estrutura do arquivo para navegação |
 | Call hierarchy | Chamadas de entrada e saída quando suportadas |
 | Rename | Renomeia símbolo no workspace, aplicando alterações multi-arquivo |
-| Formatting | Formatação via OmniSharp, manual ou ao salvar quando habilitado |
+| Formatting | Formatação via language server, manual ou ao salvar quando habilitado |
 | Code actions | Quick fixes, refactors, organize imports e fix all quando enviados pelo LSP |
+
+### Razor e ASP.NET Core
+
+Arquivos `.razor` e `.cshtml` recebem tokenizer local com diretivas Razor, blocos `@code`,
+expressões `@(...)`, componentes Blazor e atributos como `@bind`/`@onclick`. Quando o Roslyn LS
+está ativo com a extensão Razor disponível, o plugin também libera recursos semânticos nesses
+arquivos: autocomplete, hover, diagnósticos, símbolos, semantic tokens, inlay hints, formatação,
+rename, code actions e navegação. Quando a extensão Razor não está disponível, a edição continua
+com realce/dobras locais, mas os recursos semânticos Razor ficam indisponíveis.
 
 ## Build, Run e Test
 
@@ -202,7 +213,7 @@ diretamente no arquivo do projeto e deve ser seguida de restore/rebuild quando n
 
 Em **Settings → .NET / C#**:
 
-- **Formatar ao salvar (OmniSharp)**: aplica formatação antes de salvar arquivos C#;
+- **Formatar ao salvar**: aplica formatação antes de salvar arquivos C# e Razor quando o language server suporta o arquivo;
 - **Incluir versões prerelease no NuGet por padrão**;
 - **Configuração padrão de build**: `Debug` ou `Release`.
 
@@ -249,7 +260,8 @@ Componentes resolvidos ou baixados sob demanda:
 | .NET SDK 9 | `9.0.315` | projetos `net9.0` |
 | .NET SDK 7 | `7.0.410` | projetos `net7.0` |
 | .NET SDK 6 | `6.0.428` | projetos `net6.0` |
-| OmniSharp | `1.39.11` | IntelliSense C# |
+| Roslyn LS | `5.10.0-1.26356.6` | IntelliSense C# moderno e Razor quando a extensão Razor está disponível |
+| OmniSharp | `1.39.15` | IntelliSense C# legado/fallback |
 | netcoredbg | `3.1.3-1062` | depuração DAP |
 
 O plugin primeiro tenta usar ferramentas instaladas no sistema. Se a versão necessária do SDK
@@ -295,12 +307,14 @@ mvn -q test
 
 O plugin é distribuído sob licença **MIT**. Componentes externos usados pelo suporte .NET
 são livres para uso comercial. O plugin não usa C# Dev Kit nem `vsdbg`; IntelliSense é feito
-com OmniSharp e depuração com netcoredbg.
+com Roslyn LS/OmniSharp e depuração com netcoredbg.
 
 ## Limitações conhecidas
 
 - VB.NET e F# podem ser reconhecidos como arquivos de projeto, mas a experiência de edição
   rica é focada em C#.
+- A experiência semântica Razor depende do Roslyn LS com extensão Razor; sem ela, `.razor` e
+  `.cshtml` usam realce/dobras locais sem autocomplete/diagnósticos ricos.
 - Projetos .NET Framework são tratados com cuidado fora do Windows: build/test podem funcionar,
   mas execução/depuração local exigem runtime/debugger compatíveis.
 - Inserção de referências e pacotes em projetos legados é feita em melhor esforço; revise o

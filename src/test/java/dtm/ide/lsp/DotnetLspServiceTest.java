@@ -1,10 +1,13 @@
 package dtm.ide.lsp;
 
+import dtm.ide.sdk.DotnetSdkService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -74,5 +77,56 @@ class DotnetLspServiceTest {
         assertTrue(AbstractLspService.isLoadFinished(3, 2, "Ready"));
         assertTrue(AbstractLspService.isLoadFinished(3, 2, "Idle"));
         assertFalse(AbstractLspService.isLoadFinished(3, 2, "BackgroundDiagnosticStatus"));
+    }
+
+    @Test
+    void roslynLaunchCommandIncludesRazorExtensionWhenAvailable(@TempDir Path dir) {
+        Path dotnet = dir.resolve("dotnet");
+        Path server = dir.resolve("Microsoft.CodeAnalysis.LanguageServer.dll");
+        Path extension = dir.resolve("Microsoft.VisualStudioCode.RazorExtension.dll");
+        Path targets = dir.resolve("Microsoft.NET.Sdk.Razor.DesignTime.targets");
+        RoslynLspService service = new RoslynLspService(null, new FakeSdk(dotnet, extension, targets));
+
+        List<String> command = service.buildLaunchCommand(server, dir);
+
+        assertTrue(command.contains(dotnet.toAbsolutePath().toString()));
+        assertTrue(command.contains(server.toAbsolutePath().toString()));
+        assertTrue(command.contains("--extension"));
+        assertTrue(command.contains(extension.toString()));
+        assertTrue(command.contains("--csharpDesignTimePath"));
+        assertTrue(command.contains(targets.toString()));
+    }
+
+    private static final class FakeSdk extends DotnetSdkService {
+        private final Path dotnet;
+        private final Path razorExtension;
+        private final Path designTimeTargets;
+
+        private FakeSdk(Path dotnet, Path razorExtension, Path designTimeTargets) {
+            super(null, null);
+            this.dotnet = dotnet;
+            this.razorExtension = razorExtension;
+            this.designTimeTargets = designTimeTargets;
+        }
+
+        @Override
+        public Optional<Path> getDotnetPath(String sdkVersion) {
+            return Optional.of(dotnet);
+        }
+
+        @Override
+        public Optional<Path> getDotnetPath(Path projectRoot) {
+            return Optional.of(dotnet);
+        }
+
+        @Override
+        public Optional<Path> getRazorExtensionPath() {
+            return Optional.of(razorExtension);
+        }
+
+        @Override
+        public Optional<Path> getRazorDesignTimeTargets() {
+            return Optional.of(designTimeTargets);
+        }
     }
 }

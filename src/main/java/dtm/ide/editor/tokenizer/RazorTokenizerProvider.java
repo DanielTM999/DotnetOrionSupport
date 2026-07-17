@@ -12,7 +12,14 @@ import java.util.Set;
 
 public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
 
-    private static final Set<String> CODE_BLOCK_DIRECTIVES = Set.of("code", "functions");
+    private static final Set<String> CODE_BLOCK_DIRECTIVES = Set.of("code", "functions", "section");
+    private static final Set<String> RAZOR_DIRECTIVES = Set.of(
+            "page", "model", "namespace", "using", "inject", "inherits", "implements", "typeparam",
+            "attribute", "layout", "rendermode", "section", "code", "functions", "addTagHelper",
+            "removeTagHelper", "tagHelperPrefix", "await", "if", "else", "for", "foreach", "while",
+            "switch", "case", "do", "try", "catch", "finally", "lock");
+    private static final Set<String> PAREN_DIRECTIVES = Set.of(
+            "if", "for", "foreach", "while", "switch", "catch", "lock", "using");
 
     private final CSharpTokenizerProvider csharp = new CSharpTokenizerProvider();
 
@@ -78,7 +85,7 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
             }
 
             if (c == '<') {
-                i = scanTagOpen(src, i, out);
+                i = scanTag(src, i, out, classifier);
                 continue;
             }
 
@@ -138,7 +145,7 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
                 j++;
             }
             String word = text.substring(at + 1, j);
-            out.add(token(text, at, j, TokenType.KEYWORD));
+            out.add(token(text, at, j, RAZOR_DIRECTIVES.contains(word) ? TokenType.KEYWORD : CSharpTokenizerProvider.TOKEN_VARIABLE));
             if (CODE_BLOCK_DIRECTIVES.contains(word)) {
                 int k = j;
                 while (k < n && isInlineWhitespace(text.charAt(k))) {
@@ -153,13 +160,27 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
                     return close;
                 }
             }
+            if (PAREN_DIRECTIVES.contains(word)) {
+                int k = j;
+                while (k < n && isInlineWhitespace(text.charAt(k))) {
+                    k++;
+                }
+                if (k < n && text.charAt(k) == '(') {
+                    if (k > j) {
+                        out.add(token(text, j, k, TokenType.WHITESPACE));
+                    }
+                    int close = matchBalanced(text, k, '(', ')');
+                    emitCsharp(out, classifier, text, k, close);
+                    return close;
+                }
+            }
             return j;
         }
         out.add(token(text, at, at + 1, TokenType.SYMBOL));
         return at + 1;
     }
 
-    private int scanTagOpen(String text, int at, List<Token> out) {
+    private int scanTag(String text, int at, List<Token> out, TokenClassifierCodeEditorProvider classifier) {
         int n = text.length();
         int i = at + 1;
         out.add(token(text, at, at + 1, TokenType.SYMBOL));
@@ -179,7 +200,66 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
             while (i < n && isTagNamePart(text.charAt(i))) {
                 i++;
             }
-            out.add(token(text, nameStart, i, CSharpTokenizerProvider.TOKEN_CLASS));
+            String name = text.substring(nameStart, i);
+            out.add(token(text, nameStart, i, isComponentName(name)
+                    ? CSharpTokenizerProvider.TOKEN_CLASS : CSharpTokenizerProvider.TOKEN_TYPE));
+        }
+        while (i < n) {
+            char c = text.charAt(i);
+            if (c == '>') {
+                out.add(token(text, i, i + 1, TokenType.SYMBOL));
+                return i + 1;
+            }
+            if (c == '/' && i + 1 < n && text.charAt(i + 1) == '>') {
+                out.add(token(text, i, i + 2, TokenType.SYMBOL));
+                return i + 2;
+            }
+            if (isInlineWhitespace(c) || c == '\r' || c == '\n') {
+                int start = i;
+                while (i < n && (isInlineWhitespace(text.charAt(i)) || text.charAt(i) == '\r' || text.charAt(i) == '\n')) {
+                    i++;
+                }
+                out.add(token(text, start, i, containsNewline(text, start, i) ? TokenType.NEWLINE : TokenType.WHITESPACE));
+                continue;
+            }
+            if (c == '"' || c == '\'') {
+                int end = skipString(text, i, c);
+                if (i + 1 < end && text.charAt(i + 1) == '@') {
+                    out.add(token(text, i, i + 1, TokenType.STRING));
+                    int p = scanRazorTransition(text, i + 1, out, classifier);
+                    if (p < end - 1) {
+                        out.add(token(text, p, end - 1, TokenType.STRING));
+                    }
+                    out.add(token(text, end - 1, end, TokenType.STRING));
+                } else {
+                    out.add(token(text, i, end, TokenType.STRING));
+                }
+                i = end;
+                continue;
+            }
+            if (c == '=') {
+                out.add(token(text, i, i + 1, TokenType.SYMBOL));
+                i++;
+                continue;
+            }
+            if (c == '@' && i + 1 < n && (text.charAt(i + 1) == '(' || text.charAt(i + 1) == '{')) {
+                i = scanRazorTransition(text, i, out, classifier);
+                continue;
+            }
+            if (isAttributeNameStart(c)) {
+                int start = i;
+                while (i < n && isAttributeNamePart(text.charAt(i))) {
+                    i++;
+                }
+                out.add(token(text, start, i, CSharpTokenizerProvider.TOKEN_VARIABLE));
+                continue;
+            }
+            if (c == '@' && i + 1 < n) {
+                i = scanRazorTransition(text, i, out, classifier);
+                continue;
+            }
+            out.add(token(text, i, i + 1, TokenType.SYMBOL));
+            i++;
         }
         return i;
     }
@@ -276,6 +356,28 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
 
     private static boolean isTagNamePart(char c) {
         return Character.isLetterOrDigit(c) || c == '-' || c == ':' || c == '.' || c == '_';
+    }
+
+    private static boolean isComponentName(String name) {
+        return name != null && !name.isEmpty() && Character.isUpperCase(name.charAt(0));
+    }
+
+    private static boolean isAttributeNameStart(char c) {
+        return c == '@' || Character.isLetter(c) || c == '_' || c == ':';
+    }
+
+    private static boolean isAttributeNamePart(char c) {
+        return Character.isLetterOrDigit(c) || c == '-' || c == ':' || c == '.' || c == '_' || c == '@';
+    }
+
+    private static boolean containsNewline(String text, int start, int end) {
+        for (int i = start; i < end; i++) {
+            char c = text.charAt(i);
+            if (c == '\r' || c == '\n') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class CSharpKeywords {

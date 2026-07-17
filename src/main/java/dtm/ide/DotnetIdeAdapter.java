@@ -403,8 +403,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
                 analyzeProgressShown.set(true);
                 SwingUtilities.invokeLater(() -> {
-                    showProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# project"));
-                    updateProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# project"), 0);
+                    showProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# / Razor project"));
+                    updateProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# / Razor project"), 0);
                 });
                 service.start();
                 if (!isProjectCurrent(ticket, project)) {
@@ -423,7 +423,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         SwingUtilities.invokeLater(() -> hideProgress(LSP_ANALYZE_PROGRESS_ID));
                     }
                     String error = service.getLastError();
-                    SwingUtilities.invokeLater(() -> setStatusBarText(text("status.intellisenseFailed", "C#: failed to start IntelliSense") + (error == null ? "." : " — " + error)));
+                    SwingUtilities.invokeLater(() -> setStatusBarText(text("status.intellisenseFailed", "C# / Razor: failed to start IntelliSense") + (error == null ? "." : " — " + error)));
                 }
             } catch (Exception e) {
                 log.warn("Falha ao iniciar serviços de linguagem .NET: {}", e.getMessage());
@@ -904,7 +904,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void triggerDiagnostics(Path file, String text) {
         LspService service = lspService;
-        if (service == null || file == null || !isCSharpLike(file) || service.isDecompiled(file)) {
+        if (service == null || file == null || !lspHandlesEditor(file) || service.isDecompiled(file)) {
             return;
         }
         navigationExecutor().execute(() -> {
@@ -921,7 +921,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void refreshOpenEditors() {
         featureRefreshedFiles.clear();
-        for (Path file : editorRegistry.regularOpenCsPaths()) {
+        for (Path file : editorRegistry.regularOpenHighlightablePaths()) {
             Path normalized = normalizePath(file);
             IdeEditorContext context = editorRegistry.editorContext(normalized);
             if (context == null) {
@@ -1085,7 +1085,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private HoverInfo lspLoadingHover() {
         int percent = lspLoadPercent;
         String suffix = percent > 0 && percent < 100 ? " (" + percent + "%)" : "";
-        return HoverInfo.markdown("**" + text("hover.loadingIntellisense", "Loading C# IntelliSense…") + suffix + "**\n\n"
+        return HoverInfo.markdown("**" + text("hover.loadingIntellisense", "Loading C# / Razor IntelliSense…") + suffix + "**\n\n"
                 + text("hover.loadingInfo", "Information will appear once the project finishes analyzing."));
     }
 
@@ -1237,7 +1237,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         String current = identifierAt(context.getText(), context.getCaretOffset());
         if (current == null || current.isBlank()) {
-            setStatusBarText(text("status.noSymbolToRename", "No C# symbol at the cursor to rename."));
+            setStatusBarText(text("status.noSymbolToRename", "No C# / Razor symbol at the cursor to rename."));
             return;
         }
         JTextField field = new JTextField(current, Math.max(18, current.length() + 4));
@@ -1256,7 +1256,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         if (!isValidCSharpIdentifier(newName)) {
-            setStatusBarText(text("status.invalidSymbolName", "Invalid name for C# symbol: ") + newName);
+            setStatusBarText(text("status.invalidSymbolName", "Invalid name for C# / Razor symbol: ") + newName);
             return;
         }
         renameSymbol(context, newName);
@@ -1817,7 +1817,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 continue;
             }
             Path file = DotnetProjectConventions.pathFromUri(location.uri());
-            if (file == null || !isCSharpLike(file) || !Files.isRegularFile(file)) {
+            if (file == null || !isHighlightable(file) || !Files.isRegularFile(file)) {
                 continue;
             }
             int line = location.range().start().line();
@@ -2682,7 +2682,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         LspService service = lspService;
         DotnetPluginSettings settings = pluginSettings;
         if (service == null || settings == null || !settings.isFormatOnSave()
-                || path == null || !isCSharpLike(path)) {
+                || path == null || !lspHandlesEditor(path)) {
             return content;
         }
         EditorConfigSettings.FormatOptions options = EditorConfigSettings.resolve(path, 4, true);
@@ -3132,7 +3132,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private void showRenameForActiveEditor() {
         Path file = activeFile;
-        if (file == null || !isCSharpLike(file)) {
+        if (file == null || !lspHandlesEditor(file)) {
             return;
         }
         IdeEditorContext context = editorRegistry.editorContext(normalizePath(file));

@@ -85,10 +85,10 @@ final class DotnetEditorRegistry {
         return editorContexts.get(normalizedPath);
     }
 
-    List<Path> regularOpenCsPaths() {
+    List<Path> regularOpenHighlightablePaths() {
         return editorPaths.stream()
                 .filter(Objects::nonNull)
-                .filter(DotnetProjectConventions::isCSharpLike)
+                .filter(DotnetProjectConventions::isHighlightable)
                 .filter(Files::isRegularFile)
                 .toList();
     }
