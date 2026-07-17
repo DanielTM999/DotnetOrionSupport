@@ -16,11 +16,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.NavigableSet;
-import java.util.TreeSet;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -62,7 +63,7 @@ final class DotnetDapDebugSession {
     private final AtomicBoolean debugStartAccepted = new AtomicBoolean(false);
     private final AtomicBoolean configurationSent = new AtomicBoolean(false);
 
-    private final Map<Path, NavigableSet<Integer>> liveBreakpoints = new ConcurrentHashMap<>();
+    private final Map<Path, NavigableMap<Integer, String>> liveBreakpoints = new ConcurrentHashMap<>();
 
     private final boolean useAttach = true;
     private volatile Process process;
@@ -130,11 +131,11 @@ final class DotnetDapDebugSession {
             if (file == null || bps == null) {
                 continue;
             }
-            NavigableSet<Integer> lines = liveBreakpoints.computeIfAbsent(
-                    file.toAbsolutePath().normalize(), k -> new TreeSet<>());
+            NavigableMap<Integer, String> lines = liveBreakpoints.computeIfAbsent(
+                    file.toAbsolutePath().normalize(), k -> new TreeMap<>());
             for (BreakpointIde bp : bps) {
                 if (bp != null && bp.active() && bp.line() >= 0) {
-                    lines.add(bp.line());
+                    lines.put(bp.line(), normalizeCondition(bp.condition()));
                 }
             }
         }
@@ -259,10 +260,13 @@ final class DotnetDapDebugSession {
             return false;
         }
         Path key = file.toAbsolutePath().normalize();
-        NavigableSet<Integer> lines = liveBreakpoints.computeIfAbsent(key, ignored -> new TreeSet<>());
+        NavigableMap<Integer, String> lines = liveBreakpoints.computeIfAbsent(key, ignored -> new TreeMap<>());
         boolean added;
         synchronized (lines) {
-            added = lines.add(line0Based);
+            added = !lines.containsKey(line0Based);
+            if (added) {
+                lines.put(line0Based, null);
+            }
         }
         temporaryBreakpoint = new TemporaryBreakpoint(key, line0Based, added);
         sendBreakpointsForFile(key, lines).thenRun(this::resume).exceptionally(error -> {
@@ -279,7 +283,7 @@ final class DotnetDapDebugSession {
         if (temporary == null || !temporary.added()) {
             return;
         }
-        NavigableSet<Integer> lines = liveBreakpoints.get(temporary.file());
+        NavigableMap<Integer, String> lines = liveBreakpoints.get(temporary.file());
         if (lines == null) {
             return;
         }
@@ -643,20 +647,45 @@ final class DotnetDapDebugSession {
         return result.isEmpty() ? List.of("uncaught") : result;
     }
 
-    void applyBreakpointChange(Path file, int line0Based, boolean added) {
+    void applyBreakpointChange(Path file, int line0Based, boolean added, String condition) {
         if (file == null || line0Based < 0) {
             return;
         }
         Path key = file.toAbsolutePath().normalize();
-        NavigableSet<Integer> lines = liveBreakpoints.computeIfAbsent(key, k -> new TreeSet<>());
+        NavigableMap<Integer, String> lines = liveBreakpoints.computeIfAbsent(key, k -> new TreeMap<>());
         synchronized (lines) {
             if (added) {
-                lines.add(line0Based);
+                lines.put(line0Based, normalizeCondition(condition));
             } else {
                 lines.remove(line0Based);
             }
         }
         sendBreakpointsForFile(key, lines);
+    }
+
+    void applyBreakpointCondition(Path file, int line0Based, String condition) {
+        if (file == null || line0Based < 0) {
+            return;
+        }
+        Path key = file.toAbsolutePath().normalize();
+        NavigableMap<Integer, String> lines = liveBreakpoints.get(key);
+        if (lines == null) {
+            return;
+        }
+        synchronized (lines) {
+            if (!lines.containsKey(line0Based)) {
+                return;
+            }
+            lines.put(line0Based, normalizeCondition(condition));
+        }
+        sendBreakpointsForFile(key, lines);
+    }
+
+    private static String normalizeCondition(String condition) {
+        if (condition == null || condition.isBlank()) {
+            return null;
+        }
+        return condition.trim();
     }
 
     private void sendThreadRequest(String command) {
@@ -1281,16 +1310,16 @@ final class DotnetDapDebugSession {
             return List.of();
         }
         List<CompletableFuture<JsonNode>> requests = new ArrayList<>();
-        for (Map.Entry<Path, NavigableSet<Integer>> entry : liveBreakpoints.entrySet()) {
+        for (Map.Entry<Path, NavigableMap<Integer, String>> entry : liveBreakpoints.entrySet()) {
             requests.add(sendBreakpointsForFile(entry.getKey(), entry.getValue()));
         }
         return requests;
     }
 
-    private CompletableFuture<JsonNode> sendBreakpointsForFile(Path file, NavigableSet<Integer> lines) {
-        List<Integer> snapshot;
+    private CompletableFuture<JsonNode> sendBreakpointsForFile(Path file, NavigableMap<Integer, String> lines) {
+        Map<Integer, String> snapshot;
         synchronized (lines) {
-            snapshot = new ArrayList<>(lines);
+            snapshot = new LinkedHashMap<>(lines);
         }
         ObjectNode args = MAPPER.createObjectNode();
         ObjectNode source = MAPPER.createObjectNode();
@@ -1298,10 +1327,14 @@ final class DotnetDapDebugSession {
         source.put("name", file.getFileName() == null ? file.toString() : file.getFileName().toString());
         args.set("source", source);
         ArrayNode bps = args.putArray("breakpoints");
-        for (int line : snapshot) {
-            bps.addObject().put("line", line + 1);
+        for (Map.Entry<Integer, String> entry : snapshot.entrySet()) {
+            ObjectNode bp = bps.addObject();
+            bp.put("line", entry.getKey() + 1);
+            if (entry.getValue() != null && !entry.getValue().isBlank()) {
+                bp.put("condition", entry.getValue());
+            }
         }
-        log.info("[debug] setBreakpoints arquivo={} linhas={}", file, snapshot);
+        log.info("[debug] setBreakpoints arquivo={} linhas={}", file, snapshot.keySet());
         return sendRequestForResult("setBreakpoints", args)
                 .whenComplete((body, error) -> {
                     if (error != null) {

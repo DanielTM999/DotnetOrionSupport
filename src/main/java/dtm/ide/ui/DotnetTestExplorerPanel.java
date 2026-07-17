@@ -360,6 +360,20 @@ public final class DotnetTestExplorerPanel extends JPanel {
                 text("status.runningNode", "Running {0}...").replace("{0}", shortName(fullyQualifiedName)));
     }
 
+    public void debugTest(String fullyQualifiedName) {
+        if (fullyQualifiedName == null || fullyQualifiedName.isBlank()) {
+            return;
+        }
+        if (debugProcessHandler == null) {
+            setStatus(text("status.debugUnavailable", "Debug is unavailable."));
+            return;
+        }
+        ensureTestVisible(fullyQualifiedName);
+        runFilter("FullyQualifiedName~" + filterValue(fullyQualifiedName), List.of(fullyQualifiedName),
+                text("status.waitingDebugger", "Waiting for debugger for {0}...").replace("{0}", shortName(fullyQualifiedName)),
+                true);
+    }
+
     private void runFilter(String filter, List<String> scope, String message) {
         runFilter(filter, scope, message, false);
     }

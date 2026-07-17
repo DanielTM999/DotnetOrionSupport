@@ -523,6 +523,10 @@ public final class DotnetRunSupport {
     }
 
     public RunProcessHandle attachToProcess(long pid) {
+        return attachToProcess(pid, List.of());
+    }
+
+    public RunProcessHandle attachToProcess(long pid, List<RunBreakpointData> breakpoints) {
         Path project = projectPath;
         if (project == null || pid <= 0 || ProcessHandle.of(pid).filter(ProcessHandle::isAlive).isEmpty()) {
             return DotnetBuild.errorHandle("Processo inválido ou encerrado.");
@@ -540,7 +544,8 @@ public final class DotnetRunSupport {
         }
         boolean breakOnAllExceptions = breakOnAllExceptionsSupplier != null
                 && breakOnAllExceptionsSupplier.getAsBoolean();
-        return build.attachDebugger(project, dotnet.get(), netcoredbg, pid, List.of(), debugView,
+        return build.attachDebugger(project, dotnet.get(), netcoredbg, pid,
+                breakpoints == null ? List.of() : breakpoints, debugView,
                 this::setDebugSession, breakOnAllExceptions);
     }
 
@@ -618,10 +623,17 @@ public final class DotnetRunSupport {
         return true;
     }
 
-    public void applyBreakpointChange(Path file, int line0Based, boolean added) {
+    public void applyBreakpointChange(Path file, int line0Based, boolean added, String condition) {
         DotnetDapDebugSession session = debugSession.get();
         if (session != null) {
-            session.applyBreakpointChange(file, line0Based, added);
+            session.applyBreakpointChange(file, line0Based, added, condition);
+        }
+    }
+
+    public void applyBreakpointCondition(Path file, int line0Based, String condition) {
+        DotnetDapDebugSession session = debugSession.get();
+        if (session != null) {
+            session.applyBreakpointCondition(file, line0Based, condition);
         }
     }
 

@@ -16,6 +16,7 @@ import dtm.ide.api.extension.settings.PluginSettingsPage;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
 import dtm.ide.api.project.editor.*;
+import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunConfigurationContribution;
 import dtm.ide.api.extension.runconfig.RunConfigurationData;
 import dtm.ide.api.extension.runconfig.RunExecutionContext;
@@ -26,7 +27,11 @@ import dtm.ide.api.search.GlobalSearchMatch;
 import dtm.ide.api.search.GlobalSearchQuery;
 import dtm.ide.api.search.GlobalSearchResult;
 import dtm.ide.api.theme.EditorTheme;
+import dtm.ide.api.theme.EditorThemeConfig;
+import dtm.ide.editor.condition.CSharpConditionAutoCompleteProvider;
+import dtm.ide.editor.condition.CSharpConditionDiagnosticsProvider;
 import dtm.ide.editor.theme.DotnetEditorTheme;
+import dtm.ide.editor.tokenizer.CSharpTokenizerProvider;
 import dtm.ide.lsp.DotnetWorkspaceEdit;
 import dtm.ide.lsp.LanguageServerSelector;
 import dtm.ide.lsp.LspServerKind;
@@ -69,6 +74,7 @@ import dtm.ide.ui.SolutionReferenceDialog;
 import dtm.ide.wizard.NewSolutionProjectPanel;
 import dtm.request_actions.http.download.core.DownloadObserver;
 import dtm.stools.component.menu.bar.tree.MenuNode;
+import dtm.stools.component.menu.popup.ActionPopupMenu;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
 import dtm.stools.component.panels.editor.code.api.Command;
 import dtm.stools.component.panels.editor.code.api.CommandHandler;
@@ -81,13 +87,16 @@ import dtm.stools.component.panels.editor.code.autocomplete.AutoCompleteItem;
 import dtm.stools.component.panels.editor.code.diagnostics.Diagnostic;
 import dtm.stools.component.panels.editor.code.diagnostics.DiagnosticSeverity;
 import dtm.stools.component.panels.editor.code.codelens.CodeLens;
+import dtm.stools.component.panels.editor.code.codelens.CodeLensClickEvent;
 import dtm.stools.component.panels.editor.code.codelens.CodeLensItem;
 import dtm.stools.component.panels.editor.code.codelens.CodeLensPlacement;
 import dtm.stools.component.panels.editor.code.hover.HoverInfo;
 import dtm.stools.component.panels.editor.code.inlay.InlayHint;
 import dtm.stools.component.panels.editor.code.prototype.folding.FoldRule;
 import dtm.stools.component.panels.editor.code.signature.SignatureHelp;
+import dtm.stools.component.panels.editor.code.provider.TokenColorProvider;
 import dtm.stools.component.panels.editor.code.provider.TokenizerCodeEditorProvider;
+import dtm.stools.component.panels.editor.code.provider.def.DefaultTokenClassifierProvider;
 import dtm.stools.component.panels.dock.DockRegion;
 import dtm.stools.component.popup.ModernDialog;
 import dtm.stools.utils.ImageUtils;
@@ -668,6 +677,52 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public EditorTheme getEditorTheme() {
         return editorTheme;
+    }
+
+    @Override
+    public boolean isConditionalBreakpointEnabled(Path fileOpen) {
+        return isCSharpLike(fileOpen);
+    }
+
+    @Override
+    public void configureConditionalBreakpointEditor(IdeEditorContext editorContext, ConditionalBreakpointContext context) {
+        if (editorContext == null) {
+            return;
+        }
+        editorContext.addProvider(new CSharpTokenizerProvider());
+        editorContext.addProvider(new DefaultTokenClassifierProvider());
+        EditorThemeConfig themeConfig = editorTheme.getConfigByFileType("cs");
+        if (themeConfig != null) {
+            editorContext.addProvider((TokenColorProvider) themeConfig::getColorByToken);
+        }
+        String sourceText = context == null || context.file() == null
+                ? null
+                : currentTextOf(context.file());
+        editorContext.addProvider(new CSharpConditionAutoCompleteProvider(
+                sourceText,
+                (expression, column) -> runSupport.debugCompletions(expression, column)
+        ));
+        editorContext.setAutoCompleteOnTyping(true);
+        editorContext.addProvider(new CSharpConditionDiagnosticsProvider());
+        editorContext.setDiagnosticsAutoRunEnabled(true);
+        editorContext.setSyntaxHighlightEnabled(true);
+        editorContext.applySyntaxHighlight();
+        editorContext.refreshDiagnostics();
+    }
+
+    @Override
+    public void configureConditionalBreakpointDialog(ConditionalBreakpointDialogView dialogView) {
+        if (dialogView == null) {
+            return;
+        }
+        dialogView.setTitle(text("breakpoint.condition.title", "Breakpoint condicional (.NET)"));
+        ConditionalBreakpointContext context = dialogView.getBreakpointContext();
+        if (context != null && context.file() != null && context.file().getFileName() != null) {
+            dialogView.setDescription(context.file().getFileName() + ":" + (context.line() + 1)
+                    + " — " + text("breakpoint.condition.description",
+                    "expressão C# avaliada no breakpoint; o programa pausa quando o resultado é true."));
+        }
+        dialogView.setEnabledCheckBoxText(text("breakpoint.condition.enabled", "Breakpoint habilitado"));
     }
 
     @Override
@@ -1567,7 +1622,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         .text("▶ " + text("lens.run", "Run"))
                         .tooltip(text("lens.runTooltip", "Run {0}").replace("{0}", testId))
                         .cursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
-                        .onClick(event -> runTestFromLens(testId))
+                        .onClick(event -> showTestLensActionPopup(testId, event))
                         .build();
                 out.add(CodeLens.inline(symbol.selectionRange().start().line(), run));
             }
@@ -2467,7 +2522,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (event == null || event.getBreakpointIde() == null) {
             return;
         }
-        runSupport.applyBreakpointChange(event.getFile(), event.getBreakpointIde().line(), event.isBreakpointAdded());
+        BreakpointIde breakpoint = event.getBreakpointIde();
+        switch (event.getChangeType()) {
+            case CONDITION -> runSupport.applyBreakpointCondition(event.getFile(), breakpoint.line(), event.getCondition());
+            case ENABLED_STATE -> runSupport.applyBreakpointChange(event.getFile(), breakpoint.line(), breakpoint.active(), breakpoint.condition());
+            default -> runSupport.applyBreakpointChange(event.getFile(), breakpoint.line(), event.isBreakpointAdded(), breakpoint.condition());
+        }
     }
 
     private void navigateFromEditor(IdeEditorContext context) {
@@ -2749,11 +2809,25 @@ public class DotnetIdeAdapter extends IdeAdapter {
         });
     }
 
+    private List<RunBreakpointData> workspaceBreakpointsSafe() {
+        try {
+            List<RunBreakpointData> breakpoints = requestWorkspaceBreakpoints();
+            return breakpoints == null ? List.of() : breakpoints;
+        } catch (LinkageError e) {
+            log.debug("IDE sem suporte a requestWorkspaceBreakpoints: {}", e.getMessage());
+            return List.of();
+        } catch (Exception e) {
+            log.warn("Falha ao consultar breakpoints do workspace: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
     private void attachTestProcess(long pid) {
+        List<RunBreakpointData> breakpoints = workspaceBreakpointsSafe();
         runOnUiThread(() -> {
             debugActive.set(true);
             refreshHotReloadButton();
-            RunProcessHandle handle = runSupport.attachToProcess(pid);
+            RunProcessHandle handle = runSupport.attachToProcess(pid, breakpoints);
             if (!handle.isAlive()) {
                 debugActive.set(false);
                 refreshHotReloadButton();
@@ -2795,6 +2869,31 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 requestOpenToolPanel(testToolPanelId);
             }
             testPanel.runTest(fullyQualifiedName);
+        });
+    }
+
+    private void debugTestFromLens(String fullyQualifiedName) {
+        runOnUiThread(() -> {
+            ensureTestPanel();
+            if (testToolPanelId != null && !testToolPanelId.isBlank()) {
+                requestOpenToolPanel(testToolPanelId);
+            }
+            testPanel.debugTest(fullyQualifiedName);
+        });
+    }
+
+    private void showTestLensActionPopup(String fullyQualifiedName, CodeLensClickEvent event) {
+        runOnUiThread(() -> {
+            MouseEvent mouse = event == null ? null : event.mouseEvent();
+            Component invoker = mouse == null ? null : mouse.getComponent();
+            if (invoker == null) {
+                runTestFromLens(fullyQualifiedName);
+                return;
+            }
+            ActionPopupMenu.create(text("lens.testActionTitle", "Test"))
+                    .item(text("lens.run", "Run"), e -> runTestFromLens(fullyQualifiedName))
+                    .item(text("lens.debug", "Debug"), e -> debugTestFromLens(fullyQualifiedName))
+                    .showAt(invoker, mouse.getX(), mouse.getY());
         });
     }
 
