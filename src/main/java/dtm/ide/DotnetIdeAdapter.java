@@ -2805,7 +2805,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             if (pid == null) {
                 return;
             }
-            attachTestProcess(pid);
+            attachTestProcess(pid, true);
         });
     }
 
@@ -2823,6 +2823,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void attachTestProcess(long pid) {
+        attachTestProcess(pid, false);
+    }
+
+    private void attachTestProcess(long pid, boolean showOutputPanel) {
         List<RunBreakpointData> breakpoints = workspaceBreakpointsSafe();
         runOnUiThread(() -> {
             debugActive.set(true);
@@ -2834,7 +2838,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
             OutputPanelHandle panel = requestOutputPanel("dotnet");
             panel.clear();
-            panel.show();
+            if (showOutputPanel) {
+                panel.show();
+            }
             Thread output = new Thread(() -> {
                 try (InputStream in = handle.getOutput()) {
                     in.transferTo(panel.getOutputStream());
