@@ -24,31 +24,47 @@ jobs:
     name: Build and publish release asset
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
-      DEP_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+      GH_TOKEN: ${{ github.token }}
+      DEP_TOKEN: ${{ secrets.RELEASE_PAT }}
 
     steps:
       - name: Checkout DotnetOrionSupport
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Checkout OrionIde dependency
-        uses: actions/checkout@v4
+      - name: Checkout OrionIde dependency with PAT
+        if: env.DEP_TOKEN != ''
+        uses: actions/checkout@v6
         with:
           repository: DanielTM999/OrionIde
           path: .deps/OrionIde
           token: ${{ env.DEP_TOKEN }}
 
-      - name: Checkout RequestActions dependency
-        uses: actions/checkout@v4
+      - name: Checkout OrionIde dependency
+        if: env.DEP_TOKEN == ''
+        uses: actions/checkout@v6
+        with:
+          repository: DanielTM999/OrionIde
+          path: .deps/OrionIde
+
+      - name: Checkout RequestActions dependency with PAT
+        if: env.DEP_TOKEN != ''
+        uses: actions/checkout@v6
         with:
           repository: DanielTM999/RequestActions
           path: .deps/RequestActions
           token: ${{ env.DEP_TOKEN }}
 
+      - name: Checkout RequestActions dependency
+        if: env.DEP_TOKEN == ''
+        uses: actions/checkout@v6
+        with:
+          repository: DanielTM999/RequestActions
+          path: .deps/RequestActions
+
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
