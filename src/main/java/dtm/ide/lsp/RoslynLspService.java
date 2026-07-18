@@ -146,7 +146,7 @@ public final class RoslynLspService extends AbstractLspService {
 
     @Override
     public List<InlayHint> inlayHints(Path filePath, String text, int firstLine, int lastLine) {
-        if (isRazorFile(filePath) && !isRazorMethodRegistered("textDocument/inlayHint")) {
+        if (isRazorFile(filePath)) {
             return Collections.emptyList();
         }
         return super.inlayHints(filePath, text, firstLine, lastLine);
