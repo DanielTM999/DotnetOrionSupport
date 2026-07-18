@@ -20,6 +20,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -49,7 +51,8 @@ public class DotnetSdkService {
     public static final String DOTNET_7_SDK_VERSION = "7.0.410";
     public static final String DOTNET_6_SDK_VERSION = "6.0.428";
     public static final String DEFAULT_OMNISHARP_VERSION = "1.39.15";
-    public static final String DEFAULT_ROSLYN_LS_VERSION = "5.10.0-1.26356.6";
+    public static final String DEFAULT_ROSLYN_LS_VERSION = "5.0.0-1.25277.114";
+    public static final String DEFAULT_ROSLYN_RAZOR_VERSION = "10.0.0-preview.25277.114";
     public static final String ROSLYN_RUNTIME_SDK_VERSION = DOTNET_10_SDK_VERSION;
     public static final String DEFAULT_NETCOREDBG_VERSION = "3.1.3-1062-orion-hotreload.3";
 
@@ -62,9 +65,10 @@ public class DotnetSdkService {
     private static final String ROSLYN_DIR = "roslyn";
     private static final String NETCOREDBG_DIR = "netcoredbg";
     private static final String NETCOREDBG_RELEASE_REPOSITORY = "DanielTM999/netcoredbg";
-    private static final String ROSLYN_LS_RELEASE_REPOSITORY = "Crashdummyy/roslynLanguageServer";
+    private static final String NUGET_FLAT_CONTAINER = "https://api.nuget.org/v3-flatcontainer";
     private static final String ROSLYN_LS_DLL = "Microsoft.CodeAnalysis.LanguageServer.dll";
     private static final String ROSLYN_RAZOR_EXTENSION_DLL = "Microsoft.VisualStudioCode.RazorExtension.dll";
+    private static final String ROSLYN_RAZOR_SOURCE_GENERATOR_DLL = "Microsoft.CodeAnalysis.Razor.Compiler.dll";
     private static final Pattern SDK_LIST_VERSION = Pattern.compile("^\\s*(\\d+)\\.(\\d+)\\.[^\\s]+");
     private static final Pattern GLOBAL_JSON_SDK_VERSION =
             Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
@@ -91,6 +95,10 @@ public class DotnetSdkService {
 
     public Optional<Path> getDotnetPath(String sdkVersion) {
         String version = normalizeSdkVersion(sdkVersion);
+        Optional<Path> bundled = resolveExecutable(dotnetRoots(version), "dotnet");
+        if (bundled.isPresent()) {
+            return bundled;
+        }
         Optional<Path> external = findExternalExecutable("dotnet", commonDotnetDirs());
         if (external.isPresent()) {
             if (supportsSdkVersion(external.get(), version)) {
@@ -98,7 +106,7 @@ public class DotnetSdkService {
             }
             log.debug("dotnet externo ignorado: SDK {} nao encontrado em {}", version, external.get());
         }
-        return resolveExecutable(dotnetRoot(version), "dotnet");
+        return Optional.empty();
     }
 
     public Path ensureDotnet(DownloadProgressListener progressListener) {
@@ -179,11 +187,15 @@ public class DotnetSdkService {
     }
 
     public Optional<Path> getRoslynLanguageServerPath() {
-        return resolveRoslynDll(roslynRoot(DEFAULT_ROSLYN_LS_VERSION));
+        return resolveRoslynDll(roslynSearchRoots(DEFAULT_ROSLYN_LS_VERSION));
     }
 
     public Optional<Path> getRazorExtensionPath() {
-        return findInRoslynBundle(name -> name.equals(ROSLYN_RAZOR_EXTENSION_DLL));
+        return findInRoslynBundle(ROSLYN_RAZOR_EXTENSION_DLL::equals);
+    }
+
+    public Optional<Path> getRazorSourceGeneratorPath() {
+        return findInRoslynBundle(ROSLYN_RAZOR_SOURCE_GENERATOR_DLL::equals);
     }
 
     public Optional<Path> getRazorDesignTimeTargets() {
@@ -191,6 +203,11 @@ public class DotnetSdkService {
             String lower = name.toLowerCase(Locale.ROOT);
             return lower.endsWith("designtime.targets") && lower.contains("razor");
         });
+    }
+
+    public boolean isRoslynRazorReady() {
+        return getRazorExtensionPath().isPresent()
+                && getRazorSourceGeneratorPath().isPresent();
     }
 
     public Path ensureRoslyn(DownloadProgressListener progressListener) {
@@ -201,8 +218,49 @@ public class DotnetSdkService {
         DownloadProgressListener listener = progressListener == null ? DownloadProgressListener.NOOP : progressListener;
         Path root = roslynRoot(DEFAULT_ROSLYN_LS_VERSION);
         downloadToRoot(roslynArtifact(DEFAULT_ROSLYN_LS_VERSION), root, listener);
+        clearRoslynCompositionCache();
         return getRoslynLanguageServerPath().orElseThrow(() ->
                 displayException("Componente do IntelliSense C# foi baixado, mas o binário não foi encontrado.", null));
+    }
+
+    public Path ensureRoslynRazor(DownloadProgressListener progressListener) {
+        if (isRoslynRazorReady()) {
+            return getRazorExtensionPath().orElseThrow();
+        }
+        DownloadProgressListener listener = progressListener == null ? DownloadProgressListener.NOOP : progressListener;
+        Path root = roslynRoot(DEFAULT_ROSLYN_LS_VERSION);
+        downloadToRoot(razorArtifact(DEFAULT_ROSLYN_RAZOR_VERSION), root, listener);
+        downloadToRoot(razorCompilerArtifact(DEFAULT_ROSLYN_RAZOR_VERSION), root, listener);
+        clearRoslynCompositionCache();
+        if (!isRoslynRazorReady()) {
+            throw displayException("Componente Razor do IntelliSense C# foi baixado, mas os arquivos Razor "
+                    + "necessarios nao foram encontrados.", null);
+        }
+        return getRazorExtensionPath().orElseThrow();
+    }
+
+    private void clearRoslynCompositionCache() {
+        for (Path root : roslynSearchRoots(DEFAULT_ROSLYN_LS_VERSION)) {
+            if (root == null || !Files.isDirectory(root)) {
+                continue;
+            }
+            Path cache = root.resolve("content").resolve("LanguageServer")
+                    .resolve(roslynRid()).resolve("cache");
+            if (!Files.isDirectory(cache)) {
+                continue;
+            }
+            try (Stream<Path> paths = Files.walk(cache)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (Exception ignored) {
+                    }
+                });
+                log.info("Cache de composição do Roslyn LS limpo: {}", cache);
+            } catch (Exception e) {
+                log.debug("Falha ao limpar cache de composição do Roslyn LS: {}", e.getMessage());
+            }
+        }
     }
 
     public Optional<Path> getRoslynRuntimeRoot() {
@@ -422,15 +480,60 @@ public class DotnetSdkService {
     }
 
     private Path sdkRoot() {
-        if (resource == null || resource.getResourcePath() == null) {
+        Path root = resourcePath();
+        return root == null ? null : root.resolve(SDK_DIR).toAbsolutePath().normalize();
+    }
+
+    private List<Path> sdkRoots() {
+        List<Path> roots = new ArrayList<>();
+        addSdkRoot(roots, resourcePath());
+        addSdkRoot(roots, sharedResourcePath());
+        return roots;
+    }
+
+    private Path resourcePath() {
+        try {
+            return resource == null ? null : resource.getResourcePath();
+        } catch (Exception e) {
             return null;
         }
-        return resource.getResourcePath().resolve(SDK_DIR).toAbsolutePath().normalize();
+    }
+
+    private Path sharedResourcePath() {
+        try {
+            return resource == null ? null : resource.getSharedResourcePath();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void addSdkRoot(List<Path> roots, Path root) {
+        if (root == null) {
+            return;
+        }
+        Path sdk = root.resolve(SDK_DIR).toAbsolutePath().normalize();
+        addPath(roots, sdk);
+    }
+
+    private static void addPath(List<Path> paths, Path path) {
+        if (path == null) {
+            return;
+        }
+        Path normalized = path.toAbsolutePath().normalize();
+        if (!paths.contains(normalized)) {
+            paths.add(normalized);
+        }
     }
 
     private Path dotnetRoot(String version) {
         Path sdk = sdkRoot();
         return sdk == null ? null : sdk.resolve(DOTNET_DIR).resolve(version);
+    }
+
+    private List<Path> dotnetRoots(String version) {
+        return sdkRoots().stream()
+                .map(root -> root.resolve(DOTNET_DIR).resolve(version))
+                .toList();
     }
 
     private Path omniSharpRoot(String version) {
@@ -443,25 +546,74 @@ public class DotnetSdkService {
         return sdk == null ? null : sdk.resolve(ROSLYN_DIR).resolve(version);
     }
 
+    private List<Path> roslynRoots(String version) {
+        return sdkRoots().stream()
+                .map(root -> root.resolve(ROSLYN_DIR).resolve(version))
+                .toList();
+    }
+
+    private List<Path> roslynSearchRoots(String version) {
+        List<Path> roots = new ArrayList<>();
+        for (Path root : roslynRoots(version)) {
+            addPath(roots, root);
+        }
+        for (Path sdk : sdkRoots()) {
+            Path roslyn = sdk.resolve(ROSLYN_DIR);
+            if (!Files.isDirectory(roslyn)) {
+                continue;
+            }
+            try (Stream<Path> versions = Files.list(roslyn)) {
+                versions.filter(Files::isDirectory)
+                        .forEach(path -> addPath(roots, path));
+            } catch (Exception ignored) {
+            }
+        }
+        return roots;
+    }
+
     private Path netcoredbgRoot(String version) {
         Path sdk = sdkRoot();
         return sdk == null ? null : sdk.resolve(NETCOREDBG_DIR).resolve(version);
     }
 
     private Optional<Path> findInRoslynBundle(java.util.function.Predicate<String> nameMatch) {
-        Path root = roslynRoot(DEFAULT_ROSLYN_LS_VERSION);
-        if (root == null || !Files.isDirectory(root)) {
-            return Optional.empty();
+        for (Path root : roslynSearchRoots(DEFAULT_ROSLYN_LS_VERSION)) {
+            if (root == null || !Files.isDirectory(root)) {
+                continue;
+            }
+            try (Stream<Path> paths = Files.walk(root)) {
+                Optional<Path> hit = paths
+                        .filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName() != null)
+                        .filter(path -> nameMatch.test(path.getFileName().toString()))
+                        .min(Comparator.comparingInt(path -> bundleRank(root, path)))
+                        .map(path -> path.toAbsolutePath().normalize());
+                if (hit.isPresent()) {
+                    return hit;
+                }
+            } catch (Exception ignored) {
+            }
         }
-        try (Stream<Path> paths = Files.walk(root)) {
-            return paths
-                    .filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName() != null)
-                    .filter(path -> nameMatch.test(path.getFileName().toString()))
-                    .findFirst()
-                    .map(path -> path.toAbsolutePath().normalize());
+        return Optional.empty();
+    }
+
+    private static int bundleRank(Path root, Path path) {
+        try {
+            Path relative = root.toAbsolutePath().normalize()
+                    .relativize(path.toAbsolutePath().normalize());
+            String first = relative.getNameCount() > 0
+                    ? relative.getName(0).toString().toLowerCase(Locale.ROOT)
+                    : "";
+            if ("content".equals(first)) {
+                return 0;
+            }
+            if ("lib".equals(first) || "contentfiles".equals(first)
+                    || "package".equals(first) || "ref".equals(first)) {
+                return 2;
+            }
+            return 1;
         } catch (Exception e) {
-            return Optional.empty();
+            return 1;
         }
     }
 
@@ -473,16 +625,31 @@ public class DotnetSdkService {
         if (Files.isRegularFile(direct)) {
             return Optional.of(direct.toAbsolutePath().normalize());
         }
+        Path bundled = root.resolve("content").resolve("LanguageServer")
+                .resolve(roslynRid()).resolve(ROSLYN_LS_DLL);
+        if (Files.isRegularFile(bundled)) {
+            return Optional.of(bundled.toAbsolutePath().normalize());
+        }
         try (Stream<Path> paths = Files.walk(root)) {
             return paths
                     .filter(Files::isRegularFile)
                     .filter(path -> path.getFileName() != null)
                     .filter(path -> ROSLYN_LS_DLL.equals(path.getFileName().toString()))
-                    .findFirst()
+                    .min(Comparator.comparingInt(path -> bundleRank(root, path)))
                     .map(path -> path.toAbsolutePath().normalize());
         } catch (Exception e) {
             return Optional.empty();
         }
+    }
+
+    private Optional<Path> resolveRoslynDll(List<Path> roots) {
+        for (Path root : roots) {
+            Optional<Path> hit = resolveRoslynDll(root);
+            if (hit.isPresent()) {
+                return hit;
+            }
+        }
+        return Optional.empty();
     }
 
     private Optional<Path> resolveExecutable(Path root, String baseName) {
@@ -506,6 +673,16 @@ public class DotnetSdkService {
         }
     }
 
+    private Optional<Path> resolveExecutable(List<Path> roots, String baseName) {
+        for (Path root : roots) {
+            Optional<Path> hit = resolveExecutable(root, baseName);
+            if (hit.isPresent()) {
+                return hit;
+            }
+        }
+        return Optional.empty();
+    }
+
     private static SdkArtifact dotnetArtifact(String version) {
         Platform p = currentPlatform();
         String rid = p.dotnetRid();
@@ -527,17 +704,41 @@ public class DotnetSdkService {
         return new SdkArtifact(version, fileName, url, OMNISHARP_PROGRESS_ID, "Baixando IntelliSense C# " + version);
     }
 
-    private static SdkArtifact roslynArtifact(String version) {
+    private static String roslynRid() {
         Platform p = currentPlatform();
         String os = p.isWindows() ? "win" : (p.isMac() ? "osx" : "linux");
         String arch = p.isArm64() ? "arm64" : "x64";
-        String rid = os + "-" + arch;
+        return os + "-" + arch;
+    }
 
-        String fileName = "microsoft.codeanalysis.languageserver." + rid + ".zip";
-        String url = "https://github.com/" + ROSLYN_LS_RELEASE_REPOSITORY + "/releases/download/"
-                + version + "/" + fileName;
+    private static SdkArtifact roslynArtifact(String version) {
+        String packageId = "microsoft.codeanalysis.languageserver." + roslynRid();
+        String fileName = packageId + "." + version.toLowerCase(Locale.ROOT) + ".nupkg";
+        String url = nugetPackageUrl(packageId, version);
         return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
-                "Baixando IntelliSense C# " + version);
+                "Baixando IntelliSense C# MIT " + version);
+    }
+
+    private static SdkArtifact razorArtifact(String version) {
+        String packageId = "microsoft.visualstudiocode.razorextension";
+        String fileName = packageId + "." + version.toLowerCase(Locale.ROOT) + ".nupkg";
+        String url = nugetPackageUrl(packageId, version);
+        return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
+                "Baixando suporte Razor MIT " + version);
+    }
+
+    private static SdkArtifact razorCompilerArtifact(String version) {
+        String packageId = "microsoft.codeanalysis.razor.compiler";
+        String fileName = packageId + "." + version.toLowerCase(Locale.ROOT) + ".nupkg";
+        String url = nugetPackageUrl(packageId, version);
+        return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
+                "Baixando compilador Razor MIT " + version);
+    }
+
+    private static String nugetPackageUrl(String lowerPackageId, String version) {
+        String lowerVersion = version.toLowerCase(Locale.ROOT);
+        return NUGET_FLAT_CONTAINER + "/" + lowerPackageId + "/" + lowerVersion
+                + "/" + lowerPackageId + "." + lowerVersion + ".nupkg";
     }
 
     private static SdkArtifact netcoredbgArtifact(String version) {
@@ -687,7 +888,7 @@ public class DotnetSdkService {
         String name = archive.getFileName().toString().toLowerCase(Locale.ROOT);
         if (name.endsWith(".tar.gz") || name.endsWith(".tgz")) {
             extractTarGz(archive, targetDir);
-        } else if (name.endsWith(".zip")) {
+        } else if (name.endsWith(".zip") || name.endsWith(".nupkg")) {
             extractZipInto(archive, targetDir);
         } else {
             throw new IllegalStateException("Formato de arquivo não suportado: " + archive.getFileName());
@@ -722,10 +923,10 @@ public class DotnetSdkService {
 
     private static void extractZipInto(Path zip, Path targetDir) throws java.io.IOException {
         Path normalizedTarget = targetDir.toAbsolutePath().normalize();
-        try (java.util.zip.ZipInputStream zin =
-                     new java.util.zip.ZipInputStream(Files.newInputStream(zip))) {
-            java.util.zip.ZipEntry entry;
-            while ((entry = zin.getNextEntry()) != null) {
+        try (java.util.zip.ZipFile zipFile = new java.util.zip.ZipFile(zip.toFile())) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zipFile.entries();
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
                 Path output = normalizedTarget.resolve(entry.getName()).normalize();
                 if (!output.startsWith(normalizedTarget)) {
                     continue;
@@ -737,7 +938,9 @@ public class DotnetSdkService {
                     if (parent != null) {
                         Files.createDirectories(parent);
                     }
-                    Files.copy(zin, output, StandardCopyOption.REPLACE_EXISTING);
+                    try (InputStream in = zipFile.getInputStream(entry)) {
+                        Files.copy(in, output, StandardCopyOption.REPLACE_EXISTING);
+                    }
                 }
             }
         }

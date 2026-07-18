@@ -154,6 +154,7 @@ import java.util.TreeSet;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 import static dtm.ide.DotnetProjectConventions.isCSharpLike;
 import static dtm.ide.DotnetProjectConventions.isHighlightable;
@@ -170,6 +171,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile IdeProjectContext projectContext;
     private volatile DotnetSdkService sdkService;
     private volatile LspService lspService;
+    private volatile LspServerKind lspServiceKind;
     private final DotnetRunSupport runSupport = new DotnetRunSupport();
     private volatile ExecutorService languageSetupExecutor;
     private volatile ExecutorService navigationExecutor;
@@ -179,6 +181,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private static final int CODE_LENS_LIMIT = 100;
     private final Set<Path> featureRefreshedFiles = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean analyzeProgressShown = new AtomicBoolean(false);
+    private final AtomicBoolean languageServicesStarting = new AtomicBoolean(false);
+    private final AtomicBoolean razorToolchainPrompted = new AtomicBoolean(false);
     private volatile int lspLoadPercent = 0;
     private volatile DotnetProjectConfigPanel projectConfigPanel;
     private volatile DotnetPluginSettings pluginSettings;
@@ -279,6 +283,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
             service.clearMetadataCache();
         }
         stopLanguageServices();
+        languageServicesStarting.set(false);
+        razorToolchainPrompted.set(false);
         editorRegistry.clearProjectEditors();
         this.projectContext = null;
         this.projectPath = null;
@@ -349,6 +355,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (project == null) {
             return;
         }
+        LspService current = lspService;
+        if (current != null && (current.isRunning() || current.getState() == LspService.State.STARTING)) {
+            return;
+        }
+        if (!languageServicesStarting.compareAndSet(false, true)) {
+            return;
+        }
         long ticket = projectLifecycleTicket.get();
         languageSetupExecutor().execute(() -> {
             try {
@@ -362,17 +375,26 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 runSupport.bindSdk(sdk);
                 DotnetSdkService.DownloadProgressListener progress = progressListener();
                 String requiredSdkVersion = sdk.resolveSdkVersion(project);
-                LspServerKind kind = LanguageServerSelector.select(project, ensurePluginSettings());
+                boolean projectHasRazor = hasRazorFiles(project) || editorRegistry.hasOpenRazorEditors();
+                LspServerKind kind = projectHasRazor
+                        ? LspServerKind.ROSLYN
+                        : LanguageServerSelector.select(project, ensurePluginSettings());
+                LspService service = ensureLspService(sdk, kind);
+                service.bindProject(project);
                 boolean roslyn = kind == LspServerKind.ROSLYN;
+                boolean needsRazor = roslyn && projectHasRazor;
+                bindRazorProject(service, needsRazor);
                 boolean needDotnet = sdk.getDotnetPath(requiredSdkVersion).isEmpty();
-                boolean needServer = roslyn
+                boolean needBaseServer = roslyn
                         ? sdk.getRoslynLanguageServerPath().isEmpty()
                         : sdk.getOmniSharpPath().isEmpty();
+                boolean needRazorSupport = needsRazor && !sdk.isRoslynRazorReady();
                 boolean needRoslynRuntime = roslyn && sdk.getRoslynRuntimeRoot().isEmpty();
+                boolean needMandatoryToolchain = needDotnet || needBaseServer || needRoslynRuntime;
 
-                if ((needDotnet || needServer || needRoslynRuntime)
+                if (needMandatoryToolchain
                         && !confirmToolchainDownload(needDotnet ? requiredSdkVersion : null,
-                                needServer || needRoslynRuntime)) {
+                                needBaseServer || needRoslynRuntime)) {
                     return;
                 }
 
@@ -384,11 +406,18 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     sdk.ensureRoslynRuntime(progress);
                 }
 
-                if (needServer) {
+                if (needBaseServer) {
                     if (roslyn) {
                         sdk.ensureRoslyn(progress);
                     } else {
                         sdk.ensureOmniSharp(progress);
+                    }
+                }
+                if (needRazorSupport && razorToolchainPrompted.compareAndSet(false, true)) {
+                    try {
+                        sdk.ensureRoslynRazor(progress);
+                    } catch (Exception e) {
+                        log.warn("Falha ao preparar suporte Razor para o Roslyn LS: {}", e.getMessage());
                     }
                 }
                 if (!isProjectCurrent(ticket, project)) {
@@ -398,9 +427,6 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 if (!isProjectCurrent(ticket, project)) {
                     return;
                 }
-                LspService service = ensureLspService(sdk, kind);
-                service.bindProject(project);
-
                 analyzeProgressShown.set(true);
                 SwingUtilities.invokeLater(() -> {
                     showProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# / Razor project"));
@@ -427,6 +453,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 }
             } catch (Exception e) {
                 log.warn("Falha ao iniciar serviços de linguagem .NET: {}", e.getMessage());
+            } finally {
+                languageServicesStarting.set(false);
             }
         });
     }
@@ -497,6 +525,20 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return dir != null && !Files.isRegularFile(dir.resolve("obj").resolve("project.assets.json"));
     }
 
+    private static boolean hasRazorFiles(Path project) {
+        if (project == null || !Files.isDirectory(project)) {
+            return false;
+        }
+        try (Stream<Path> paths = Files.walk(project, 8)) {
+            return paths
+                    .filter(Files::isRegularFile)
+                    .filter(path -> !DotnetProjectConventions.isInsideHiddenArtifact(project, path))
+                    .anyMatch(DotnetProjectConventions::isRazorLike);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static void drainQuietly(InputStream in) {
         try (in) {
             byte[] buffer = new byte[8192];
@@ -539,11 +581,21 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private synchronized LspService ensureLspService(DotnetSdkService sdk, LspServerKind kind) {
         if (lspService != null) {
-            return lspService;
+            if (lspServiceKind == kind) {
+                return lspService;
+            }
+            lspService.stop();
+            lspService = null;
+            lspServiceKind = null;
         }
         lspService = kind == LspServerKind.ROSLYN
                 ? new RoslynLspService(getResource(), sdk)
                 : new OmniSharpLspService(getResource(), sdk);
+        lspServiceKind = kind;
+        if (lspService instanceof RoslynLspService roslynService) {
+            roslynService.addRazorCohostReadyListener(() ->
+                    SwingUtilities.invokeLater(this::refreshOpenEditors));
+        }
         lspService.setApplyEditSink(this::applyWorkspaceEditFromServer);
         lspService.addDiagnosticsPublishedListener(uri -> {
             Path file = DotnetProjectConventions.pathFromUri(uri);
@@ -575,6 +627,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return lspService;
     }
 
+    private static void bindRazorProject(LspService service, boolean razorProject) {
+        if (service instanceof RoslynLspService roslyn) {
+            roslyn.bindRazorProject(razorProject);
+        }
+    }
+
     private DownloadObserver resolveDownloadObserver() {
         try {
             return getService(DownloadObserver.class);
@@ -585,17 +643,141 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean lspHandlesEditor(Path filePath) {
+        if (!isLspSupportedFile(filePath)) {
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isLspSupportedFile(Path filePath) {
         if (filePath == null) {
             return false;
         }
         if (isCSharpLike(filePath)) {
             return true;
         }
-        if (!DotnetProjectConventions.isRazorLike(filePath)) {
+        return DotnetProjectConventions.isRazorLike(filePath);
+    }
+
+    private Path resolveEditorFile(Path filePath) {
+        return resolveEditorFile(filePath, null);
+    }
+
+    private Path resolveEditorFile(Path filePath, String text) {
+        if (isLspSupportedFile(filePath)) {
+            return normalizePath(filePath);
+        }
+        Path openForText = editorRegistry.openHighlightablePathForText(text);
+        if (isLspSupportedFile(openForText)) {
+            return normalizePath(openForText);
+        }
+        Path active = activeFile;
+        if (isLspSupportedFile(active)) {
+            return normalizePath(active);
+        }
+        Path single = editorRegistry.singleOpenHighlightablePath();
+        return isLspSupportedFile(single) ? normalizePath(single) : null;
+    }
+
+    private LspService serviceOrStartForEditor(Path filePath) {
+        return serviceOrStartForEditor(filePath, 0);
+    }
+
+    private LspService serviceOrStartForEditor(Path filePath, long waitMs) {
+        return serviceOrStartForEditor(filePath, null, waitMs);
+    }
+
+    private LspService serviceOrStartForEditor(Path filePath, String text, long waitMs) {
+        filePath = resolveEditorFile(filePath, text);
+        if (!isLspSupportedFile(filePath)) {
+            return null;
+        }
+        boolean razorFile = DotnetProjectConventions.isRazorLike(filePath);
+        LspService service = lspService;
+        if (razorFile && !(service instanceof RoslynLspService)) {
+            service = ensureRazorEditorService(filePath);
+        }
+        if (razorFile) {
+            bindRazorProject(service, true);
+        }
+        if (service == null || (!service.isRunning() && !isLspLoading(service))) {
+            startLanguageServicesAsync();
+            service = waitForEditorService(filePath, waitMs);
+        }
+        return service;
+    }
+
+    private LspService ensureRazorEditorService(Path filePath) {
+        Path project = projectPath != null ? projectPath : inferProjectRoot(filePath);
+        if (project == null) {
+            return null;
+        }
+        DotnetSdkService sdk = ensureSdkService();
+        if (sdk == null) {
+            return null;
+        }
+        LspService service = ensureLspService(sdk, LspServerKind.ROSLYN);
+        service.bindProject(project);
+        bindRazorProject(service, true);
+        return service;
+    }
+
+    private static Path inferProjectRoot(Path filePath) {
+        Path dir = filePath == null ? null : (Files.isDirectory(filePath) ? filePath : filePath.getParent());
+        while (dir != null) {
+            if (containsProjectOrSolution(dir)) {
+                return dir;
+            }
+            dir = dir.getParent();
+        }
+        return null;
+    }
+
+    private static boolean containsProjectOrSolution(Path dir) {
+        if (dir == null || !Files.isDirectory(dir)) {
             return false;
         }
-        LspService service = lspService;
-        return service != null && service.supportsRazor();
+        try (Stream<Path> entries = Files.list(dir)) {
+            return entries
+                    .filter(Files::isRegularFile)
+                    .anyMatch(path -> {
+                        String name = path.getFileName() == null
+                                ? ""
+                                : path.getFileName().toString().toLowerCase(Locale.ROOT);
+                        return name.endsWith(".sln") || name.endsWith(".slnx") || name.endsWith(".csproj");
+                    });
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private LspService waitForEditorService(Path filePath, long waitMs) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0, waitMs));
+        do {
+            LspService service = lspService;
+            if (service != null) {
+                if (!service.isRunning() && isLspLoading(service)) {
+                    service.awaitReady(Math.max(1, deadlineMillisRemaining(deadline)));
+                }
+                if (service.isRunning() || waitMs <= 0) {
+                    return service;
+                }
+            }
+            if (waitMs <= 0) {
+                return null;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        } while (System.nanoTime() < deadline);
+        return null;
+    }
+
+    private static long deadlineMillisRemaining(long deadlineNanos) {
+        return Math.max(0, TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()));
     }
 
     private DotnetSdkService.DownloadProgressListener progressListener() {
@@ -754,6 +936,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         installCodeActionCommandHandler(context);
+        applyInitialSyntaxHighlight(context);
         triggerDiagnostics(normalized, context.getText());
     }
 
@@ -772,7 +955,17 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         installCodeActionCommandHandler(editorContext);
+        applyInitialSyntaxHighlight(editorContext);
         triggerDiagnostics(file, editorContext.getText());
+    }
+
+    private void applyInitialSyntaxHighlight(IdeEditorContext context) {
+        try {
+            context.setSyntaxHighlightEnabled(true);
+            context.applySyntaxHighlight();
+        } catch (Exception e) {
+            log.debug("Falha ao aplicar realce inicial: {}", e.getMessage());
+        }
     }
 
     private boolean applyDecompiledEditorGuards(IdeEditorContext context) {
@@ -903,14 +1096,17 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void triggerDiagnostics(Path file, String text) {
-        LspService service = lspService;
-        if (service == null || file == null || !lspHandlesEditor(file) || service.isDecompiled(file)) {
+        LspService service = serviceOrStartForEditor(file, 0);
+        if (service == null || file == null || service.isDecompiled(file)) {
             return;
         }
         navigationExecutor().execute(() -> {
             try {
                 if (!service.isRunning() && isLspLoading(service)) {
                     service.awaitReady(LSP_DIAGNOSTICS_WAIT_MS);
+                }
+                if (DotnetProjectConventions.isRazorLike(file) && !(service instanceof RoslynLspService)) {
+                    return;
                 }
                 service.diagnose(file, text);
             } catch (Exception ignored) {
@@ -963,20 +1159,27 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<AutoCompleteItem> getCompletionSuggestions(IdeCompletionContext context) {
-        LspService service = lspService;
-        if (service == null || context == null || !lspHandlesEditor(context.filePath())) {
+        if (context == null) {
+            return Collections.emptyList();
+        }
+        Path file = resolveEditorFile(context.filePath(), context.text());
+        LspService service = serviceOrStartForEditor(file, context.text(), LSP_COMPLETION_WAIT_MS);
+        if (service == null || !lspHandlesEditor(file)) {
             return Collections.emptyList();
         }
         if (!service.isRunning() && isLspLoading(service)) {
             service.awaitReady(LSP_COMPLETION_WAIT_MS);
         }
+        if (DotnetProjectConventions.isRazorLike(file) && !(service instanceof RoslynLspService)) {
+            return Collections.emptyList();
+        }
         return service.completeForEditor(
-                context.filePath(), context.text(), context.caretLine(), context.caretCol(), context.prefix());
+                file, context.text(), context.caretLine(), context.caretCol(), context.prefix());
     }
 
     @Override
     public boolean shouldAutoTriggerCompletion(IdeCompletionContext context) {
-        if (context == null || !lspHandlesEditor(context.filePath())) {
+        if (context == null || !lspHandlesEditor(resolveEditorFile(context.filePath(), context.text()))) {
             return false;
         }
         String line = context.currentLine();
@@ -1436,14 +1639,21 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public Collection<Diagnostic> getDiagnostics(IdeDiagnosticsContext context,
                                                  boolean incremental,
                                                  Collection<Diagnostic> previous) {
-        LspService service = lspService;
-        if (service == null || context == null || !lspHandlesEditor(context.getFilePath())) {
+        if (context == null) {
             return Collections.emptyList();
         }
-        if (service.isDecompiled(context.getFilePath())) {
+        Path file = resolveEditorFile(context.getFilePath(), context.getText());
+        LspService service = serviceOrStartForEditor(file, context.getText(), LSP_DIAGNOSTICS_WAIT_MS);
+        if (service == null || !lspHandlesEditor(file)) {
             return Collections.emptyList();
         }
-        return service.diagnose(context.getFilePath(), context.getText());
+        if (service.isDecompiled(file)) {
+            return Collections.emptyList();
+        }
+        if (DotnetProjectConventions.isRazorLike(file) && !(service instanceof RoslynLspService)) {
+            return Collections.emptyList();
+        }
+        return service.diagnose(file, context.getText());
     }
 
     @Override

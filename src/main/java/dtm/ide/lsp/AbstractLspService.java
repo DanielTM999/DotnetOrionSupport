@@ -65,6 +65,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 @Slf4j
 public abstract class AbstractLspService implements LspService {
@@ -365,6 +366,7 @@ public abstract class AbstractLspService implements LspService {
             List<AutoCompleteItem> merged = mergeImportCandidates(items, text, prefix);
             return prioritizeByPrefix(merged, prefix);
         } catch (Exception e) {
+            log.debug("Falha ao completar via LSP: {}", e.getMessage());
             return Collections.emptyList();
         }
     }
@@ -2333,26 +2335,29 @@ public abstract class AbstractLspService implements LspService {
 
     private Map<String, Object> clientCapabilities() {
         Map<String, Object> textDocument = new LinkedHashMap<>();
-        textDocument.put("synchronization", Map.of("dynamicRegistration", false));
+        textDocument.put("synchronization", Map.of("dynamicRegistration", true));
         textDocument.put("completion", Map.of("completionItem",
                 Map.of("snippetSupport", true,
                         "documentationFormat", List.of("plaintext"),
                         "resolveSupport", Map.of("properties",
-                                List.of("additionalTextEdits", "detail", "documentation")))));
-        textDocument.put("hover", Map.of("contentFormat", List.of("markdown", "plaintext")));
-        textDocument.put("definition", Map.of("dynamicRegistration", false, "linkSupport", true));
-        textDocument.put("implementation", Map.of("dynamicRegistration", false, "linkSupport", true));
-        textDocument.put("typeDefinition", Map.of("dynamicRegistration", false, "linkSupport", true));
-        textDocument.put("signatureHelp", Map.of("dynamicRegistration", false,
+                                List.of("additionalTextEdits", "detail", "documentation"))),
+                "dynamicRegistration", true));
+        textDocument.put("hover", Map.of(
+                "dynamicRegistration", true,
+                "contentFormat", List.of("markdown", "plaintext")));
+        textDocument.put("definition", Map.of("dynamicRegistration", true, "linkSupport", true));
+        textDocument.put("implementation", Map.of("dynamicRegistration", true, "linkSupport", true));
+        textDocument.put("typeDefinition", Map.of("dynamicRegistration", true, "linkSupport", true));
+        textDocument.put("signatureHelp", Map.of("dynamicRegistration", true,
                 "signatureInformation", Map.of("documentationFormat", List.of("plaintext"),
                         "parameterInformation", Map.of("labelOffsetSupport", true))));
-        textDocument.put("references", Map.of("dynamicRegistration", false));
-        textDocument.put("documentSymbol", Map.of("dynamicRegistration", false, "hierarchicalDocumentSymbolSupport", true));
-        textDocument.put("rename", Map.of("dynamicRegistration", false, "prepareSupport", true));
-        textDocument.put("formatting", Map.of("dynamicRegistration", false));
-        textDocument.put("onTypeFormatting", Map.of("dynamicRegistration", false));
+        textDocument.put("references", Map.of("dynamicRegistration", true));
+        textDocument.put("documentSymbol", Map.of("dynamicRegistration", true, "hierarchicalDocumentSymbolSupport", true));
+        textDocument.put("rename", Map.of("dynamicRegistration", true, "prepareSupport", true));
+        textDocument.put("formatting", Map.of("dynamicRegistration", true));
+        textDocument.put("onTypeFormatting", Map.of("dynamicRegistration", true));
         textDocument.put("codeAction", Map.of(
-                "dynamicRegistration", false,
+                "dynamicRegistration", true,
                 "isPreferredSupport", true,
                 "dataSupport", true,
                 "resolveSupport", Map.of("properties", List.of("edit")),
@@ -2360,17 +2365,19 @@ public abstract class AbstractLspService implements LspService {
                         "", "quickfix", "refactor", "refactor.extract", "refactor.inline",
                         "refactor.rewrite", "source", "source.organizeImports", "source.fixAll")))));
         textDocument.put("semanticTokens", Map.of(
-                "dynamicRegistration", false,
+                "dynamicRegistration", true,
                 "requests", Map.of("full", true),
                 "tokenTypes", CLIENT_TOKEN_TYPES,
                 "tokenModifiers", CLIENT_TOKEN_MODIFIERS,
                 "formats", List.of("relative")));
-        textDocument.put("inlayHint", Map.of("dynamicRegistration", false));
-        textDocument.put("callHierarchy", Map.of("dynamicRegistration", false));
+        textDocument.put("inlayHint", Map.of("dynamicRegistration", true));
+        textDocument.put("callHierarchy", Map.of("dynamicRegistration", true));
         textDocument.put("publishDiagnostics", Map.of("relatedInformation", false));
         textDocument.putAll(extraTextDocumentCapabilities());
         Map<String, Object> workspace = Map.of(
                 "symbol", Map.of("dynamicRegistration", false),
+                "configuration", true,
+                "didChangeConfiguration", Map.of("dynamicRegistration", true),
                 "applyEdit", true,
                 "executeCommand", Map.of("dynamicRegistration", false));
         return Map.of("textDocument", textDocument, "workspace", workspace);
@@ -2417,6 +2424,120 @@ public abstract class AbstractLspService implements LspService {
             }
             return Map.of("applied", applied);
         });
+        client.onRequest("workspace/configuration", this::workspaceConfiguration);
+        client.onRequest("workspace/diagnostic/refresh", params -> {
+            for (String uri : openedContent.keySet()) {
+                notifyDiagnosticsPublished(uri);
+            }
+            return null;
+        });
+        client.onRequest("client/registerCapability", this::handleRegisterCapability);
+        client.onRequest("client/unregisterCapability", this::handleUnregisterCapability);
+        client.onNotification("razor/log", this::handleRazorLog);
+        client.onNotification("window/_roslyn_showToast", params -> {
+        });
+    }
+
+    private Object handleRegisterCapability(JsonNode params) {
+        JsonNode registrations = params == null ? null : params.get("registrations");
+        if (registrations != null && registrations.isArray()) {
+            for (JsonNode registration : registrations) {
+                String method = registration.path("method").asText("");
+                log.debug("client/registerCapability method='{}' options={}", method, registration.get("registerOptions"));
+                onCapabilityRegistered(method, registration.get("registerOptions"));
+            }
+        }
+        return null;
+    }
+
+    private Object handleUnregisterCapability(JsonNode params) {
+        JsonNode unregisterations = params == null ? null : params.get("unregisterations");
+        if (unregisterations != null && unregisterations.isArray()) {
+            for (JsonNode registration : unregisterations) {
+                onCapabilityUnregistered(registration.path("method").asText(""));
+            }
+        }
+        return null;
+    }
+
+    protected void onCapabilityRegistered(String method, JsonNode registerOptions) {
+    }
+
+    protected void onCapabilityUnregistered(String method) {
+    }
+
+    private void handleRazorLog(JsonNode params) {
+        if (params == null || params.path("type").asInt(0) != 1) {
+            return;
+        }
+        String message = params.path("message").asText("");
+        if (!message.isBlank()) {
+            log.debug("[Razor] {}", message);
+        }
+    }
+
+    private Object workspaceConfiguration(JsonNode params) {
+        JsonNode items = params == null ? null : params.get("items");
+        if (items == null || !items.isArray()) {
+            return List.of();
+        }
+        List<Object> values = new ArrayList<>(items.size());
+        for (JsonNode item : items) {
+            String section = item == null ? "" : item.path("section").asText("");
+            Object value = configurationValue(section);
+            log.debug("workspace/configuration section='{}' -> {}", section, value);
+            values.add(value);
+        }
+        return values;
+    }
+
+    private static Object configurationValue(String section) {
+        return switch (section == null ? "" : section) {
+            case "razor" -> razorSettingsBlock();
+            case "razor.language_server" -> razorLanguageServerOptions();
+            case "razor.completion" -> razorCompletionOptions();
+            case "razor.format" -> razorFormatOptions();
+            case "razor.language_server.cohosting_enabled",
+                 "razor.languageServer.cohostingEnabled",
+                 "razor.language_server.use_new_formatting_engine",
+                 "razor.languageServer.useNewFormattingEngine",
+                 "razor.completion.commit_elements_with_space" -> true;
+            case "razor.language_server.force_runtime_code_generation",
+                 "razor.languageServer.forceRuntimeCodeGeneration",
+                 "razor.format.code_block_brace_on_next_line",
+                 "projects.dotnet_enable_file_based_programs" -> false;
+            default -> null;
+        };
+    }
+
+    protected static Map<String, Object> razorSettingsBlock() {
+        return Map.of(
+                "language_server", razorLanguageServerOptions(),
+                "languageServer", razorLanguageServerOptions(),
+                "completion", razorCompletionOptions(),
+                "format", razorFormatOptions());
+    }
+
+    private static Map<String, Object> razorLanguageServerOptions() {
+        return Map.of(
+                "cohosting_enabled", true,
+                "cohostingEnabled", true,
+                "use_new_formatting_engine", true,
+                "useNewFormattingEngine", true,
+                "force_runtime_code_generation", false,
+                "forceRuntimeCodeGeneration", false);
+    }
+
+    private static Map<String, Object> razorCompletionOptions() {
+        return Map.of(
+                "commit_elements_with_space", true,
+                "commitElementsWithSpace", true);
+    }
+
+    private static Map<String, Object> razorFormatOptions() {
+        return Map.of(
+                "code_block_brace_on_next_line", false,
+                "codeBlockBraceOnNextLine", false);
     }
 
     protected final void handleBackgroundDiagnosticStatus(JsonNode params) {
@@ -2460,6 +2581,27 @@ public abstract class AbstractLspService implements LspService {
         diagnosticsByUri.remove(normalizeUriKey(uri));
         if (firstOpen) {
             prewarmImportCompletion(uri, safeText);
+        }
+    }
+
+    protected synchronized void resyncDocuments(Predicate<String> uriFilter) {
+        LspJsonRpcClient rpc = client;
+        if (rpc == null) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : openedContent.entrySet()) {
+            String uri = entry.getKey();
+            if (uriFilter != null && !uriFilter.test(uri)) {
+                continue;
+            }
+            try {
+                rpc.sendNotification("textDocument/didClose", Map.of(
+                        "textDocument", Map.of("uri", uri)));
+                sendDidOpen(uri, entry.getValue());
+                log.info("Documento ressincronizado após registro cohost: {}", uri);
+            } catch (Exception e) {
+                log.debug("Falha ao ressincronizar {}: {}", uri, e.getMessage());
+            }
         }
     }
 
@@ -2528,7 +2670,7 @@ public abstract class AbstractLspService implements LspService {
     protected String languageIdForUri(String uri) {
         String lower = uri == null ? "" : uri.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".razor") || lower.endsWith(".cshtml")) {
-            return "razor";
+            return "aspnetcorerazor";
         }
         return "csharp";
     }
@@ -3219,7 +3361,7 @@ public abstract class AbstractLspService implements LspService {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                log.debug("[{}] {}", serverName(), line);
+                log.warn("[{}] {}", serverName(), line);
             }
         } catch (Exception ignored) {
         }

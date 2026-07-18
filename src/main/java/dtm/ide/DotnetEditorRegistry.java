@@ -81,8 +81,32 @@ final class DotnetEditorRegistry {
         return !editorPaths.isEmpty();
     }
 
+    boolean hasOpenRazorEditors() {
+        return editorPaths.stream()
+                .filter(Objects::nonNull)
+                .anyMatch(DotnetProjectConventions::isRazorLike);
+    }
+
     IdeEditorContext editorContext(Path normalizedPath) {
         return editorContexts.get(normalizedPath);
+    }
+
+    Path openHighlightablePathForText(String text) {
+        if (text == null) {
+            return null;
+        }
+        for (Map.Entry<Path, IdeEditorContext> entry : editorContexts.entrySet()) {
+            IdeEditorContext context = entry.getValue();
+            try {
+                if (context != null
+                        && DotnetProjectConventions.isHighlightable(entry.getKey())
+                        && Objects.equals(context.getText(), text)) {
+                    return entry.getKey();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     List<Path> regularOpenHighlightablePaths() {
@@ -91,5 +115,10 @@ final class DotnetEditorRegistry {
                 .filter(DotnetProjectConventions::isHighlightable)
                 .filter(Files::isRegularFile)
                 .toList();
+    }
+
+    Path singleOpenHighlightablePath() {
+        List<Path> paths = regularOpenHighlightablePaths();
+        return paths.size() == 1 ? paths.getFirst() : null;
     }
 }

@@ -5,10 +5,15 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/encodings.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetEditorRegistry.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetEditorRegistry.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/AbstractLspService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/AbstractLspService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/LspJsonRpcClient.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/LspJsonRpcClient.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/RoslynLspService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/RoslynLspService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/sdk/DotnetSdkService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/sdk/DotnetSdkService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/dtm/ide/lsp/DotnetLspServiceTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/dtm/ide/lsp/DotnetLspServiceTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/dtm/ide/sdk/DotnetSdkServiceTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/dtm/ide/sdk/DotnetSdkServiceTest.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -46,6 +51,7 @@
   <component name="PropertiesComponent">{
   &quot;keyToString&quot;: {
     &quot;JAR Application.AppJar.executor&quot;: &quot;Debug&quot;,
+    &quot;JUnit.RazorProjectLspIntegrationTest.realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml.executor&quot;: &quot;Debug&quot;,
     &quot;Maven.DotnetOrionSupport [clean,compile...].executor&quot;: &quot;Debug&quot;,
     &quot;Maven.DotnetOrionSupport [compile].executor&quot;: &quot;Run&quot;,
     &quot;Maven.DotnetOrionSupport [validate].executor&quot;: &quot;Run&quot;,
@@ -67,6 +73,22 @@
   }
 }</component>
   <component name="RunManager" selected="Remote JVM Debug.buildDebugPlugin">
+    <configuration name="RazorProjectLspIntegrationTest.realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml" type="JUnit" factoryName="JUnit" temporary="true" nameIsGenerated="true">
+      <module name="DotnetOrionSupport" />
+      <extension name="coverage">
+        <pattern>
+          <option name="PATTERN" value="dtm.ide.lsp.*" />
+          <option name="ENABLED" value="true" />
+        </pattern>
+      </extension>
+      <option name="PACKAGE_NAME" value="dtm.ide.lsp" />
+      <option name="MAIN_CLASS_NAME" value="dtm.ide.lsp.RazorProjectLspIntegrationTest" />
+      <option name="METHOD_NAME" value="realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml" />
+      <option name="TEST_OBJECT" value="method" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
     <configuration name="AppJar" type="JarApplication">
       <option name="JAR_PATH" value="$USER_HOME$/Orion/app/Orion.jar" />
       <option name="VM_PARAMETERS" value="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005" />
@@ -125,9 +147,15 @@
     </configuration>
     <list>
       <item itemvalue="JAR Application.AppJar" />
+      <item itemvalue="JUnit.RazorProjectLspIntegrationTest.realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml" />
       <item itemvalue="Maven.DotnetOrionSupport [clean,compile...]" />
       <item itemvalue="Remote JVM Debug.buildDebugPlugin" />
     </list>
+    <recent_temporary>
+      <list>
+        <item itemvalue="JUnit.RazorProjectLspIntegrationTest.realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml" />
+      </list>
+    </recent_temporary>
   </component>
   <component name="TaskManager">
     <task active="true" id="Default" summary="Default task">
@@ -143,6 +171,30 @@
     <option name="version" value="3" />
   </component>
   <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <line-breakpoint enabled="true" type="java-line">
+          <url>file://$PROJECT_DIR$/src/test/java/dtm/ide/lsp/RazorProjectLspIntegrationTest.java</url>
+          <line>67</line>
+          <option name="timeStamp" value="1" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" type="java-line">
+          <url>file://$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java</url>
+          <line>1157</line>
+          <option name="timeStamp" value="14" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" type="java-line">
+          <url>file://$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java</url>
+          <line>357</line>
+          <option name="timeStamp" value="18" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" type="java-line">
+          <url>file://$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java</url>
+          <line>747</line>
+          <option name="timeStamp" value="19" />
+        </line-breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
     <watches-manager>
       <configuration name="JarApplication">
         <watch expression="context" />

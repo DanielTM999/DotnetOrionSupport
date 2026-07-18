@@ -11,6 +11,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DotnetLspServiceTest {
@@ -84,28 +85,61 @@ class DotnetLspServiceTest {
         Path dotnet = dir.resolve("dotnet");
         Path server = dir.resolve("Microsoft.CodeAnalysis.LanguageServer.dll");
         Path extension = dir.resolve("Microsoft.VisualStudioCode.RazorExtension.dll");
+        Path sourceGenerator = dir.resolve("Microsoft.CodeAnalysis.Razor.Compiler.dll");
         Path targets = dir.resolve("Microsoft.NET.Sdk.Razor.DesignTime.targets");
-        RoslynLspService service = new RoslynLspService(null, new FakeSdk(dotnet, extension, targets));
+        RoslynLspService service = new RoslynLspService(null, new FakeSdk(dotnet, extension, sourceGenerator, targets));
 
         List<String> command = service.buildLaunchCommand(server, dir);
 
         assertTrue(command.contains(dotnet.toAbsolutePath().toString()));
         assertTrue(command.contains(server.toAbsolutePath().toString()));
+        assertTrue(command.contains("--razorSourceGenerator"));
+        assertTrue(command.contains(sourceGenerator.toString()));
+        assertTrue(command.contains("--razorDesignTimePath"));
+        assertTrue(command.contains(targets.toString()));
         assertTrue(command.contains("--extension"));
         assertTrue(command.contains(extension.toString()));
-        assertTrue(command.contains("--csharpDesignTimePath"));
-        assertTrue(command.contains(targets.toString()));
+        assertFalse(command.contains("--csharpDesignTimePath"));
+        assertFalse(command.stream().anyMatch(arg -> arg.toLowerCase().contains("devkit")));
+        assertFalse(command.contains("--devKitDependencyPath"));
+    }
+
+    @Test
+    void razorDocumentsUseAspNetCoreRazorLanguageId() {
+        RoslynLspService service = new RoslynLspService(null, new FakeSdk(Path.of("dotnet"),
+                Path.of("Microsoft.VisualStudioCode.RazorExtension.dll"),
+                Path.of("Microsoft.CodeAnalysis.Razor.Compiler.dll"),
+                Path.of("Microsoft.NET.Sdk.Razor.DesignTime.targets")));
+
+        assertEquals("aspnetcorerazor", service.languageIdForUri("file:///C:/App/Pages/Index.cshtml"));
+        assertEquals("aspnetcorerazor", service.languageIdForUri("file:///C:/App/Components/App.razor"));
+        assertEquals("csharp", service.languageIdForUri("file:///C:/App/Program.cs"));
+    }
+
+    @Test
+    void roslynDoesNotRequestDocumentOnlyFeaturesForRazorDocuments() {
+        RoslynLspService service = new RoslynLspService(null, new FakeSdk(Path.of("dotnet"),
+                Path.of("Microsoft.VisualStudioCode.RazorExtension.dll"),
+                Path.of("Microsoft.CodeAnalysis.Razor.Compiler.dll"),
+                Path.of("Microsoft.NET.Sdk.Razor.DesignTime.targets")));
+
+        assertNull(service.hover(Path.of("Components/App.razor"), "@code { }", 0, 1));
+        assertTrue(service.documentHighlights(Path.of("Views/Home/Index.cshtml"), "@DateTime.Now", 0, 2).isEmpty());
+        assertTrue(service.documentSymbols(Path.of("Components/App.razor"), "@code { }").isEmpty());
+        assertTrue(service.inlayHints(Path.of("Views/Home/Index.cshtml"), "@DateTime.Now", 0, 0).isEmpty());
     }
 
     private static final class FakeSdk extends DotnetSdkService {
         private final Path dotnet;
         private final Path razorExtension;
+        private final Path razorSourceGenerator;
         private final Path designTimeTargets;
 
-        private FakeSdk(Path dotnet, Path razorExtension, Path designTimeTargets) {
+        private FakeSdk(Path dotnet, Path razorExtension, Path razorSourceGenerator, Path designTimeTargets) {
             super(null, null);
             this.dotnet = dotnet;
             this.razorExtension = razorExtension;
+            this.razorSourceGenerator = razorSourceGenerator;
             this.designTimeTargets = designTimeTargets;
         }
 
@@ -125,8 +159,18 @@ class DotnetLspServiceTest {
         }
 
         @Override
+        public Optional<Path> getRazorSourceGeneratorPath() {
+            return Optional.of(razorSourceGenerator);
+        }
+
+        @Override
         public Optional<Path> getRazorDesignTimeTargets() {
             return Optional.of(designTimeTargets);
+        }
+
+        @Override
+        public boolean isRoslynRazorReady() {
+            return true;
         }
     }
 }

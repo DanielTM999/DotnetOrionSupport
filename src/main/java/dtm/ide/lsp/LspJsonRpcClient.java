@@ -170,6 +170,8 @@ final class LspJsonRpcClient {
                     } catch (Exception e) {
                         log.debug("Handler de request LSP {} falhou: {}", method, e.getMessage());
                     }
+                } else {
+                    log.debug("Request LSP sem handler: {}", method);
                 }
                 ObjectNode response = MAPPER.createObjectNode();
                 response.put("jsonrpc", "2.0");
@@ -189,6 +191,8 @@ final class LspJsonRpcClient {
                 } catch (Exception e) {
                     log.debug("Handler LSP {} falhou: {}", method, e.getMessage());
                 }
+            } else {
+                log.debug("Notificacao LSP sem handler: {}", method);
             }
         }
     }

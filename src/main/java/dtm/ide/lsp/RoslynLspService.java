@@ -2,9 +2,14 @@ package dtm.ide.lsp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import dtm.ide.api.extension.Resource;
+import dtm.ide.api.project.editor.DocumentHighlight;
 import dtm.ide.run.TargetFramework;
 import dtm.ide.sdk.DotnetSdkService;
+import dtm.stools.component.panels.editor.code.api.DocumentSymbol;
+import dtm.stools.component.panels.editor.code.autocomplete.AutoCompleteItem;
 import dtm.stools.component.panels.editor.code.diagnostics.Diagnostic;
+import dtm.stools.component.panels.editor.code.hover.HoverInfo;
+import dtm.stools.component.panels.editor.code.inlay.InlayHint;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.file.Files;
@@ -16,12 +21,25 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 public final class RoslynLspService extends AbstractLspService {
 
     private static final long DIAGNOSTIC_TIMEOUT_MS = 5000;
+    private static final long RAZOR_COMPLETION_REGISTRATION_WAIT_MS = 3000;
+    private volatile boolean razorProject;
+    private volatile boolean launchedWithRazor;
+    private volatile CountDownLatch razorCompletionRegistration = new CountDownLatch(1);
+    private final Set<String> razorRegisteredMethods = ConcurrentHashMap.newKeySet();
+    private final List<Runnable> razorCohostReadyListeners = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean razorCohostReadyFired = new AtomicBoolean(false);
+    private final AtomicBoolean razorDocsResynced = new AtomicBoolean(false);
 
     public RoslynLspService(Resource resource, DotnetSdkService sdkService) {
         super(resource, sdkService);
@@ -51,20 +69,125 @@ public final class RoslynLspService extends AbstractLspService {
         command.add("--extensionLogDirectory");
         command.add(logDirectory().toAbsolutePath().toString());
         command.add("--stdio");
-        sdkService().getRazorExtensionPath().ifPresent(extension -> {
-            command.add("--extension");
-            command.add(extension.toString());
-            sdkService().getRazorDesignTimeTargets().ifPresent(targets -> {
-                command.add("--csharpDesignTimePath");
-                command.add(targets.toString());
+        Optional<Path> razorExtension = sdkService().getRazorExtensionPath();
+        Optional<Path> razorSourceGenerator = sdkService().getRazorSourceGeneratorPath();
+        Optional<Path> razorDesignTimeTargets = sdkService().getRazorDesignTimeTargets();
+        launchedWithRazor = razorExtension.isPresent();
+        if (!launchedWithRazor) {
+            log.warn("Roslyn LS sem suporte Razor — RazorExtension.dll não encontrado no bundle "
+                    + "(sourceGenerator={} designTimeTargets={})",
+                    razorSourceGenerator.isPresent(), razorDesignTimeTargets.isPresent());
+        } else {
+            razorSourceGenerator.ifPresent(path -> {
+                command.add("--razorSourceGenerator");
+                command.add(path.toString());
             });
-        });
+            razorDesignTimeTargets.ifPresent(path -> {
+                command.add("--razorDesignTimePath");
+                command.add(path.toString());
+            });
+            command.add("--extension");
+            command.add(razorExtension.get().toString());
+        }
+        log.info("Roslyn LS: {}", String.join(" ", command));
         return command;
     }
 
     @Override
+    protected void prepareServerConfig(Path binary) {
+        razorRegisteredMethods.clear();
+        razorCompletionRegistration = new CountDownLatch(1);
+        razorCohostReadyFired.set(false);
+        razorDocsResynced.set(false);
+    }
+
+    public void addRazorCohostReadyListener(Runnable listener) {
+        if (listener != null) {
+            razorCohostReadyListeners.add(listener);
+        }
+    }
+
+    public void bindRazorProject(boolean razorProject) {
+        this.razorProject = razorProject;
+    }
+
+    @Override
     public boolean supportsRazor() {
-        return sdkService().getRazorExtensionPath().isPresent();
+        return razorProject || launchedWithRazor || sdkService().isRoslynRazorReady();
+    }
+
+    public boolean isRazorLaunchEnabled() {
+        return launchedWithRazor;
+    }
+
+    @Override
+    public HoverInfo hover(Path filePath, String text, int line, int character) {
+        if (isRazorFile(filePath) && !isRazorMethodRegistered("textDocument/hover")) {
+            return null;
+        }
+        return super.hover(filePath, text, line, character);
+    }
+
+    @Override
+    public List<DocumentHighlight> documentHighlights(Path filePath, String text, int line, int character) {
+        if (isRazorFile(filePath) && !isRazorMethodRegistered("textDocument/documentHighlight")) {
+            return Collections.emptyList();
+        }
+        return super.documentHighlights(filePath, text, line, character);
+    }
+
+    @Override
+    public List<DocumentSymbol> documentSymbols(Path filePath, String text) {
+        if (isRazorFile(filePath) && !isRazorMethodRegistered("textDocument/documentSymbol")) {
+            return Collections.emptyList();
+        }
+        return super.documentSymbols(filePath, text);
+    }
+
+    @Override
+    public List<InlayHint> inlayHints(Path filePath, String text, int firstLine, int lastLine) {
+        if (isRazorFile(filePath) && !isRazorMethodRegistered("textDocument/inlayHint")) {
+            return Collections.emptyList();
+        }
+        return super.inlayHints(filePath, text, firstLine, lastLine);
+    }
+
+    @Override
+    public List<AutoCompleteItem> completeForEditor(Path filePath, String text, int line, int character, String prefix) {
+        if (isRazorFile(filePath) && !awaitRazorCompletionRegistration()) {
+            log.warn("Completion Razor sem registro cohost (launchedWithRazor={}, registrados={}); tentando mesmo assim",
+                    launchedWithRazor, razorRegisteredMethods);
+        }
+        return super.completeForEditor(filePath, text, line, character, prefix);
+    }
+
+    @Override
+    public List<AutoCompleteItem> complete(Path filePath, String text, int line, int character) {
+        if (isRazorFile(filePath) && !awaitRazorCompletionRegistration()) {
+            log.warn("Completion Razor sem registro cohost (launchedWithRazor={}, registrados={}); tentando mesmo assim",
+                    launchedWithRazor, razorRegisteredMethods);
+        }
+        return super.complete(filePath, text, line, character);
+    }
+
+    private boolean awaitRazorCompletionRegistration() {
+        if (isRazorMethodRegistered("textDocument/completion")) {
+            return true;
+        }
+        try {
+            razorCompletionRegistration.await(RAZOR_COMPLETION_REGISTRATION_WAIT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        boolean registered = isRazorMethodRegistered("textDocument/completion");
+        if (!registered) {
+            log.debug("Timeout aguardando registro do completion Razor; métodos cohost registrados: {}", razorRegisteredMethods);
+        }
+        return registered;
+    }
+
+    private boolean isRazorMethodRegistered(String method) {
+        return method != null && razorRegisteredMethods.contains(method);
     }
 
     private Path logDirectory() {
@@ -90,13 +213,52 @@ public final class RoslynLspService extends AbstractLspService {
     @Override
     protected Map<String, Object> extraTextDocumentCapabilities() {
         return Map.of("diagnostic", Map.of(
-                "dynamicRegistration", false,
+                "dynamicRegistration", true,
                 "relatedDocumentSupport", false));
     }
 
     @Override
+    protected void onCapabilityRegistered(String method, JsonNode registerOptions) {
+        if (method == null || method.isBlank() || !isRazorDocumentSelector(registerOptions)) {
+            return;
+        }
+        log.info("Cohosting Razor registrou {}", method);
+        razorRegisteredMethods.add(method);
+        if (("textDocument/didOpen".equals(method) || "textDocument/completion".equals(method))
+                && razorDocsResynced.compareAndSet(false, true)) {
+            resyncDocuments(RoslynLspService::isRazorUri);
+        }
+        if ("textDocument/completion".equals(method)) {
+            razorCompletionRegistration.countDown();
+            if (razorCohostReadyFired.compareAndSet(false, true)) {
+                for (Runnable listener : razorCohostReadyListeners) {
+                    try {
+                        listener.run();
+                    } catch (Exception e) {
+                        log.debug("Falha ao notificar cohosting Razor pronto: {}", e.getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
+    protected void onCapabilityUnregistered(String method) {
+        if (method == null || method.isBlank()) {
+            return;
+        }
+        razorRegisteredMethods.remove(method);
+        if ("textDocument/completion".equals(method)) {
+            razorCompletionRegistration = new CountDownLatch(1);
+        }
+    }
+
+    @Override
     protected void registerServerNotificationHandlers(LspJsonRpcClient rpc) {
-        rpc.onNotification("workspace/projectInitializationComplete", params -> markLoadFinished());
+        rpc.onNotification("workspace/projectInitializationComplete", params -> {
+            markLoadFinished();
+            resyncDocuments(RoslynLspService::isRazorUri);
+        });
     }
 
     @Override
@@ -105,20 +267,20 @@ public final class RoslynLspService extends AbstractLspService {
         if (rpc == null) {
             return;
         }
+        rpc.sendNotification("workspace/didChangeConfiguration",
+                Map.of("settings", Map.of("razor", razorSettingsBlock())));
         Path target = loadTarget();
         if (target != null && Files.isRegularFile(target) && isSolution(target)) {
             rpc.sendNotification("solution/open", Map.of("solution", toUri(target)));
-            return;
         }
         List<Path> projects = TargetFramework.findProjectFiles(projectPath());
-        if (projects.isEmpty()) {
-            return;
+        if (!projects.isEmpty()) {
+            List<String> uris = new ArrayList<>(projects.size());
+            for (Path project : projects) {
+                uris.add(toUri(project));
+            }
+            rpc.sendNotification("project/open", Map.of("projects", uris));
         }
-        List<String> uris = new ArrayList<>(projects.size());
-        for (Path project : projects) {
-            uris.add(toUri(project));
-        }
-        rpc.sendNotification("project/open", Map.of("projects", uris));
     }
 
     private static boolean isSolution(Path path) {
@@ -126,6 +288,36 @@ public final class RoslynLspService extends AbstractLspService {
                 ? ""
                 : path.getFileName().toString().toLowerCase(Locale.ROOT);
         return name.endsWith(".sln") || name.endsWith(".slnx");
+    }
+
+    private static boolean isRazorFile(Path filePath) {
+        if (filePath == null || filePath.getFileName() == null) {
+            return false;
+        }
+        String name = filePath.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".cshtml") || name.endsWith(".razor");
+    }
+
+    private static boolean isRazorDocumentSelector(JsonNode registerOptions) {
+        JsonNode selector = registerOptions == null ? null : registerOptions.get("documentSelector");
+        if (selector == null || !selector.isArray()) {
+            return false;
+        }
+        for (JsonNode filter : selector) {
+            String language = filter.path("language").asText("").toLowerCase(Locale.ROOT);
+            String pattern = filter.path("pattern").asText("").toLowerCase(Locale.ROOT);
+            if (language.contains("razor")
+                    || pattern.contains("cshtml")
+                    || pattern.contains("razor")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isRazorUri(String uri) {
+        String lower = uri == null ? "" : uri.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".cshtml") || lower.endsWith(".razor");
     }
 
     @Override
