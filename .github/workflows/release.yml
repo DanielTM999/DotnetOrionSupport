@@ -1,0 +1,183 @@
+name: Release plugin
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release existente para atualizar. Vazio usa a ultima release; se nao existir, cria v1.0.0."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish release asset
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+      DEP_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
+
+    steps:
+      - name: Checkout DotnetOrionSupport
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout OrionIde dependency
+        uses: actions/checkout@v4
+        with:
+          repository: DanielTM999/OrionIde
+          path: .deps/OrionIde
+          token: ${{ env.DEP_TOKEN }}
+
+      - name: Checkout RequestActions dependency
+        uses: actions/checkout@v4
+        with:
+          repository: DanielTM999/RequestActions
+          path: .deps/RequestActions
+          token: ${{ env.DEP_TOKEN }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Install OrionIde dependency
+        working-directory: .deps/OrionIde
+        run: mvn --batch-mode --no-transfer-progress -DskipTests install
+
+      - name: Install RequestActions dependency
+        working-directory: .deps/RequestActions
+        run: mvn --batch-mode --no-transfer-progress -DskipTests install
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          requested="${{ github.event.inputs.release_tag || '' }}"
+          latest="$(
+            gh release list --limit 100 --json tagName \
+              --jq '.[].tagName' 2>/dev/null \
+              | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sed 's/^v//' \
+              | sort -V \
+              | tail -n 1 || true
+          )"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ -n "$requested" ]]; then
+              version="${requested#v}"
+            elif [[ -n "$latest" ]]; then
+              version="$latest"
+            else
+              version="1.0.0"
+            fi
+          else
+            if [[ -n "$latest" ]]; then
+              version="$latest"
+            else
+              version="1.0.0"
+            fi
+          fi
+
+          tag="v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Build plugin and third-party licenses
+        run: mvn --batch-mode --no-transfer-progress -Dmaven.antrun.skip=true clean package
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jar="$(find target -maxdepth 1 -type f -name 'DotnetOrionSupport-*.jar' ! -name 'original-*' | sort | tail -n 1)"
+          if [[ -z "$jar" ]]; then
+            echo "Plugin jar not found in target/" >&2
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          cp "$jar" "release-assets/DotnetOrionSupport-${{ steps.version.outputs.version }}.jar"
+
+          if [[ -f LICENSE ]]; then
+            cp LICENSE release-assets/LICENSE.txt
+          fi
+
+          if [[ -d third-party-licenses ]]; then
+            (cd third-party-licenses && zip -qr ../release-assets/third-party-licenses.zip .)
+          fi
+
+          {
+            echo "jar=release-assets/DotnetOrionSupport-${{ steps.version.outputs.version }}.jar"
+            echo "license=release-assets/LICENSE.txt"
+            echo "third_party=release-assets/third-party-licenses.zip"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.version.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; assets will be replaced."
+          else
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "$tag" \
+              --notes "Release automatica gerada pelo GitHub Actions para o commit $GITHUB_SHA."
+          fi
+
+      - name: Replace release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.version.outputs.tag }}"
+          assets=("${{ steps.assets.outputs.jar }}")
+
+          if [[ -f "${{ steps.assets.outputs.license }}" ]]; then
+            assets+=("${{ steps.assets.outputs.license }}")
+          fi
+
+          if [[ -f "${{ steps.assets.outputs.third_party }}" ]]; then
+            assets+=("${{ steps.assets.outputs.third_party }}")
+          fi
+
+          gh release upload "$tag" "${assets[@]}" --clobber
+
+      - name: Delete workflow run artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            --jq '.artifacts[].id' \
+            | while read -r artifact_id; do
+                if [[ -n "$artifact_id" ]]; then
+                  gh api \
+                    --method DELETE \
+                    -H "Accept: application/vnd.github+json" \
+                    "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+                fi
+              done
