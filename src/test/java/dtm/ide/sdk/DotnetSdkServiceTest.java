@@ -76,6 +76,13 @@ class DotnetSdkServiceTest {
     void dotnetPathRequiresResolvedSdkVersionForProject(@TempDir Path dir) throws Exception {
         Path project = dir.resolve("App");
         Files.createDirectories(project);
+        Files.writeString(project.resolve("global.json"), """
+                {
+                  "sdk": {
+                    "version": "999.0.100"
+                  }
+                }
+                """);
         Files.writeString(project.resolve("App.csproj"), """
                 <Project Sdk="Microsoft.NET.Sdk.Web">
                   <PropertyGroup>
