@@ -77,47 +77,68 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
                 continue;
             }
 
-            if (c == '"' || c == '\'') {
-                int end = skipString(src, i, c);
-                out.add(token(src, i, end, TokenType.STRING));
-                i = end;
-                continue;
-            }
-
             if (c == '<') {
                 i = scanTag(src, i, out, classifier);
                 continue;
             }
 
-            if (c == '>') {
-                out.add(token(src, i, i + 1, TokenType.SYMBOL));
-                i++;
+            if (c == '&') {
+                int end = scanEntity(src, i);
+                out.add(token(src, i, end, end > i + 1
+                        ? CSharpTokenizerProvider.TOKEN_CONSTANT : TokenType.IDENTIFIER));
+                i = end;
                 continue;
             }
 
-            if (isDigit(c)) {
-                int start = i;
-                while (i < n && (isDigit(src.charAt(i)) || src.charAt(i) == '.' || src.charAt(i) == '_')) {
-                    i++;
-                }
-                out.add(token(src, start, i, TokenType.NUMBER));
-                continue;
-            }
-
-            if (isIdentStart(c)) {
-                int start = i;
-                while (i < n && isIdentPart(src.charAt(i))) {
-                    i++;
-                }
-                String word = src.substring(start, i);
-                out.add(token(src, start, i, CSharpKeywords.contains(word) ? TokenType.KEYWORD : TokenType.IDENTIFIER));
-                continue;
-            }
-
-            out.add(token(src, i, i + 1, TokenType.SYMBOL));
-            i++;
+            i = scanText(src, i, out);
         }
         return out;
+    }
+
+    private int scanText(String text, int at, List<Token> out) {
+        int n = text.length();
+        int i = at;
+        while (i < n && !isTextBoundary(text.charAt(i))) {
+            i++;
+        }
+        if (i == at) {
+            i++;
+        }
+        out.add(token(text, at, i, TokenType.IDENTIFIER));
+        return i;
+    }
+
+    private static boolean isTextBoundary(char c) {
+        return c == '<' || c == '@' || c == '&'
+                || c == '\r' || c == '\n' || isInlineWhitespace(c);
+    }
+
+    private static int scanEntity(String text, int at) {
+        int n = text.length();
+        int i = at + 1;
+        if (i < n && text.charAt(i) == '#') {
+            i++;
+            boolean hex = i < n && (text.charAt(i) == 'x' || text.charAt(i) == 'X');
+            if (hex) {
+                i++;
+            }
+            int digitsStart = i;
+            while (i < n && (hex ? isHexDigit(text.charAt(i)) : isDigit(text.charAt(i)))) {
+                i++;
+            }
+            if (i > digitsStart && i < n && text.charAt(i) == ';') {
+                return i + 1;
+            }
+            return at + 1;
+        }
+        int nameStart = i;
+        while (i < n && isEntityNameChar(text.charAt(i))) {
+            i++;
+        }
+        if (i > nameStart && i < n && text.charAt(i) == ';') {
+            return i + 1;
+        }
+        return at + 1;
     }
 
     private int scanRazorTransition(String text, int at, List<Token> out, TokenClassifierCodeEditorProvider classifier) {
@@ -342,6 +363,14 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
         return c >= '0' && c <= '9';
     }
 
+    private static boolean isHexDigit(char c) {
+        return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+
+    private static boolean isEntityNameChar(char c) {
+        return Character.isLetterOrDigit(c);
+    }
+
     private static boolean isIdentStart(char c) {
         return c == '_' || Character.isLetter(c);
     }
@@ -378,18 +407,5 @@ public class RazorTokenizerProvider implements TokenizerCodeEditorProvider {
             }
         }
         return false;
-    }
-
-    private static final class CSharpKeywords {
-        private static final Set<String> WORDS = Set.of(
-                "var", "if", "else", "for", "foreach", "while", "do", "switch", "case", "return",
-                "new", "using", "await", "async", "true", "false", "null", "class", "struct",
-                "interface", "enum", "record", "public", "private", "protected", "internal",
-                "static", "void", "int", "string", "bool", "double", "float", "decimal", "this",
-                "base", "try", "catch", "finally", "throw", "in", "is", "as", "out", "ref");
-
-        static boolean contains(String word) {
-            return WORDS.contains(word);
-        }
     }
 }

@@ -28,6 +28,8 @@ import dtm.ide.api.search.GlobalSearchQuery;
 import dtm.ide.api.search.GlobalSearchResult;
 import dtm.ide.api.theme.EditorTheme;
 import dtm.ide.api.theme.EditorThemeConfig;
+import dtm.ide.editor.HtmlMarkupCompletionProvider;
+import dtm.ide.editor.HtmlMarkupDiagnosticsProvider;
 import dtm.ide.editor.condition.CSharpConditionAutoCompleteProvider;
 import dtm.ide.editor.condition.CSharpConditionDiagnosticsProvider;
 import dtm.ide.editor.theme.DotnetEditorTheme;
@@ -167,6 +169,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     private final DotnetEditorRegistry editorRegistry = new DotnetEditorRegistry();
     private final EditorTheme editorTheme = new DotnetEditorTheme();
+    private final HtmlMarkupCompletionProvider htmlCompletionProvider = new HtmlMarkupCompletionProvider();
+    private final HtmlMarkupDiagnosticsProvider htmlDiagnosticsProvider = new HtmlMarkupDiagnosticsProvider();
     private volatile Path projectPath;
     private volatile IdeProjectContext projectContext;
     private volatile DotnetSdkService sdkService;
@@ -1164,17 +1168,71 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Path file = resolveEditorFile(context.filePath(), context.text());
         LspService service = serviceOrStartForEditor(file, context.text(), LSP_COMPLETION_WAIT_MS);
-        if (service == null || !lspHandlesEditor(file)) {
-            return Collections.emptyList();
+        List<AutoCompleteItem> lspItems = Collections.emptyList();
+        if (service != null && lspHandlesEditor(file)) {
+            if (!service.isRunning() && isLspLoading(service)) {
+                service.awaitReady(LSP_COMPLETION_WAIT_MS);
+            }
+            if (!DotnetProjectConventions.isRazorLike(file) || service instanceof RoslynLspService) {
+                lspItems = service.completeForEditor(
+                        file, context.text(), context.caretLine(), context.caretCol(), context.prefix());
+            }
         }
-        if (!service.isRunning() && isLspLoading(service)) {
-            service.awaitReady(LSP_COMPLETION_WAIT_MS);
+        if (DotnetProjectConventions.isRazorLike(file)) {
+            return mergeHtmlCompletions(lspItems, context);
         }
-        if (DotnetProjectConventions.isRazorLike(file) && !(service instanceof RoslynLspService)) {
-            return Collections.emptyList();
+        return lspItems;
+    }
+
+    private List<AutoCompleteItem> mergeHtmlCompletions(List<AutoCompleteItem> lspItems,
+                                                        IdeCompletionContext context) {
+        boolean explicit = context.triggerKind() == IdeCompletionTriggerKind.EXPLICIT;
+        HtmlMarkupCompletionProvider.Context htmlContext =
+                htmlCompletionProvider.analyze(context.text(), context.caretOffset());
+        lspItems = filterUnsafeHtmlClosingCompletions(lspItems, htmlContext);
+        List<AutoCompleteItem> htmlItems =
+                htmlCompletionProvider.suggestions(context.text(), context.caretOffset(), explicit);
+        if (htmlItems.isEmpty()) {
+            return lspItems;
         }
-        return service.completeForEditor(
-                file, context.text(), context.caretLine(), context.caretCol(), context.prefix());
+        Set<String> seen = new HashSet<>();
+        for (AutoCompleteItem item : lspItems) {
+            if (item != null && item.label() != null) {
+                seen.add(item.label().toLowerCase(Locale.ROOT));
+            }
+        }
+        List<AutoCompleteItem> merged = new ArrayList<>(lspItems);
+        for (AutoCompleteItem item : htmlItems) {
+            if (seen.add(item.label().toLowerCase(Locale.ROOT))) {
+                merged.add(item);
+            }
+        }
+        return merged;
+    }
+
+    private static List<AutoCompleteItem> filterUnsafeHtmlClosingCompletions(List<AutoCompleteItem> lspItems,
+                                                                              HtmlMarkupCompletionProvider.Context context) {
+        if (lspItems == null || lspItems.isEmpty()
+                || context == null || context.kind() != HtmlMarkupCompletionProvider.Kind.TEXT_CONTENT) {
+            return lspItems;
+        }
+        List<AutoCompleteItem> filtered = new ArrayList<>(lspItems.size());
+        for (AutoCompleteItem item : lspItems) {
+            if (!isHtmlClosingCompletion(item)) {
+                filtered.add(item);
+            }
+        }
+        return filtered.size() == lspItems.size() ? lspItems : filtered;
+    }
+
+    private static boolean isHtmlClosingCompletion(AutoCompleteItem item) {
+        if (item == null) {
+            return false;
+        }
+        String label = item.label() == null ? "" : item.label().trim();
+        String insert = item.insertText() == null ? "" : item.insertText().trim();
+        return label.startsWith("</") || insert.startsWith("</")
+                || (label.startsWith("/") && insert.startsWith("/") && insert.endsWith(">"));
     }
 
     @Override
@@ -1188,7 +1246,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return false;
         }
         char typed = line.charAt(col - 1);
-        return typed == '.' || Character.isLetter(typed) || typed == '_';
+        return typed == '.' || typed == '<' || typed == '/' || Character.isLetter(typed) || typed == '_';
     }
 
     @Override
@@ -1198,7 +1256,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public Set<Character> getCompletionTriggerCharacters() {
-        return Set.of('.');
+        return Set.of('.', '<', '/');
     }
 
     @Override
@@ -1644,16 +1702,25 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Path file = resolveEditorFile(context.getFilePath(), context.getText());
         LspService service = serviceOrStartForEditor(file, context.getText(), LSP_DIAGNOSTICS_WAIT_MS);
-        if (service == null || !lspHandlesEditor(file)) {
+        boolean decompiled = service != null && service.isDecompiled(file);
+        if (decompiled) {
             return Collections.emptyList();
         }
-        if (service.isDecompiled(file)) {
-            return Collections.emptyList();
+        Collection<Diagnostic> lspDiagnostics = Collections.emptyList();
+        if (service != null && lspHandlesEditor(file)
+                && (!DotnetProjectConventions.isRazorLike(file) || service instanceof RoslynLspService)) {
+            lspDiagnostics = service.diagnose(file, context.getText());
         }
-        if (DotnetProjectConventions.isRazorLike(file) && !(service instanceof RoslynLspService)) {
-            return Collections.emptyList();
+        if (!DotnetProjectConventions.isRazorLike(file)) {
+            return lspDiagnostics;
         }
-        return service.diagnose(file, context.getText());
+        List<Diagnostic> htmlDiagnostics = htmlDiagnosticsProvider.diagnose(context.getText());
+        if (htmlDiagnostics.isEmpty()) {
+            return lspDiagnostics;
+        }
+        List<Diagnostic> merged = new ArrayList<>(lspDiagnostics);
+        merged.addAll(htmlDiagnostics);
+        return merged;
     }
 
     @Override

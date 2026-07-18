@@ -61,8 +61,46 @@ class RazorTokenizerProviderTest {
         assertToken(tokens, "Items", CSharpTokenizerProvider.TOKEN_CLASS);
     }
 
+    @Test
+    void htmlTextContentIsNotLexedAsCsharp() {
+        Collection<Token> tokens = tokenizer.tokenize("""
+                <p>The new class will return 42 for each item</p>
+                """, null);
+
+        assertNoTokenTyped(tokens, "class", TokenType.KEYWORD);
+        assertNoTokenTyped(tokens, "new", TokenType.KEYWORD);
+        assertNoTokenTyped(tokens, "return", TokenType.KEYWORD);
+        assertNoTokenTyped(tokens, "42", TokenType.NUMBER);
+    }
+
+    @Test
+    void htmlApostrophesInTextAreNotStrings() {
+        Collection<Token> tokens = tokenizer.tokenize("""
+                <p>It's a developer's tool, isn't it?</p>
+                """, null);
+
+        assertTrue(tokens.stream().noneMatch(token -> TokenType.STRING.equals(token.getType())),
+                () -> "Apostrophes in HTML text must not open a string in " + tokens);
+    }
+
+    @Test
+    void recognizesHtmlEntities() {
+        Collection<Token> tokens = tokenizer.tokenize("""
+                <p>Tom &amp; Jerry &#169; &#x1F600;</p>
+                """, null);
+
+        assertToken(tokens, "&amp;", CSharpTokenizerProvider.TOKEN_CONSTANT);
+        assertToken(tokens, "&#169;", CSharpTokenizerProvider.TOKEN_CONSTANT);
+        assertToken(tokens, "&#x1F600;", CSharpTokenizerProvider.TOKEN_CONSTANT);
+    }
+
     private static void assertToken(Collection<Token> tokens, String text, String type) {
         assertTrue(tokens.stream().anyMatch(token -> text.equals(token.getText()) && type.equals(token.getType())),
                 () -> "Expected token " + text + " with type " + type + " in " + tokens);
+    }
+
+    private static void assertNoTokenTyped(Collection<Token> tokens, String text, String type) {
+        assertTrue(tokens.stream().noneMatch(token -> text.equals(token.getText()) && type.equals(token.getType())),
+                () -> "Did not expect token " + text + " with type " + type + " in " + tokens);
     }
 }
