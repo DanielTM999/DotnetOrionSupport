@@ -120,14 +120,14 @@ jobs:
             cp LICENSE release-assets/LICENSE.txt
           fi
 
-          if [[ -d third-party-licenses ]]; then
-            (cd third-party-licenses && zip -qr ../release-assets/third-party-licenses.zip .)
+          if [[ -d target/classes/licenses ]]; then
+            (cd target/classes/licenses && zip -qr ../../../release-assets/licenses.zip .)
           fi
 
           {
             echo "jar=release-assets/DotnetOrionSupport-${{ steps.version.outputs.version }}.jar"
             echo "license=release-assets/LICENSE.txt"
-            echo "third_party=release-assets/third-party-licenses.zip"
+            echo "licenses=release-assets/licenses.zip"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create release if needed
@@ -157,8 +157,8 @@ jobs:
             assets+=("${{ steps.assets.outputs.license }}")
           fi
 
-          if [[ -f "${{ steps.assets.outputs.third_party }}" ]]; then
-            assets+=("${{ steps.assets.outputs.third_party }}")
+          if [[ -f "${{ steps.assets.outputs.licenses }}" ]]; then
+            assets+=("${{ steps.assets.outputs.licenses }}")
           fi
 
           gh release upload "$tag" "${assets[@]}" --clobber

@@ -125,17 +125,55 @@
                 <version>2.7.1</version>
                 <executions>
                     <execution>
-                        <id>download-third-party-licenses</id>
-                        <phase>package</phase>
+                        <id>download-dependency-licenses</id>
+                        <phase>generate-resources</phase>
                         <goals>
                             <goal>download-licenses</goal>
                         </goals>
                         <configuration>
-                            <licensesOutputDirectory>${project.basedir}/third-party-licenses</licensesOutputDirectory>
-                            <licensesOutputFile>${project.basedir}/third-party-licenses/licenses.xml</licensesOutputFile>
+                            <licensesOutputDirectory>${project.build.outputDirectory}/licenses/dependencies</licensesOutputDirectory>
+                            <licensesOutputFile>${project.build.outputDirectory}/licenses/licenses.xml</licensesOutputFile>
                             <excludedScopes>test,provided</excludedScopes>
-                            <cleanLicensesOutputDirectory>true</cleanLicensesOutputDirectory>
+                            <errorRemedy>warn</errorRemedy>
                             <useDefaultUrlReplacements>true</useDefaultUrlReplacements>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>generate-third-party-license-list</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>add-third-party</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/licenses</outputDirectory>
+                            <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
+                            <excludedScopes>test,provided</excludedScopes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-project-license-to-jar</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/licenses/project</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}</directory>
+                                    <includes>
+                                        <include>LICENSE</include>
+                                    </includes>
+                                    <filtering>false</filtering>
+                                </resource>
+                            </resources>
                         </configuration>
                     </execution>
                 </executions>
