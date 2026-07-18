@@ -48,11 +48,43 @@ class DotnetVisualStudioLayoutTest {
                 "Program.cs deve aparecer dentro do projeto");
     }
 
+    @Test
+    void foldersComeBeforeFilesInsideProjectFolders(@TempDir Path dir) throws Exception {
+        Files.writeString(dir.resolve("MyWebApp.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk.Web\"></Project>");
+        Path pages = dir.resolve("Pages");
+        Files.createDirectories(pages.resolve("Shared"));
+        Files.writeString(pages.resolve("Index.cshtml"), "");
+        Files.writeString(pages.resolve("Index.cshtml.cs"), "");
+        Files.writeString(pages.resolve("_ViewImports.cshtml"), "");
+        Files.writeString(pages.resolve("_ViewStart.cshtml"), "");
+
+        ProjectTreeNode fsTree = DotnetProjectConventions.buildFilesystemTree(dir);
+        ProjectTreeNode layout = DotnetProjectConventions.applyTreeLayout(fsTree, TreeLayout.VISUAL_STUDIO);
+        assertNotNull(layout);
+
+        ProjectTreeNode pagesNode = layout.getChildren().stream()
+                .filter(node -> "Pages".equals(nodeName(node)))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(List.of(
+                        "Shared",
+                        "_ViewImports.cshtml",
+                        "_ViewStart.cshtml",
+                        "Index.cshtml",
+                        "Index.cshtml.cs"),
+                childLabels(pagesNode));
+    }
+
     private static List<String> childLabels(ProjectTreeNode node) {
         return node.getChildren().stream()
-                .map(child -> child.getPath() != null && child.getPath().getFileName() != null
-                        ? child.getPath().getFileName().toString()
-                        : child.getLabel())
+                .map(DotnetVisualStudioLayoutTest::nodeName)
                 .toList();
+    }
+
+    private static String nodeName(ProjectTreeNode node) {
+        return node.getPath() != null && node.getPath().getFileName() != null
+                ? node.getPath().getFileName().toString()
+                : node.getLabel();
     }
 }

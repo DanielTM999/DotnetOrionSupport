@@ -937,6 +937,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         Path normalized = normalizePath(context.filePath());
         editorRegistry.trackEditor(normalized, context);
         if (applyDecompiledEditorGuards(context)) {
+            applyInitialSyntaxHighlight(context);
             return;
         }
         installCodeActionCommandHandler(context);
@@ -956,6 +957,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         Path file = normalizePath(editorContext.filePath());
         editorRegistry.trackEditor(file, editorContext);
         if (applyDecompiledEditorGuards(editorContext)) {
+            applyInitialSyntaxHighlight(editorContext);
             return;
         }
         installCodeActionCommandHandler(editorContext);

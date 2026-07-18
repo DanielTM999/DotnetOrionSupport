@@ -272,6 +272,7 @@ final class DotnetProjectConventions {
             }
         } catch (Exception ignored) {
         }
+        sortNodes(children);
         node.children(children);
         return node;
     }
