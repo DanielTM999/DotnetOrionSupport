@@ -163,7 +163,6 @@ import static dtm.ide.DotnetProjectConventions.isHighlightable;
 import static dtm.ide.DotnetProjectConventions.normalizePath;
 
 @Slf4j
-@Singleton
 @PluginReference(id = "dotnet-ide-adapter")
 public class DotnetIdeAdapter extends IdeAdapter {
 
