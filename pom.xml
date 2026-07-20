@@ -14,6 +14,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <orion.api.version>1.0.0</orion.api.version>
+        <request.action.version>1.0.7</request.action.version>
+        <apache.compress.version>1.26.2</apache.compress.version>
     </properties>
 
     <dependencies>
@@ -25,7 +27,7 @@
         <dependency>
             <groupId>dtm.request_actions</groupId>
             <artifactId>request_actions</artifactId>
-            <version>1.0.7</version>
+            <version>${request.action.version}</version>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -36,7 +38,7 @@
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-compress</artifactId>
-            <version>1.26.2</version>
+            <version>${apache.compress.version}</version>
         </dependency>
         <dependency>
             <groupId>org.tukaani</groupId>
