@@ -4,7 +4,18 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="" />
+    <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/AbstractLspService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/lsp/AbstractLspService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/sdk/DotnetSdkService.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/sdk/DotnetSdkService.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/de-DE.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/de-DE.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/en-US.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/en-US.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/es-ES.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/es-ES.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/fr-FR.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/fr-FR.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/it-IT.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/it-IT.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/pt-BR.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/pt-BR.json" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -13,7 +24,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="Futures" />
+        <entry key="$PROJECT_DIR$" value="main" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -53,7 +64,7 @@
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "codeWithMe.voiceChat.enabledByDefault": "false",
-    "git-widget-placeholder": "main",
+    "git-widget-placeholder": "dmelo",
     "kotlin-language-version-configured": "true",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
@@ -102,6 +113,7 @@
                 <option value="clean" />
                 <option value="compile" />
                 <option value="package" />
+                <option value="-DskipTests" />
               </list>
             </option>
             <option name="multimoduleDir" />

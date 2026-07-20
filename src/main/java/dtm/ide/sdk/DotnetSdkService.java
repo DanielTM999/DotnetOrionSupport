@@ -40,6 +40,10 @@ import java.util.zip.GZIPInputStream;
 @Slf4j
 public class DotnetSdkService {
 
+    private static String text(String key, String def) {
+        return dtm.stools.i18n.I18n.getText(DotnetSdkService.class, key, def);
+    }
+
     public static final String DOTNET_PROGRESS_ID = "downloadDotnetSdk";
     public static final String OMNISHARP_PROGRESS_ID = "downloadOmniSharp";
     public static final String ROSLYN_LS_PROGRESS_ID = "downloadRoslynLs";
@@ -118,7 +122,8 @@ public class DotnetSdkService {
         Path root = dotnetRoot(DEFAULT_DOTNET_SDK_VERSION);
         downloadToRoot(dotnetArtifact(DEFAULT_DOTNET_SDK_VERSION), root, listener);
         return getDotnetPath().orElseThrow(() ->
-                displayException(".NET SDK foi baixado, mas o executável dotnet não foi encontrado.", null));
+                displayException(text("error.dotnetMissing",
+                        "The .NET SDK was downloaded, but the dotnet executable was not found."), null));
     }
 
     public Optional<Path> getDotnetRoot() {
@@ -139,7 +144,8 @@ public class DotnetSdkService {
         Path root = dotnetRoot(version);
         downloadToRoot(dotnetArtifact(version), root, listener);
         return getDotnetPath(version).orElseThrow(() ->
-                displayException(".NET SDK foi baixado, mas o executavel dotnet nao foi encontrado.", null));
+                displayException(text("error.dotnetMissing",
+                        "The .NET SDK was downloaded, but the dotnet executable was not found."), null));
     }
 
     public Optional<Path> getDotnetRoot(Path projectRoot) {
@@ -183,7 +189,8 @@ public class DotnetSdkService {
         Path root = omniSharpRoot(DEFAULT_OMNISHARP_VERSION);
         downloadToRoot(omniSharpArtifact(DEFAULT_OMNISHARP_VERSION), root, listener);
         return getOmniSharpPath().orElseThrow(() ->
-                displayException("Componente do IntelliSense C# foi baixado, mas o executável não foi encontrado.", null));
+                displayException(text("error.intellisenseMissing",
+                        "The C# IntelliSense component was downloaded, but its executable was not found."), null));
     }
 
     public Optional<Path> getRoslynLanguageServerPath() {
@@ -220,7 +227,8 @@ public class DotnetSdkService {
         downloadToRoot(roslynArtifact(DEFAULT_ROSLYN_LS_VERSION), root, listener);
         clearRoslynCompositionCache();
         return getRoslynLanguageServerPath().orElseThrow(() ->
-                displayException("Componente do IntelliSense C# foi baixado, mas o binário não foi encontrado.", null));
+                displayException(text("error.intellisenseMissing",
+                        "The C# IntelliSense component was downloaded, but its executable was not found."), null));
     }
 
     public Path ensureRoslynRazor(DownloadProgressListener progressListener) {
@@ -233,8 +241,8 @@ public class DotnetSdkService {
         downloadToRoot(razorCompilerArtifact(DEFAULT_ROSLYN_RAZOR_VERSION), root, listener);
         clearRoslynCompositionCache();
         if (!isRoslynRazorReady()) {
-            throw displayException("Componente Razor do IntelliSense C# foi baixado, mas os arquivos Razor "
-                    + "necessarios nao foram encontrados.", null);
+            throw displayException(text("error.razorMissing",
+                    "The Razor IntelliSense component was downloaded, but the required Razor files were not found."), null);
         }
         return getRazorExtensionPath().orElseThrow();
     }
@@ -274,7 +282,8 @@ public class DotnetSdkService {
         }
         ensureDotnet(ROSLYN_RUNTIME_SDK_VERSION, progressListener);
         return getRoslynRuntimeRoot().orElseThrow(() ->
-                displayException("Runtime .NET para o IntelliSense C# não foi encontrado.", null));
+                displayException(text("error.runtimeMissing",
+                        "The .NET runtime for C# IntelliSense was not found."), null));
     }
 
     public Optional<Path> getNetcoredbgPath() {
@@ -346,7 +355,8 @@ public class DotnetSdkService {
         Path root = netcoredbgRoot(DEFAULT_NETCOREDBG_VERSION);
         downloadToRoot(netcoredbgArtifact(DEFAULT_NETCOREDBG_VERSION), root, listener);
         return getNetcoredbgPath().orElseThrow(() ->
-                displayException("netcoredbg foi baixado, mas o executável não foi encontrado.", null));
+                displayException(text("error.debuggerMissing",
+                        "The .NET debugger was downloaded, but its executable was not found."), null));
     }
 
     private static String normalizeSdkVersion(String sdkVersion) {
@@ -689,7 +699,8 @@ public class DotnetSdkService {
         String ext = p.isWindows() ? "zip" : "tar.gz";
         String fileName = "dotnet-sdk-" + version + "-" + rid + "." + ext;
         String url = "https://builds.dotnet.microsoft.com/dotnet/Sdk/" + version + "/" + fileName;
-        return new SdkArtifact(version, fileName, url, DOTNET_PROGRESS_ID, "Baixando .NET SDK " + version);
+        return new SdkArtifact(version, fileName, url, DOTNET_PROGRESS_ID,
+                text("download.dotnetSdk", "Downloading .NET SDK") + " " + version);
     }
 
     private static SdkArtifact omniSharpArtifact(String version) {
@@ -701,7 +712,8 @@ public class DotnetSdkService {
         String fileName = "omnisharp-" + os + "-" + arch + "-net6.0." + ext;
         String url = "https://github.com/OmniSharp/omnisharp-roslyn/releases/download/v"
                 + version + "/" + fileName;
-        return new SdkArtifact(version, fileName, url, OMNISHARP_PROGRESS_ID, "Baixando IntelliSense C# " + version);
+        return new SdkArtifact(version, fileName, url, OMNISHARP_PROGRESS_ID,
+                text("download.intellisense", "Downloading C# IntelliSense") + " " + version);
     }
 
     private static String roslynRid() {
@@ -716,7 +728,7 @@ public class DotnetSdkService {
         String fileName = packageId + "." + version.toLowerCase(Locale.ROOT) + ".nupkg";
         String url = nugetPackageUrl(packageId, version);
         return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
-                "Baixando IntelliSense C# MIT " + version);
+                text("download.intellisense", "Downloading C# IntelliSense") + " " + version);
     }
 
     private static SdkArtifact razorArtifact(String version) {
@@ -724,7 +736,7 @@ public class DotnetSdkService {
         String fileName = packageId + "." + version.toLowerCase(Locale.ROOT) + ".nupkg";
         String url = nugetPackageUrl(packageId, version);
         return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
-                "Baixando suporte Razor MIT " + version);
+                text("download.razorSupport", "Downloading Razor support") + " " + version);
     }
 
     private static SdkArtifact razorCompilerArtifact(String version) {
@@ -732,7 +744,7 @@ public class DotnetSdkService {
         String fileName = packageId + "." + version.toLowerCase(Locale.ROOT) + ".nupkg";
         String url = nugetPackageUrl(packageId, version);
         return new SdkArtifact(version, fileName, url, ROSLYN_LS_PROGRESS_ID,
-                "Baixando compilador Razor MIT " + version);
+                text("download.razorCompiler", "Downloading Razor compiler") + " " + version);
     }
 
     private static String nugetPackageUrl(String lowerPackageId, String version) {
@@ -753,12 +765,14 @@ public class DotnetSdkService {
         }
         String url = "https://github.com/" + NETCOREDBG_RELEASE_REPOSITORY + "/releases/download/"
                 + version + "/" + fileName;
-        return new SdkArtifact(version, fileName, url, NETCOREDBG_PROGRESS_ID, "Baixando netcoredbg " + version);
+        return new SdkArtifact(version, fileName, url, NETCOREDBG_PROGRESS_ID,
+                text("download.debugger", "Downloading .NET debugger") + " " + version);
     }
 
     private void downloadToRoot(SdkArtifact artifact, Path root, DownloadProgressListener listener) {
         if (root == null) {
-            throw displayException("Diretório de recursos do plugin não disponível.", null);
+            throw displayException(text("error.resourceDirUnavailable",
+                    "Plugin resource directory is not available."), null);
         }
         Path target = root.resolve(artifact.fileName());
         try {
@@ -768,11 +782,12 @@ public class DotnetSdkService {
                 return;
             }
         } catch (Exception e) {
-            throw displayException("Não foi possível preparar a pasta do SDK: " + root, e);
+            throw displayException(text("error.sdkFolder", "Could not prepare the SDK folder:") + " " + root, e);
         }
 
         if (downloadObserver == null) {
-            throw displayException("Serviço de download não disponível.", null);
+            throw displayException(text("error.downloadServiceUnavailable",
+                    "Download service is not available."), null);
         }
 
         listener.onStart(artifact.progressId(), artifact.displayName());
@@ -781,12 +796,13 @@ public class DotnetSdkService {
             for (int attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
                 try {
                     downloadToFile(artifact, target, listener);
-                    listener.onProgress(artifact.progressId(), "Extraindo arquivos", -1);
+                    listener.onProgress(artifact.progressId(), text("progress.extracting", "Extracting files"), -1);
                     installArchive(target, root);
                     return;
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    throw displayException("Download interrompido: " + artifact.fileName(), e);
+                    throw displayException(text("error.downloadInterrupted", "Download interrupted:")
+                            + " " + artifact.fileName(), e);
                 } catch (DisplayException e) {
                     throw e;
                 } catch (Exception e) {
@@ -796,13 +812,14 @@ public class DotnetSdkService {
                         log.warn("Falha ao baixar {} (tentativa {}/{}): {}. Tentando novamente...",
                                 artifact.fileName(), attempt, DOWNLOAD_MAX_ATTEMPTS, safeMessage(e));
                         listener.onProgress(artifact.progressId(),
-                                artifact.displayName() + " — tentativa " + (attempt + 1) + "/" + DOWNLOAD_MAX_ATTEMPTS, -1);
+                                artifact.displayName() + " — " + text("progress.attempt", "attempt")
+                                        + " " + (attempt + 1) + "/" + DOWNLOAD_MAX_ATTEMPTS, -1);
                         sleepBackoff(attempt);
                     }
                 }
             }
-            throw displayException("Falha ao baixar " + artifact.fileName()
-                    + " após " + DOWNLOAD_MAX_ATTEMPTS + " tentativas.", lastError);
+            throw displayException(text("error.downloadFailed", "Failed to download") + " " + artifact.fileName()
+                    + " — " + DOWNLOAD_MAX_ATTEMPTS + " " + text("error.attempts", "attempts"), lastError);
         } finally {
             listener.onFinish(artifact.progressId());
         }
@@ -810,7 +827,8 @@ public class DotnetSdkService {
 
     private void downloadToFile(SdkArtifact artifact, Path target, DownloadProgressListener listener) throws Exception {
         if (downloadObserver == null) {
-            throw displayException("Serviço de download não disponível.", null);
+            throw displayException(text("error.downloadServiceUnavailable",
+                    "Download service is not available."), null);
         }
         Path temp = target.resolveSibling(target.getFileName() + ".part");
         Files.deleteIfExists(temp);
@@ -1031,7 +1049,8 @@ public class DotnetSdkService {
         if (x64) {
             return Platform.LINUX_X64;
         }
-        throw displayException("Plataforma não suportada pelo download automático: " + os + " / " + arch, null);
+        throw displayException(text("error.unsupportedPlatform",
+                "Platform not supported by automatic download:") + " " + os + " / " + arch, null);
     }
 
     private static DisplayException displayException(String message, Throwable cause) {

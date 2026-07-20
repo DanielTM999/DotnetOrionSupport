@@ -78,6 +78,10 @@ public abstract class AbstractLspService implements LspService {
             "System.Net.Http",
             "System.Threading",
             "System.Threading.Tasks");
+    private static String text(String key, String def) {
+        return dtm.stools.i18n.I18n.getText(AbstractLspService.class, key, def);
+    }
+
     private static final long REQUEST_TIMEOUT_MS = 4000;
     private static final long COMPLETION_TIMEOUT_MS = 10000;
     private static final long COMPLETION_RESOLVE_BUDGET_MS = 2500;
@@ -3162,6 +3166,13 @@ public abstract class AbstractLspService implements LspService {
         return parseTextEditsStatic(node);
     }
 
+    private static String diagnosticSource(String source) {
+        if (source.isBlank() || source.equalsIgnoreCase("omnisharp") || source.equalsIgnoreCase("roslyn")) {
+            return text("diagnostic.source", "IntelliSense");
+        }
+        return source;
+    }
+
     protected Diagnostic parseDiagnostic(JsonNode node) {
         JsonNode range = node.get("range");
         if (range == null) {
@@ -3180,7 +3191,7 @@ public abstract class AbstractLspService implements LspService {
                 end.path("character").asInt(start.path("character").asInt(0)),
                 mapSeverity(node.path("severity").asInt(1)),
                 textOrEmpty(node.get("message")),
-                source.isBlank() ? "omnisharp" : source,
+                diagnosticSource(source),
                 null
         );
     }

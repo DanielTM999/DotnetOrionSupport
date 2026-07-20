@@ -663,6 +663,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return DotnetProjectConventions.isRazorLike(filePath);
     }
 
+    private boolean isDiagnosableEditorFile(Path filePath) {
+        return filePath == null || isLspSupportedFile(filePath);
+    }
+
     private Path resolveEditorFile(Path filePath) {
         return resolveEditorFile(filePath, null);
     }
@@ -1102,6 +1106,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void triggerDiagnostics(Path file, String text) {
+        if (!isLspSupportedFile(file)) {
+            return;
+        }
         LspService service = serviceOrStartForEditor(file, 0);
         if (service == null || file == null || service.isDecompiled(file)) {
             return;
@@ -1189,11 +1196,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private List<AutoCompleteItem> mergeHtmlCompletions(List<AutoCompleteItem> lspItems,
                                                         IdeCompletionContext context) {
         boolean explicit = context.triggerKind() == IdeCompletionTriggerKind.EXPLICIT;
-        HtmlMarkupCompletionProvider.Context htmlContext =
-                htmlCompletionProvider.analyze(context.text(), context.caretOffset());
+        HtmlMarkupCompletionProvider.Context htmlContext = htmlCompletionProvider.analyze(context.text(), context.caretOffset());
         lspItems = filterUnsafeHtmlClosingCompletions(lspItems, htmlContext);
-        List<AutoCompleteItem> htmlItems =
-                htmlCompletionProvider.suggestions(context.text(), context.caretOffset(), explicit);
+        List<AutoCompleteItem> htmlItems = htmlCompletionProvider.suggestions(context.text(), context.caretOffset(), explicit);
         if (htmlItems.isEmpty()) {
             return lspItems;
         }
@@ -1699,7 +1704,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public Collection<Diagnostic> getDiagnostics(IdeDiagnosticsContext context,
                                                  boolean incremental,
                                                  Collection<Diagnostic> previous) {
-        if (context == null) {
+        if (context == null || !isDiagnosableEditorFile(context.getFilePath())) {
             return Collections.emptyList();
         }
         Path file = resolveEditorFile(context.getFilePath(), context.getText());
