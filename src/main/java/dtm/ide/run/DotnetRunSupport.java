@@ -260,8 +260,7 @@ public final class DotnetRunSupport {
                 if (runnableTfm.isEmpty()) {
                     yield DotnetBuild.errorHandle(runBlockedMessage(runDir));
                 }
-                yield launchRun(runDir, dotnet.get(), configuration, projectFile, launchProfile,
-                        runnableTfm.orElse(null), data);
+                yield launchRun(runDir, dotnet.get(), configuration, projectFile, launchProfile, runnableTfm.orElse(null), data);
             }
             case TYPE_TEST -> {
                 Path projectFile = projectFileOf(data);
@@ -280,11 +279,8 @@ public final class DotnetRunSupport {
                                        Path projectFile, String launchProfile, String targetFramework,
                                        RunConfigurationData data) {
         LaunchSettings.Profile profile = LaunchSettings.findProfile(projectFile, launchProfile);
-        Path workingDirectory = workingDirectoryOf(data, projectFile,
-                profile == null ? null : profile.workingDirectory());
-        return build.buildThenRun(project, dotnet, configuration,
-                projectFile, targetFramework, launchProfile, outputPanels, runOutputFocus,
-                programArgsOf(data), environmentOf(data), workingDirectory);
+        Path workingDirectory = workingDirectoryOf(data, projectFile, profile == null ? null : profile.workingDirectory());
+        return build.buildThenRun(project, dotnet, configuration, projectFile, targetFramework, launchProfile, outputPanels, runOutputFocus, programArgsOf(data), environmentOf(data), workingDirectory);
     }
 
     private Path resolveTargetProjectFile(RunConfigurationData data, Path projectDir) {

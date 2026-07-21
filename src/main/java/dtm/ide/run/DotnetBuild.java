@@ -265,14 +265,12 @@ public final class DotnetBuild {
         OutputStream buildStream = buildPanel != null ? buildPanel.getOutputStream() : consoleOut;
         boolean separatePanels = buildPanel != null;
 
-        List<String> buildCmd = new ArrayList<>(List.of(
-                dotnet.toString(), "build", "-c", config, "--nologo"));
+        List<String> buildCmd = new ArrayList<>(List.of(dotnet.toString(), "build", "-c", config, "--nologo"));
         if (projectFile != null) {
             buildCmd.add(projectFile.toString());
         }
         addFrameworkOption(buildCmd, targetFramework);
-        List<String> runCmd = new ArrayList<>(List.of(
-                dotnet.toString(), "run", "--no-build", "-c", config));
+        List<String> runCmd = new ArrayList<>(List.of(dotnet.toString(), "run", "--no-build", "-c", config));
         if (projectFile != null) {
             runCmd.add("--project");
             runCmd.add(projectFile.toString());
@@ -331,6 +329,10 @@ public final class DotnetBuild {
         return RunProcessHandle.builder()
                 .output(consoleIn)
                 .input(stdinBridge)
+                .processPid(() -> {
+                    Process p = runProcess.get();
+                    return p != null ? p.pid() : 0;
+                })
                 .readonly(false)
                 .alive(() -> !done.get())
                 .terminate(() -> {
