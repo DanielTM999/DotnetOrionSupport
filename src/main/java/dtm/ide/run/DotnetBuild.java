@@ -18,9 +18,11 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -35,6 +37,14 @@ public final class DotnetBuild {
 
     private static final Pattern ASSEMBLY_NAME =
             Pattern.compile("<AssemblyName>\\s*([^<]+)</AssemblyName>", Pattern.CASE_INSENSITIVE);
+
+    private static final long CHILD_LOOKUP_GRACE_NANOS = TimeUnit.SECONDS.toNanos(3);
+
+    private static final Set<String> HOSTING_NOISE_PROCESSES = Set.of(
+            "conhost.exe",
+            "werfault.exe",
+            "vsjitdebugger.exe"
+    );
 
     private final Map<String, Process> activeProcesses = new ConcurrentHashMap<>();
 
@@ -228,18 +238,56 @@ public final class DotnetBuild {
 
             applyDotnetEnv(builder, firstCommandPath(command));
             Process process = builder.start();
+            long startedNanos = System.nanoTime();
             registerProcess(type, process);
             return RunProcessHandle.builder()
-                    .output(process.getInputStream())
-                    .input(process.getOutputStream())
-                    .readonly(!interactive)
-                    .alive(process::isAlive)
-                    .terminate(() -> destroyQuietly(process))
                     .process(process)
+                    .readonly(!interactive)
+                    .terminate(() -> destroyQuietly(process))
+                    .processPid(DotnetRunSupport.TYPE_RUN.equals(type)
+                            ? () -> resolveApplicationPid(process, startedNanos)
+                            : process::pid)
                     .build();
         } catch (IOException e) {
             return errorHandle("Falha ao iniciar dotnet: " + e.getMessage());
         }
+    }
+
+    static long resolveApplicationPid(Process process, long startedNanos) {
+        if (process == null || !process.isAlive()) {
+            return 0L;
+        }
+
+        ProcessHandle application = deepestSingleDescendant(process.toHandle());
+        if (application.pid() != process.pid()) {
+            return application.pid();
+        }
+
+        boolean graceElapsed = System.nanoTime() - startedNanos >= CHILD_LOOKUP_GRACE_NANOS;
+        return graceElapsed ? process.pid() : 0L;
+    }
+
+    private static ProcessHandle deepestSingleDescendant(ProcessHandle handle) {
+        ProcessHandle current = handle;
+        while (true) {
+            List<ProcessHandle> children = current.children()
+                    .filter(ProcessHandle::isAlive)
+                    .filter(child -> !isHostingNoise(child))
+                    .toList();
+            if (children.size() != 1) {
+                return current;
+            }
+            current = children.getFirst();
+        }
+    }
+
+    private static boolean isHostingNoise(ProcessHandle handle) {
+        String command = handle.info().command().orElse(null);
+        if (command == null) {
+            return false;
+        }
+        String name = Path.of(command).getFileName().toString().toLowerCase(Locale.ROOT);
+        return HOSTING_NOISE_PROCESSES.contains(name);
     }
 
     public RunProcessHandle buildThenRun(Path project, Path dotnet, String configuration,
@@ -260,6 +308,8 @@ public final class DotnetBuild {
         DeferredOutputStream stdinBridge = new DeferredOutputStream();
         AtomicBoolean done = new AtomicBoolean(false);
         AtomicReference<Process> runProcess = new AtomicReference<>();
+        AtomicReference<Process> monitoredProcess = new AtomicReference<>();
+        AtomicLong monitoredStartedNanos = new AtomicLong();
 
         OutputPanelHandle buildPanel = requestBuildPanel(panelProvider);
         OutputStream buildStream = buildPanel != null ? buildPanel.getOutputStream() : consoleOut;
@@ -310,6 +360,8 @@ public final class DotnetBuild {
                 mergeLaunchEnv(runBuilder, launchEnv);
                 Process process = runBuilder.start();
                 runProcess.set(process);
+                monitoredStartedNanos.set(System.nanoTime());
+                monitoredProcess.set(process);
                 activeProcesses.put(DotnetRunSupport.TYPE_RUN, process);
                 stdinBridge.bind(process.getOutputStream());
                 pump(process.getInputStream(), out);
@@ -329,10 +381,7 @@ public final class DotnetBuild {
         return RunProcessHandle.builder()
                 .output(consoleIn)
                 .input(stdinBridge)
-                .processPid(() -> {
-                    Process p = runProcess.get();
-                    return p != null ? p.pid() : 0;
-                })
+                .processPid(() -> resolveApplicationPid(monitoredProcess.get(), monitoredStartedNanos.get()))
                 .readonly(false)
                 .alive(() -> !done.get())
                 .terminate(() -> {
@@ -444,6 +493,10 @@ public final class DotnetBuild {
         return RunProcessHandle.builder()
                 .output(consoleIn)
                 .input(stdinBridge)
+                .processPid(() -> {
+                    DotnetDapDebugSession s = sessionRef.get();
+                    return s != null ? s.getMonitoredPid() : 0L;
+                })
                 .readonly(false)
                 .alive(() -> !done.get())
                 .terminate(() -> {
@@ -507,6 +560,7 @@ public final class DotnetBuild {
         return RunProcessHandle.builder()
                 .output(consoleIn)
                 .input(stdinBridge)
+                .processPid(pid)
                 .readonly(false)
                 .alive(() -> !done.get())
                 .terminate(() -> {

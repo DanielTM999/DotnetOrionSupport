@@ -39,8 +39,7 @@ public final class DotnetRunSupport {
     public static final String PROP_WORKING_DIRECTORY = "workingDirectory";
     public static final String PROP_ENVIRONMENT = "environment";
 
-    private static final Pattern MAIN_PATTERN = Pattern.compile(
-            "\\bstatic\\s+(?:async\\s+)?[\\w<>\\[\\].,\\s]*?\\bMain\\s*\\(");
+    private static final Pattern MAIN_PATTERN = Pattern.compile("\\bstatic\\s+(?:async\\s+)?[\\w<>\\[\\].,\\s]*?\\bMain\\s*\\(");
 
     private final DotnetBuild build = new DotnetBuild();
 
@@ -275,9 +274,7 @@ public final class DotnetRunSupport {
         };
     }
 
-    private RunProcessHandle launchRun(Path project, Path dotnet, String configuration,
-                                       Path projectFile, String launchProfile, String targetFramework,
-                                       RunConfigurationData data) {
+    private RunProcessHandle launchRun(Path project, Path dotnet, String configuration, Path projectFile, String launchProfile, String targetFramework, RunConfigurationData data) {
         LaunchSettings.Profile profile = LaunchSettings.findProfile(projectFile, launchProfile);
         Path workingDirectory = workingDirectoryOf(data, projectFile, profile == null ? null : profile.workingDirectory());
         return build.buildThenRun(project, dotnet, configuration, projectFile, targetFramework, launchProfile, outputPanels, runOutputFocus, programArgsOf(data), environmentOf(data), workingDirectory);
@@ -297,12 +294,12 @@ public final class DotnetRunSupport {
         }
         List<Path> runnable = TargetFramework.findRunnableProjectFiles(projectDir);
         if (runnable.size() == 1) {
-            return runnable.get(0);
+            return runnable.getFirst();
         }
         if (runnable.size() > 1) {
             Function<List<Path>, Path> chooser = runnableProjectChooser;
             Path chosen = chooser == null ? null : chooser.apply(runnable);
-            return chosen != null ? chosen : runnable.get(0);
+            return chosen != null ? chosen : runnable.getFirst();
         }
         return TargetFramework.findPrimaryProjectFile(projectDir);
     }

@@ -205,6 +205,14 @@ final class DotnetDapDebugSession {
         }
     }
 
+    long getMonitoredPid() {
+        if (externalAttachPid > 0) {
+            return externalAttachPid;
+        }
+        Process d = debuggee;
+        return d != null && d.isAlive() ? d.pid() : 0L;
+    }
+
     void resume() {
         sendThreadRequest("continue");
     }
