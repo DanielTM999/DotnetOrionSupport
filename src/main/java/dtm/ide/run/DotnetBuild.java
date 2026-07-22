@@ -3,6 +3,11 @@ package dtm.ide.run;
 import dtm.ide.api.extension.output.OutputPanelHandle;
 import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
+import dtm.ide.iis.IisDeployment;
+import dtm.ide.iis.IisExpressLauncher;
+import dtm.ide.iis.IisService;
+import dtm.ide.iis.IisWarmUp;
+import dtm.ide.iis.IisWebProject;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.ByteArrayOutputStream;
@@ -20,6 +25,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -39,6 +45,11 @@ public final class DotnetBuild {
             Pattern.compile("<AssemblyName>\\s*([^<]+)</AssemblyName>", Pattern.CASE_INSENSITIVE);
 
     private static final long CHILD_LOOKUP_GRACE_NANOS = TimeUnit.SECONDS.toNanos(3);
+
+    private static final long CLR_WAIT_MS = 45_000;
+    private static final int WARM_UP_ATTEMPTS = 12;
+    private static final int WARM_UP_TIMEOUT_MS = 5_000;
+    private static final long WARM_UP_RETRY_MS = 1_000;
 
     private static final Set<String> HOSTING_NOISE_PROCESSES = Set.of(
             "conhost.exe",
@@ -572,6 +583,285 @@ public final class DotnetBuild {
                 })
                 .stdinMode(RunProcessHandle.StdinMode.TERMINAL)
                 .build();
+    }
+
+    public RunProcessHandle launchIis(IisLaunchRequest request,
+                                      Function<String, OutputPanelHandle> panelProvider,
+                                      Runnable showRunOutput) {
+        PipedInputStream consoleIn;
+        PipedOutputStream consoleOut;
+        try {
+            consoleIn = new PipedInputStream(1 << 16);
+            consoleOut = new PipedOutputStream(consoleIn);
+        } catch (IOException e) {
+            return errorHandle("Falha ao preparar console: " + e.getMessage());
+        }
+
+        AtomicBoolean done = new AtomicBoolean(false);
+        AtomicReference<Process> hostProcess = new AtomicReference<>();
+        AtomicReference<DotnetDapDebugSession> sessionRef = new AtomicReference<>();
+        AtomicLong monitoredPid = new AtomicLong();
+        DeferredOutputStream stdinBridge = new DeferredOutputStream();
+        CountDownLatch stopSignal = new CountDownLatch(1);
+
+        OutputPanelHandle buildPanel = requestBuildPanel(panelProvider);
+        OutputStream buildStream = buildPanel != null ? buildPanel.getOutputStream() : consoleOut;
+        boolean separatePanels = buildPanel != null;
+
+        Thread worker = new Thread(() -> {
+            try (OutputStream out = consoleOut) {
+                OutputStream buildOut = separatePanels ? buildStream : out;
+                if (separatePanels) {
+                    buildPanel.show();
+                }
+                if (!prepareIisContent(request, buildOut, out)) {
+                    return;
+                }
+                if (separatePanels && showRunOutput != null) {
+                    showRunOutput.run();
+                }
+                if (request.iisExpress()) {
+                    runIisExpress(request, out, hostProcess, sessionRef, monitoredPid, stdinBridge, stopSignal);
+                } else {
+                    runFullIis(request, out, sessionRef, monitoredPid, stdinBridge, stopSignal);
+                }
+            } catch (Exception e) {
+                safeWriteLine(consoleOut, "[erro] " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            } finally {
+                done.set(true);
+                activeProcesses.remove(DotnetRunSupport.TYPE_RUN);
+                if (request.sessionSink() != null) {
+                    request.sessionSink().accept(null);
+                }
+                if (request.debug() && request.debugView() != null) {
+                    try {
+                        request.debugView().onDebugFinished();
+                    } catch (Exception ignored) {
+                    }
+                }
+                stdinBridge.closeQuietly();
+                flushQuietly(buildStream);
+            }
+        }, "dotnet-iis-run");
+        worker.setDaemon(true);
+        worker.start();
+
+        return RunProcessHandle.builder()
+                .output(consoleIn)
+                .input(stdinBridge)
+                .processPid(monitoredPid::get)
+                .readonly(false)
+                .alive(() -> !done.get())
+                .terminate(() -> {
+                    stopSignal.countDown();
+                    DotnetDapDebugSession session = sessionRef.get();
+                    if (session != null) {
+                        session.terminate();
+                    }
+                    Process process = hostProcess.get();
+                    if (process != null) {
+                        destroyQuietly(process);
+                    }
+                    worker.interrupt();
+                })
+                .stdinMode(RunProcessHandle.StdinMode.TERMINAL)
+                .build();
+    }
+
+    private boolean prepareIisContent(IisLaunchRequest request, OutputStream buildOut, OutputStream out)
+            throws Exception {
+        Path projectFile = request.projectFile();
+        if (!IisWebProject.requiresPublish(projectFile)) {
+            writeLine(out, "[iis] Projeto .NET Framework: usando o diretório do projeto como raiz de conteúdo.");
+            return true;
+        }
+        Path publishDirectory = IisWebProject.publishDirectory(projectFile, request.effectiveConfiguration());
+        List<String> publishCmd = new ArrayList<>(List.of(
+                request.dotnet().toString(), "publish", projectFile.toString(),
+                "-c", request.effectiveConfiguration(), "-o", publishDirectory.toString(), "--nologo"));
+        addFrameworkOption(publishCmd, request.targetFramework());
+        writeLine(buildOut, "> " + String.join(" ", publishCmd));
+        int exit = runAndStream(publishCmd, projectFile.getParent(), buildOut, DotnetRunSupport.TYPE_RUN, null);
+        if (exit != 0) {
+            writeLine(buildOut, System.lineSeparator() + "[publish] falhou (código " + exit + ").");
+            writeLine(out, "[erro] Falha ao publicar o projeto para o IIS.");
+            return false;
+        }
+        writeLine(buildOut, System.lineSeparator() + "[publish] OK -> " + publishDirectory);
+        flushQuietly(buildOut);
+        return true;
+    }
+
+    private void runIisExpress(IisLaunchRequest request, OutputStream out,
+                               AtomicReference<Process> hostProcess,
+                               AtomicReference<DotnetDapDebugSession> sessionRef,
+                               AtomicLong monitoredPid,
+                               DeferredOutputStream stdinBridge,
+                               CountDownLatch stopSignal) throws Exception {
+        Path contentRoot = IisWebProject.contentRoot(request.projectFile(), request.effectiveConfiguration());
+        if (contentRoot == null || !Files.isDirectory(contentRoot)) {
+            writeLine(out, "[erro] Raiz de conteúdo inexistente: " + contentRoot);
+            return;
+        }
+        IisExpressLauncher.SiteSpec spec = new IisExpressLauncher.SiteSpec(
+                request.siteName(), contentRoot, request.bindings(), request.aspNetCore());
+        IisExpressLauncher.Prepared prepared = IisExpressLauncher.prepare(
+                request.projectFile(), request.workspaceRoot(), spec);
+        if (prepared.reusedVisualStudioConfig()) {
+            writeLine(out, "[iis] Reutilizando applicationhost.config do Visual Studio: " + prepared.configFile());
+        } else {
+            writeLine(out, "[iis] applicationhost.config gerado em " + prepared.configFile());
+        }
+
+        List<String> command = IisExpressLauncher.command(prepared.configFile(), prepared.siteName());
+        writeLine(out, "> " + String.join(" ", command));
+        ProcessBuilder builder = new ProcessBuilder(command)
+                .directory(contentRoot.toFile())
+                .redirectErrorStream(true);
+        applyDotnetEnv(builder, request.dotnet());
+        mergeLaunchEnv(builder, request.environment());
+        Process process = builder.start();
+        hostProcess.set(process);
+        activeProcesses.put(DotnetRunSupport.TYPE_RUN, process);
+        stdinBridge.bind(process.getOutputStream());
+        monitoredPid.set(process.pid());
+
+        Thread pumpThread = new Thread(() -> {
+            try {
+                pump(process.getInputStream(), out);
+            } catch (IOException e) {
+                log.debug("Saída do IIS Express encerrada: {}", e.getMessage());
+            }
+        }, "iisexpress-output");
+        pumpThread.setDaemon(true);
+        pumpThread.start();
+
+        String url = request.resolveUrl();
+        writeLine(out, "[iis] Aplicação disponível em " + url);
+        warmUp(url, out);
+
+        if (request.debug()) {
+            long pid = IisWarmUp.awaitClrProcess(process.toHandle(), request.hostingModel(),
+                    request.assemblyName(), CLR_WAIT_MS);
+            if (pid <= 0) {
+                writeLine(out, "[erro] Não foi possível localizar o processo CoreCLR do IIS Express para depurar.");
+            } else {
+                monitoredPid.set(pid);
+                attachDebugSession(request, out, sessionRef, contentRoot, pid, stdinBridge);
+            }
+        }
+        if (request.launchBrowser()) {
+            IisWarmUp.openBrowser(url);
+        }
+        if (request.debug()) {
+            DotnetDapDebugSession session = sessionRef.get();
+            if (session != null) {
+                session.awaitTermination();
+            }
+            destroyQuietly(process);
+        } else {
+            process.waitFor();
+        }
+        stopSignal.countDown();
+        pumpThread.interrupt();
+    }
+
+    private void runFullIis(IisLaunchRequest request, OutputStream out,
+                            AtomicReference<DotnetDapDebugSession> sessionRef,
+                            AtomicLong monitoredPid,
+                            DeferredOutputStream stdinBridge,
+                            CountDownLatch stopSignal) throws Exception {
+        Path contentRoot = IisWebProject.contentRoot(request.projectFile(), request.effectiveConfiguration());
+        if (contentRoot == null || !Files.isDirectory(contentRoot)) {
+            writeLine(out, "[erro] Raiz de conteúdo inexistente: " + contentRoot);
+            return;
+        }
+        IisDeployment.Target target = new IisDeployment.Target(request.siteName(), request.applicationPath(),
+                request.appPoolName(), contentRoot, request.primaryBinding(), request.aspNetCore());
+
+        if (request.autoCreateSite()) {
+            writeLine(out, "[iis] Garantindo site \"" + target.siteName()
+                    + "\" e pool \"" + target.appPoolName() + "\"...");
+            IisService.Result ensured = IisDeployment.ensure(target);
+            if (!ensured.success()) {
+                writeLine(out, "[erro] " + ensured.message());
+                return;
+            }
+        } else if (IisService.findSite(target.siteName()) == null) {
+            writeLine(out, "[erro] O site \"" + target.siteName() + "\" não existe no IIS e a criação automática "
+                    + "está desativada nas configurações do plugin.");
+            return;
+        }
+        IisService.Result started = IisDeployment.start(target);
+        if (!started.success()) {
+            writeLine(out, "[aviso] " + started.message());
+        }
+
+        String url = request.resolveUrl();
+        writeLine(out, "[iis] Aplicação disponível em " + url);
+        warmUp(url, out);
+
+        if (request.debug()) {
+            long pid = IisWarmUp.awaitWorkerProcess(target.appPoolName(), request.hostingModel(),
+                    request.assemblyName(), CLR_WAIT_MS);
+            if (pid <= 0) {
+                writeLine(out, "[erro] Nenhum worker process do pool \"" + target.appPoolName()
+                        + "\" foi encontrado. Verifique se o pool está iniciado e se a aplicação respondeu a uma requisição.");
+            } else {
+                monitoredPid.set(pid);
+                writeLine(out, "[iis] Anexando depurador ao processo " + pid + ".");
+                attachDebugSession(request, out, sessionRef, contentRoot, pid, stdinBridge);
+            }
+        }
+        if (request.launchBrowser()) {
+            IisWarmUp.openBrowser(url);
+        }
+
+        if (request.debug() && sessionRef.get() != null) {
+            sessionRef.get().awaitTermination();
+        } else {
+            writeLine(out, "[iis] O site continua hospedado no IIS. Use \"Parar\" para encerrar o monitoramento.");
+            stopSignal.await();
+        }
+        if (request.stopPoolOnExit()) {
+            IisService.Result stopped = IisDeployment.stop(target);
+            writeLine(out, stopped.success()
+                    ? "[iis] Pool \"" + target.appPoolName() + "\" parado."
+                    : "[aviso] " + stopped.message());
+        }
+    }
+
+    private void attachDebugSession(IisLaunchRequest request, OutputStream out,
+                                    AtomicReference<DotnetDapDebugSession> sessionRef,
+                                    Path contentRoot, long pid,
+                                    DeferredOutputStream stdinBridge) throws Exception {
+        writeLine(out, "> netcoredbg attach PID " + pid);
+        DotnetDapDebugSession session = new DotnetDapDebugSession(
+                request.netcoredbg(), request.dotnet(), null, contentRoot, null, null,
+                request.effectiveConfiguration(), List.of(),
+                request.breakpoints() == null ? List.of() : request.breakpoints(),
+                request.debugView(), out, stdinBridge, null, pid, null);
+        session.setBreakOnAllExceptions(request.breakOnAllExceptions());
+        sessionRef.set(session);
+        if (request.sessionSink() != null) {
+            request.sessionSink().accept(session);
+        }
+        session.start();
+    }
+
+    private static void warmUp(String url, OutputStream out) {
+        for (int attempt = 0; attempt < WARM_UP_ATTEMPTS; attempt++) {
+            if (IisWarmUp.request(url, WARM_UP_TIMEOUT_MS)) {
+                return;
+            }
+            try {
+                Thread.sleep(WARM_UP_RETRY_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        writeLine(out, "[aviso] A aplicação não respondeu ao warm-up em " + url + ".");
     }
 
     static Path resolveDebugTargetDll(Path project, Path projectFile, String configuration) {

@@ -123,6 +123,43 @@ O gerenciador NuGet possui:
 - Restore manual em **Window → Restaurar pacotes**.
 - Reinício manual do IntelliSense em **Window → Reiniciar IntelliSense**.
 
+### IIS (Windows)
+
+Quando o IIS ou o IIS Express estão instalados, o plugin habilita hospedagem e gerenciamento
+sem abrir o Gerenciador do IIS.
+
+**Gerenciador embutido** — **Window → Gerenciar IIS** (aparece apenas com o IIS instalado):
+
+- pools de aplicativos: criar, remover, iniciar, parar, reciclar e configurações avançadas
+  (versão do CLR, pipeline, identidade, 32 bits, start mode, queue length, idle timeout,
+  máximo de processos, reciclagem por tempo e por limite de memória);
+- sites: criar, remover, iniciar, parar, abrir no navegador, editar bindings e caminho físico;
+- aplicativos e diretórios virtuais: criar, remover e trocar o pool;
+- processos de trabalho: lista `w3wp` por pool com ação de anexar o depurador.
+
+As operações usam `appcmd.exe`. Sem sessão elevada, cada alteração dispara um prompt de UAC.
+
+**Executar e depurar** — o plugin registra as configurações de execução `IIS Express` e `IIS`
+para projetos web:
+
+| | IIS Express | IIS |
+|---|---|---|
+| Elevação | não exige | exige para anexar ao `w3wp` |
+| Configuração | `applicationhost.config` gerado em `.vs/orion/config` (reutiliza o do Visual Studio quando já existe um site com o mesmo nome) | site/pool reais |
+| Criação automática | site gerado a cada execução | cria pool, site e aplicativo se não existirem |
+| Conteúdo | `dotnet publish` para `bin/orion-iis/<configuração>` | idem |
+
+O fluxo publica o projeto, sobe o host, faz um warm-up HTTP, resolve o processo CoreCLR
+(o próprio host em `InProcess`, o `dotnet.exe` filho em `OutOfProcess`) e anexa o netcoredbg.
+Breakpoints, variáveis, call stack, watch e avaliação funcionam como em qualquer sessão de debug.
+
+**Configurações compatíveis com o Visual Studio** — o menu de contexto do `.csproj` traz
+**IIS → Configurar IIS / exportar launchSettings...**, que lê e grava o bloco `iisSettings`
+(`windowsAuthentication`, `anonymousAuthentication`, `iisExpress.applicationUrl`,
+`iisExpress.sslPort`, `iis.applicationUrl`) e perfis `commandName: IISExpress | IIS` em
+`Properties/launchSettings.json`, preservando campos desconhecidos. Projetos criados no
+Visual Studio abrem com as configurações de execução IIS já prontas.
+
 ---
 
 ## Wizards
@@ -174,7 +211,9 @@ Em **Settings → .NET / C#**:
 
 - formatar ao salvar para C# e Razor quando suportado pelo language server;
 - incluir versões prerelease no NuGet por padrão;
-- configuração padrão de build: Debug ou Release.
+- configuração padrão de build: Debug ou Release;
+- IIS: criar site/aplicativo automaticamente, abrir o navegador ao iniciar e parar o pool ao
+  encerrar a execução.
 
 ---
 
@@ -184,4 +223,10 @@ Em **Settings → .NET / C#**:
 - A experiência semântica Razor exige Roslyn LS com extensão Razor; sem ela, `.razor`/`.cshtml` usam fallback local.
 - Execução/depuração de .NET Framework fora do Windows é bloqueada quando não há runtime compatível.
 - Projetos legados recebem suporte em melhor esforço para pacotes e referências.
+- O suporte a IIS é exclusivo do Windows e depende do IIS ou do IIS Express instalados.
+- Depuração no IIS cobre apenas ASP.NET Core (CoreCLR). ASP.NET clássico (.NET Framework)
+  pode ser gerenciado e executado, mas não depurado: o netcoredbg não anexa ao CLR do
+  .NET Framework.
+- Hospedar ASP.NET Core no IIS exige o ASP.NET Core Hosting Bundle (módulo `aspnetcorev2.dll`).
+- Anexar o depurador ao `w3wp` exige a IDE em sessão elevada.
 

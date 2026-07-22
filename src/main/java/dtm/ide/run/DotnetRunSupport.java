@@ -5,6 +5,11 @@ import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunConfigurationData;
 import dtm.ide.api.extension.runconfig.RunExecutionContext;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
+import dtm.ide.iis.IisBinding;
+import dtm.ide.iis.IisEnvironment;
+import dtm.ide.iis.IisLaunchSettings;
+import dtm.ide.iis.IisService;
+import dtm.ide.iis.IisWebProject;
 import dtm.ide.sdk.DotnetSdkService;
 import lombok.extern.slf4j.Slf4j;
 
@@ -28,6 +33,8 @@ public final class DotnetRunSupport {
     public static final String TYPE_BUILD = "dotnet-build";
     public static final String TYPE_RUN = "dotnet-run";
     public static final String TYPE_TEST = "dotnet-test";
+    public static final String TYPE_IIS_EXPRESS = "dotnet-iisexpress";
+    public static final String TYPE_IIS = "dotnet-iis";
 
     public static final String TYPE_CURRENT_FILE = "current_file";
 
@@ -38,6 +45,11 @@ public final class DotnetRunSupport {
     public static final String PROP_PROGRAM_ARGS = "programArgs";
     public static final String PROP_WORKING_DIRECTORY = "workingDirectory";
     public static final String PROP_ENVIRONMENT = "environment";
+    public static final String PROP_IIS_SITE = "iisSiteName";
+    public static final String PROP_IIS_APP_PATH = "iisApplicationPath";
+    public static final String PROP_IIS_APP_POOL = "iisApplicationPool";
+    public static final String PROP_IIS_LAUNCH_BROWSER = "iisLaunchBrowser";
+    public static final String PROP_IIS_LAUNCH_URL = "iisLaunchUrl";
 
     private static final Pattern MAIN_PATTERN = Pattern.compile("\\bstatic\\s+(?:async\\s+)?[\\w<>\\[\\].,\\s]*?\\bMain\\s*\\(");
 
@@ -54,6 +66,9 @@ public final class DotnetRunSupport {
     private volatile Consumer<Boolean> debugSessionStateListener;
     private volatile Consumer<DotnetHotReloadResult> hotReloadResultListener;
     private volatile Function<List<Path>, Path> runnableProjectChooser;
+    private volatile BooleanSupplier iisAutoCreateSiteSupplier;
+    private volatile BooleanSupplier iisStopPoolOnExitSupplier;
+    private volatile BooleanSupplier iisLaunchBrowserSupplier;
 
     private final AtomicReference<DotnetDapDebugSession> debugSession = new AtomicReference<>();
     private volatile DotnetDebugView debugView;
@@ -159,11 +174,20 @@ public final class DotnetRunSupport {
     public static boolean isDotnetType(RunConfigurationData data) {
         return data != null && (TYPE_BUILD.equals(data.getType())
                 || TYPE_RUN.equals(data.getType())
-                || TYPE_TEST.equals(data.getType()));
+                || TYPE_TEST.equals(data.getType())
+                || isIisType(data));
     }
 
     public static boolean isRunType(RunConfigurationData data) {
         return data != null && TYPE_RUN.equals(data.getType());
+    }
+
+    public static boolean isIisType(RunConfigurationData data) {
+        return data != null && (TYPE_IIS_EXPRESS.equals(data.getType()) || TYPE_IIS.equals(data.getType()));
+    }
+
+    public static boolean isIisExpressType(RunConfigurationData data) {
+        return data != null && TYPE_IIS_EXPRESS.equals(data.getType());
     }
 
     public Collection<RunConfigurationData> staticRunConfigurations() {
@@ -191,7 +215,59 @@ public final class DotnetRunSupport {
             }
         }
         list.add(config(TYPE_TEST, ".NET: Testar"));
+        addIisConfigurations(list, project);
         return list;
+    }
+
+    private static void addIisConfigurations(List<RunConfigurationData> list, Path project) {
+        if (!IisEnvironment.isWindows()) {
+            return;
+        }
+        IisEnvironment.Info info = IisEnvironment.current();
+        if (!info.anyHostAvailable()) {
+            return;
+        }
+        List<Path> webProjects = new ArrayList<>();
+        for (Path projectFile : TargetFramework.findProjectFiles(project)) {
+            if (IisWebProject.isWebProject(projectFile)) {
+                webProjects.add(projectFile);
+            }
+        }
+        for (Path projectFile : webProjects) {
+            String suffix = webProjects.size() > 1 ? " — " + projectDisplayName(projectFile) : "";
+            List<LaunchSettings.Profile> profiles = LaunchSettings.iisProfiles(projectFile);
+            boolean addedExpress = false;
+            boolean addedIis = false;
+            for (LaunchSettings.Profile profile : profiles) {
+                if (profile.isIisExpressCommand() && info.iisExpressInstalled()) {
+                    list.add(iisConfig(TYPE_IIS_EXPRESS, "IIS Express: " + profile.name() + suffix,
+                            projectFile, profile.name()));
+                    addedExpress = true;
+                } else if (profile.isIisCommand() && info.manageable()) {
+                    list.add(iisConfig(TYPE_IIS, "IIS: " + profile.name() + suffix, projectFile, profile.name()));
+                    addedIis = true;
+                }
+            }
+            if (!addedExpress && info.iisExpressInstalled()) {
+                list.add(iisConfig(TYPE_IIS_EXPRESS, "IIS Express" + suffix, projectFile, null));
+            }
+            if (!addedIis && info.manageable()) {
+                list.add(iisConfig(TYPE_IIS, "IIS" + suffix, projectFile, null));
+            }
+        }
+    }
+
+    private static RunConfigurationData iisConfig(String type, String title, Path projectFile, String profile) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put(PROP_PROJECT, projectFile.toString());
+        if (profile != null && !profile.isBlank()) {
+            properties.put(PROP_LAUNCH_PROFILE, profile);
+        }
+        return RunConfigurationData.builder()
+                .type(type)
+                .title(title)
+                .properties(properties)
+                .build();
     }
 
     private static RunConfigurationData runConfigForProject(Path projectFile) {
@@ -248,6 +324,9 @@ public final class DotnetRunSupport {
 
         String launchProfile = launchProfileOf(data);
         String requestedTfm = targetFrameworkOf(data);
+        if (TYPE_IIS_EXPRESS.equals(type) || TYPE_IIS.equals(type)) {
+            return launchIis(data, project, false, List.of());
+        }
         return switch (type) {
             case TYPE_RUN -> {
                 Path projectFile = resolveTargetProjectFile(data, project);
@@ -461,6 +540,12 @@ public final class DotnetRunSupport {
         if (project == null) {
             return DotnetBuild.errorHandle("Projeto inválido: nenhum diretório de projeto disponível.");
         }
+        if (isIisType(data)) {
+            List<RunBreakpointData> iisBreakpoints = context == null || context.getBreakpoints() == null
+                    ? List.of()
+                    : context.getBreakpoints();
+            return launchIis(data, project, true, iisBreakpoints);
+        }
         Path projectFile = resolveTargetProjectFile(data, project);
         if (projectFile == null) {
             return DotnetBuild.errorHandle(debugBlockedMessage(project));
@@ -509,6 +594,156 @@ public final class DotnetRunSupport {
                 dotnet.get(), netcoredbg, configuration, projectFile,
                 runnableTfm.orElse(null), breakpoints, debugView, outputPanels, runOutputFocus,
                 startupHook, this::setDebugSession, programArgs, launchEnv, breakOnAllExceptions);
+    }
+
+    private RunProcessHandle launchIis(RunConfigurationData data, Path project, boolean debug,
+                                       List<RunBreakpointData> breakpoints) {
+        boolean iisExpress = TYPE_IIS_EXPRESS.equals(data == null ? null : data.getType());
+        IisEnvironment.Info info = IisEnvironment.current();
+        if (iisExpress && !info.iisExpressInstalled()) {
+            return DotnetBuild.errorHandle("IIS Express não está instalado nesta máquina. "
+                    + "Instale o IIS Express (ou o ASP.NET Core Hosting Bundle) para usar este modo.");
+        }
+        if (!iisExpress && !info.iisInstalled()) {
+            return DotnetBuild.errorHandle("O IIS não está instalado nesta máquina. "
+                    + "Habilite \"Serviços de Informações da Internet\" nos Recursos do Windows.");
+        }
+        if (!iisExpress && !info.manageable()) {
+            return DotnetBuild.errorHandle("O IIS está instalado, mas o appcmd.exe não foi encontrado. "
+                    + "Habilite \"Ferramentas e scripts de gerenciamento do IIS\" nos Recursos do Windows.");
+        }
+
+        Path projectFile = resolveWebProjectFile(data, project);
+        if (projectFile == null) {
+            return DotnetBuild.errorHandle("Nenhum projeto web (ASP.NET / ASP.NET Core) foi encontrado para hospedar no IIS.");
+        }
+        if (debug && IisWebProject.isClassicAspNet(projectFile)) {
+            return DotnetBuild.errorHandle("Depuração no IIS não é suportada para projetos .NET Framework: "
+                    + "o netcoredbg depura apenas CoreCLR. Use execução sem depuração para este projeto.");
+        }
+        if (IisWebProject.isAspNetCore(projectFile) && !info.aspNetCoreModule() && !iisExpress) {
+            return DotnetBuild.errorHandle("O ASP.NET Core Module não está registrado no IIS. "
+                    + "Instale o ASP.NET Core Hosting Bundle para hospedar projetos ASP.NET Core.");
+        }
+
+        Optional<Path> dotnet = ensureDotnet();
+        if (dotnet.isEmpty()) {
+            return DotnetBuild.errorHandle("dotnet não encontrado. Instale o .NET SDK ou aguarde o download automático.");
+        }
+        Path netcoredbg = null;
+        if (debug) {
+            DotnetSdkService sdk = sdkService;
+            if (sdk == null) {
+                return DotnetBuild.errorHandle("Serviço de SDK .NET indisponível para depuração.");
+            }
+            try {
+                netcoredbg = sdk.getNetcoredbgPath().orElseGet(() -> sdk.ensureNetcoredbg(downloadProgress));
+            } catch (Exception e) {
+                return DotnetBuild.errorHandle("netcoredbg indisponível: " + e.getMessage());
+            }
+            if (netcoredbg == null) {
+                return DotnetBuild.errorHandle("netcoredbg não encontrado para depuração.");
+            }
+            if (!iisExpress && !IisEnvironment.isElevated()) {
+                log.warn("Depuração no IIS sem privilégios elevados pode falhar ao anexar ao w3wp.");
+            }
+        }
+
+        String projectName = IisWebProject.projectName(projectFile);
+        IisLaunchSettings.Settings settings = IisLaunchSettings.read(projectFile);
+        LaunchSettings.Profile profile = LaunchSettings.findProfile(projectFile, launchProfileOf(data));
+
+        List<IisBinding> bindings;
+        String applicationPath;
+        String siteName = propertyText(data, PROP_IIS_SITE);
+        if (iisExpress) {
+            bindings = IisLaunchSettings.bindingsOf(settings, projectName);
+            applicationPath = "/";
+            if (siteName == null || siteName.isBlank()) {
+                siteName = IisService.suggestSiteName(projectName);
+            }
+        } else {
+            IisLaunchSettings.IisTarget target = IisLaunchSettings.iisTarget(settings, projectName);
+            bindings = List.of(target.binding());
+            String configuredPath = propertyText(data, PROP_IIS_APP_PATH);
+            applicationPath = configuredPath == null || configuredPath.isBlank()
+                    ? target.applicationPath() : configuredPath;
+            if (siteName == null || siteName.isBlank()) {
+                siteName = "Default Web Site";
+            }
+        }
+        String appPool = propertyText(data, PROP_IIS_APP_POOL);
+        if (appPool == null || appPool.isBlank()) {
+            appPool = IisService.suggestAppPoolName(projectName);
+        }
+
+        Map<String, String> environment = new LinkedHashMap<>(profile == null ? Map.of() : profile.env());
+        environment.putAll(environmentOf(data));
+        environment.putIfAbsent("ASPNETCORE_ENVIRONMENT", "Development");
+
+        String launchUrl = propertyText(data, PROP_IIS_LAUNCH_URL);
+        if ((launchUrl == null || launchUrl.isBlank()) && profile != null) {
+            launchUrl = profile.launchUrl();
+        }
+        String launchBrowserText = propertyText(data, PROP_IIS_LAUNCH_BROWSER);
+        boolean launchBrowser = launchBrowserText == null || launchBrowserText.isBlank()
+                ? (profile != null ? profile.launchBrowser() : resolveFlag(iisLaunchBrowserSupplier, true))
+                : Boolean.parseBoolean(launchBrowserText);
+
+        IisLaunchRequest request = IisLaunchRequest.builder()
+                .projectFile(projectFile)
+                .workspaceRoot(projectPath)
+                .dotnet(dotnet.get())
+                .netcoredbg(netcoredbg)
+                .configuration(configurationOf(data))
+                .targetFramework(targetFrameworkOf(data))
+                .iisExpress(iisExpress)
+                .debug(debug)
+                .siteName(siteName)
+                .applicationPath(applicationPath)
+                .appPoolName(appPool)
+                .bindings(bindings)
+                .launchUrl(launchUrl)
+                .launchBrowser(launchBrowser)
+                .environment(environment)
+                .breakpoints(breakpoints)
+                .debugView(debug ? debugView : null)
+                .sessionSink(debug ? this::setDebugSession : null)
+                .breakOnAllExceptions(breakOnAllExceptionsSupplier != null
+                        && breakOnAllExceptionsSupplier.getAsBoolean())
+                .stopPoolOnExit(resolveFlag(iisStopPoolOnExitSupplier, false))
+                .autoCreateSite(resolveFlag(iisAutoCreateSiteSupplier, true))
+                .build();
+        return build.launchIis(request, outputPanels, runOutputFocus);
+    }
+
+    private Path resolveWebProjectFile(RunConfigurationData data, Path projectDir) {
+        Path explicit = projectFileOf(data);
+        if (explicit != null && java.nio.file.Files.isRegularFile(explicit)) {
+            return explicit;
+        }
+        for (Path candidate : TargetFramework.findProjectFiles(projectDir)) {
+            if (IisWebProject.isWebProject(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    public void bindIisAutoCreateSite(BooleanSupplier supplier) {
+        this.iisAutoCreateSiteSupplier = supplier;
+    }
+
+    public void bindIisStopPoolOnExit(BooleanSupplier supplier) {
+        this.iisStopPoolOnExitSupplier = supplier;
+    }
+
+    public void bindIisLaunchBrowser(BooleanSupplier supplier) {
+        this.iisLaunchBrowserSupplier = supplier;
+    }
+
+    private static boolean resolveFlag(BooleanSupplier supplier, boolean fallback) {
+        return supplier == null ? fallback : supplier.getAsBoolean();
     }
 
     public boolean isDebugging() {
@@ -637,7 +872,7 @@ public final class DotnetRunSupport {
         }
         notifyDebugSessionState(false);
         String type = data == null ? null : data.getType();
-        if (TYPE_CURRENT_FILE.equals(type)) {
+        if (TYPE_CURRENT_FILE.equals(type) || TYPE_IIS_EXPRESS.equals(type) || TYPE_IIS.equals(type)) {
             type = TYPE_RUN;
         }
         build.stop(type);

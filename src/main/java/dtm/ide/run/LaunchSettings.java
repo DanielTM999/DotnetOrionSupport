@@ -17,11 +17,28 @@ public final class LaunchSettings {
     private LaunchSettings() {
     }
 
+    public static final String COMMAND_PROJECT = "Project";
+    public static final String COMMAND_IIS_EXPRESS = "IISExpress";
+    public static final String COMMAND_IIS = "IIS";
+
     public record Profile(String name, String commandName, List<String> args,
-                          Map<String, String> env, String applicationUrl, String workingDirectory) {
+                          Map<String, String> env, String applicationUrl, String workingDirectory,
+                          String launchUrl, boolean launchBrowser) {
 
         public boolean isProjectCommand() {
-            return commandName == null || commandName.isBlank() || commandName.equalsIgnoreCase("Project");
+            return commandName == null || commandName.isBlank() || commandName.equalsIgnoreCase(COMMAND_PROJECT);
+        }
+
+        public boolean isIisExpressCommand() {
+            return COMMAND_IIS_EXPRESS.equalsIgnoreCase(commandName);
+        }
+
+        public boolean isIisCommand() {
+            return COMMAND_IIS.equalsIgnoreCase(commandName);
+        }
+
+        public boolean isAnyIisCommand() {
+            return isIisExpressCommand() || isIisCommand();
         }
 
         public Map<String, String> effectiveEnv() {
@@ -64,7 +81,9 @@ public final class LaunchSettings {
                         splitArgs(node.path("commandLineArgs").asText("")),
                         readEnv(node.path("environmentVariables")),
                         node.path("applicationUrl").asText(""),
-                        node.path("workingDirectory").asText("")));
+                        node.path("workingDirectory").asText(""),
+                        node.path("launchUrl").asText(""),
+                        node.path("launchBrowser").asBoolean(false)));
             });
             return result;
         } catch (Exception e) {
@@ -76,6 +95,16 @@ public final class LaunchSettings {
         List<Profile> result = new ArrayList<>();
         for (Profile profile : read(projectFile)) {
             if (profile.isProjectCommand()) {
+                result.add(profile);
+            }
+        }
+        return result;
+    }
+
+    public static List<Profile> iisProfiles(Path projectFile) {
+        List<Profile> result = new ArrayList<>();
+        for (Profile profile : read(projectFile)) {
+            if (profile.isAnyIisCommand()) {
                 result.add(profile);
             }
         }

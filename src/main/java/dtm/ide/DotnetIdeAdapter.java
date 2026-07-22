@@ -18,6 +18,13 @@ import dtm.ide.api.hierarchy.CallHierarchyItem;
 import dtm.ide.api.project.editor.*;
 import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunConfigurationContribution;
+import dtm.ide.iis.AppCmd;
+import dtm.ide.iis.IisBroker;
+import dtm.ide.iis.IisDeployment;
+import dtm.ide.iis.IisEnvironment;
+import dtm.ide.iis.IisLaunchSettings;
+import dtm.ide.iis.IisService;
+import dtm.ide.iis.IisWebProject;
 import dtm.ide.api.extension.runconfig.RunConfigurationData;
 import dtm.ide.api.extension.runconfig.RunExecutionContext;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
@@ -69,6 +76,8 @@ import dtm.ide.ui.DotnetProcessPickerPanel;
 import dtm.ide.ui.DotnetPublishPanel;
 import dtm.ide.ui.DotnetTestExplorerPanel;
 import dtm.ide.ui.NewCSharpItemPanel;
+import dtm.ide.ui.IisManagerPanel;
+import dtm.ide.ui.IisProjectSettingsPanel;
 import dtm.ide.ui.NuGetManagerPanel;
 import dtm.ide.ui.ProjectReferenceDialog;
 import dtm.ide.ui.RunProjectChooserPanel;
@@ -105,7 +114,10 @@ import dtm.stools.utils.ImageUtils;
 import lombok.extern.slf4j.Slf4j;
 import javax.swing.Icon;
 import javax.swing.JButton;
+import javax.swing.BorderFactory;
+import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JScrollPane;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JLayeredPane;
@@ -179,6 +191,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile ExecutorService languageSetupExecutor;
     private volatile ExecutorService navigationExecutor;
     private volatile NuGetManagerPanel nugetPanel;
+    private volatile IisManagerPanel iisManagerPanel;
     private volatile DotnetTestExplorerPanel testPanel;
     private String testToolPanelId;
     private static final int CODE_LENS_LIMIT = 100;
@@ -236,6 +249,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     });
 
     private static final String NUGET_TAB_ID = "dotnet.nuget";
+    private static final String IIS_TAB_ID = "dotnet.iis";
     private static final String PROJECT_CONFIG_TAB_ID = "dotnet.projectConfig";
     private static final String LSP_PROGRESS_ID = "dotnetLspStartup";
     private static final long RESTORE_TIMEOUT_SECONDS = 180;
@@ -338,6 +352,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
         runSupport.bindDebugSessionStateListener(active -> runOnUiThread(this::refreshHotReloadButton));
         runSupport.bindHotReloadResultListener(result -> runOnUiThread(() -> handleHotReloadResult(result)));
         runSupport.bindRunnableProjectChooser(this::chooseRunnableProject);
+        runSupport.bindIisAutoCreateSite(() -> ensurePluginSettings().isIisAutoCreateSite());
+        runSupport.bindIisStopPoolOnExit(() -> ensurePluginSettings().isIisStopPoolOnExit());
+        runSupport.bindIisLaunchBrowser(() -> ensurePluginSettings().isIisLaunchBrowser());
         if (projectPath != null) {
             boolean canRun = TargetFramework.canRunOnHost(projectPath);
             SwingUtilities.invokeLater(() -> {
@@ -567,6 +584,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
             runSupport.stop(null);
         } catch (Exception e) {
             log.debug("Falha ao parar processos .NET do projeto: {}", e.getMessage());
+        }
+        try {
+            IisBroker.shutdown();
+        } catch (Exception e) {
+            log.debug("Falha ao encerrar o assistente elevado do IIS: {}", e.getMessage());
         }
     }
 
@@ -3017,7 +3039,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 .item("dotnetCleanMenu", text("menu.clean", "Clean"),
                         e -> buildSolution(text("menu.clean", "Clean"), List.of("clean"))));
 
-        menu.into("window")
+        IdeMenuBarBuilder windowMenu = menu.into("window")
                 .add(
                         MenuNode.item("dotnetNuget", text("menu.nuget", "Manage NuGet"))
                                 .tooltip(text("menu.nuget.tip", "Manage the project's NuGet packages"))
@@ -3043,6 +3065,29 @@ public class DotnetIdeAdapter extends IdeAdapter {
                                 .tooltip(text("menu.restartLsp.tip", "Restarts C# IntelliSense"))
                                 .onClick(e -> restartLanguageServer())
                 );
+
+        IisEnvironment.Info iis = IisEnvironment.current();
+        if (iis.windows()) {
+            windowMenu.add(
+                    MenuNode.item("dotnetIisManager", text("menu.iis", "Manage IIS"))
+                            .tooltip(text("menu.iis.tip",
+                                    "Application pools, sites, applications and worker processes without leaving the IDE"))
+                            .onClick(e -> openIisManager()));
+            log.info("Menu do IIS adicionado. {}", iis.describe());
+        } else {
+            log.debug("Menu do IIS omitido: sistema não é Windows.");
+        }
+    }
+
+    private void openIisManager() {
+        runOnUiThread(() -> {
+            if (iisManagerPanel == null) {
+                iisManagerPanel = new IisManagerPanel(pid -> attachTestProcess(pid, true), iisDialogHost());
+            }
+            openCenterTab(IIS_TAB_ID, text("tab.iis", "IIS"), iisManagerPanel, true);
+            switchToCenterTab(IIS_TAB_ID);
+            iisManagerPanel.refresh();
+        });
     }
 
     private void openNuGetManager() {
@@ -3257,10 +3302,20 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<RunConfigurationContribution> getRunConfigurationContributions() {
-        return List.of(
+        List<RunConfigurationContribution> contributions = new ArrayList<>(List.of(
                 new DotnetRunConfigurationContribution(() -> projectPath, DotnetRunSupport.TYPE_RUN),
                 new DotnetRunConfigurationContribution(() -> projectPath, DotnetRunSupport.TYPE_BUILD),
-                new DotnetRunConfigurationContribution(() -> projectPath, DotnetRunSupport.TYPE_TEST));
+                new DotnetRunConfigurationContribution(() -> projectPath, DotnetRunSupport.TYPE_TEST)));
+        IisEnvironment.Info iis = IisEnvironment.current();
+        if (iis.iisExpressInstalled()) {
+            contributions.add(new DotnetRunConfigurationContribution(
+                    () -> projectPath, DotnetRunSupport.TYPE_IIS_EXPRESS));
+        }
+        if (iis.manageable()) {
+            contributions.add(new DotnetRunConfigurationContribution(
+                    () -> projectPath, DotnetRunSupport.TYPE_IIS));
+        }
+        return contributions;
     }
 
     @Override
@@ -3865,6 +3920,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         openProjectReferenceManager(buildTarget);
                     }
                 });
+        contributeIisMenu(menu, buildTarget);
         menu.separator();
         menu.item(text("action.build", "Build") + suffix,
                 e -> runDotnetOnTarget(buildTarget, text("action.build", "Build"), List.of("build")));
@@ -3872,6 +3928,189 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 e -> runDotnetOnTarget(buildTarget, text("action.rebuild", "Rebuild"), List.of("build", "--no-incremental")));
         menu.item(text("action.clean", "Clean") + suffix,
                 e -> runDotnetOnTarget(buildTarget, text("action.clean", "Clean"), List.of("clean")));
+    }
+
+    private void contributeIisMenu(IdeMenuBuilder menu, Path buildTarget) {
+        if (isSolution(buildTarget) || !IisWebProject.isWebProject(buildTarget)) {
+            return;
+        }
+        IisEnvironment.Info iis = IisEnvironment.current();
+        if (!iis.anyHostAvailable()) {
+            return;
+        }
+        menu.separator();
+        menu.submenu(text("ctx.iis", "IIS"), sub -> {
+            sub.item(text("ctx.iisSettings", "Configure IIS / export launchSettings..."),
+                    e -> openIisProjectSettings(buildTarget));
+            if (iis.manageable()) {
+                sub.item(text("ctx.iisDeploy", "Create/update site in IIS"),
+                        e -> deployProjectToIis(buildTarget));
+                sub.item(text("ctx.iisAttach", "Attach debugger to this application's worker process"),
+                        e -> attachToProjectWorkerProcess(buildTarget));
+                sub.item(text("ctx.iisManager", "Open IIS manager"), e -> openIisManager());
+            }
+        });
+    }
+
+    private IisManagerPanel.DialogHost iisDialogHost() {
+        return new IisManagerPanel.DialogHost() {
+
+            @Override
+            public boolean confirmForm(String title, JComponent form, String confirmText) {
+                JScrollPane scroll = new JScrollPane(form);
+                scroll.setBorder(BorderFactory.createEmptyBorder());
+                scroll.setPreferredSize(new Dimension(
+                        Math.max(460, form.getPreferredSize().width + 40),
+                        Math.min(520, form.getPreferredSize().height + 24)));
+                Boolean confirmed = createModernComponentDialogBuilder(Boolean.class)
+                        .title(title)
+                        .draggable(true)
+                        .showIcon(false)
+                        .accentColor(new Color(59, 130, 246))
+                        .confirmText(confirmText)
+                        .cancelText(text("action.cancel", "Cancel"))
+                        .component(scroll)
+                        .result(ctx -> Boolean.TRUE)
+                        .show();
+                return Boolean.TRUE.equals(confirmed);
+            }
+
+            @Override
+            public boolean confirmDelete(String title, String message) {
+                return createModernDialogBuilder()
+                        .title(title)
+                        .draggable(true)
+                        .message(message)
+                        .accentColor(new Color(220, 53, 69))
+                        .option(text("action.remove", "Remove"), 0, new Color(220, 53, 69), Color.WHITE)
+                        .option(text("action.cancel", "Cancel"), 1, new Color(120, 120, 120), Color.WHITE)
+                        .type(ModernDialog.Type.QUESTION)
+                        .show() == 0;
+            }
+
+            @Override
+            public void message(String title, String message, boolean error) {
+                createModernDialogBuilder()
+                        .title(title)
+                        .draggable(true)
+                        .message(message == null || message.isBlank() ? title : message.strip())
+                        .accentColor(error ? new Color(220, 53, 69) : new Color(59, 130, 246))
+                        .option("OK", 0, new Color(59, 130, 246), Color.WHITE)
+                        .type(error ? ModernDialog.Type.ERROR : ModernDialog.Type.INFO)
+                        .show();
+            }
+
+            @Override
+            public int choose(String title, JComponent form, List<String> options) {
+                JScrollPane scroll = new JScrollPane(form);
+                scroll.setBorder(BorderFactory.createEmptyBorder());
+                scroll.setPreferredSize(new Dimension(
+                        Math.max(460, form.getPreferredSize().width + 40),
+                        Math.min(520, form.getPreferredSize().height + 24)));
+                ChoiceBox choice = new ChoiceBox(options);
+                JPanel wrapper = new JPanel(new BorderLayout(0, 10));
+                wrapper.add(scroll, BorderLayout.CENTER);
+                wrapper.add(choice, BorderLayout.SOUTH);
+                Boolean confirmed = createModernComponentDialogBuilder(Boolean.class)
+                        .title(title)
+                        .draggable(true)
+                        .showIcon(false)
+                        .accentColor(new Color(59, 130, 246))
+                        .confirmText(text("action.apply", "Apply"))
+                        .cancelText(text("action.cancel", "Cancel"))
+                        .component(wrapper)
+                        .result(ctx -> Boolean.TRUE)
+                        .show();
+                return Boolean.TRUE.equals(confirmed) ? choice.selectedIndex() : -1;
+            }
+        };
+    }
+
+    private static final class ChoiceBox extends JPanel {
+
+        private final JComboBox<String> combo;
+
+        private ChoiceBox(List<String> options) {
+            super(new BorderLayout(8, 0));
+            combo = new JComboBox<>(options.toArray(new String[0]));
+            add(new JLabel(text("label.action", "Action:")), BorderLayout.WEST);
+            add(combo, BorderLayout.CENTER);
+        }
+
+        private int selectedIndex() {
+            return combo.getSelectedIndex();
+        }
+    }
+
+    private void openIisProjectSettings(Path projectFile) {
+        runOnUiThread(() -> {
+            IisProjectSettingsPanel panel = new IisProjectSettingsPanel(projectFile);
+            Boolean confirmed = createModernComponentDialogBuilder(Boolean.class)
+                    .title(text("dialog.iisSettings", "IIS settings") + " — " + projectFile.getFileName())
+                    .draggable(true)
+                    .showIcon(false)
+                    .accentColor(new Color(59, 130, 246))
+                    .confirmText(text("action.export", "Save and export"))
+                    .cancelText(text("action.cancel", "Cancel"))
+                    .component(panel)
+                    .result(ctx -> Boolean.TRUE)
+                    .show();
+            if (!Boolean.TRUE.equals(confirmed)) {
+                return;
+            }
+            try {
+                IisLaunchSettings.write(projectFile, panel.toSettings(), panel.toProfiles());
+                setStatusBarText(text("status.iisExported", "launchSettings.json updated with the IIS settings."));
+                requestProjectTreeViewRefresh();
+            } catch (Exception e) {
+                log.warn("Falha ao exportar launchSettings.json: {}", e.getMessage());
+                setStatusBarText(text("status.iisExportFailed", "Failed to write launchSettings.json: ")
+                        + e.getMessage());
+            }
+        });
+    }
+
+    private void deployProjectToIis(Path projectFile) {
+        String projectName = IisWebProject.projectName(projectFile);
+        IisLaunchSettings.Settings settings = IisLaunchSettings.read(projectFile);
+        IisLaunchSettings.IisTarget iisTarget = IisLaunchSettings.iisTarget(settings, projectName);
+        String configuration = ensurePluginSettings().getDefaultConfiguration();
+        Path contentRoot = IisWebProject.contentRoot(projectFile, configuration);
+        IisDeployment.Target target = new IisDeployment.Target("Default Web Site",
+                iisTarget.applicationPath(), IisService.suggestAppPoolName(projectName),
+                contentRoot, iisTarget.binding(), IisWebProject.isAspNetCore(projectFile));
+        OutputPanelHandle panel = requestOutputPanel("dotnet");
+        panel.clear();
+        panel.show();
+        Thread worker = new Thread(() -> {
+            OutputStream out = panel.getOutputStream();
+            if (IisWebProject.requiresPublish(projectFile) && !Files.isDirectory(contentRoot)) {
+                writeLine(out, "[iis] Publique o projeto antes de criar o site (Executar com o perfil IIS faz isso automaticamente).");
+            }
+            writeLine(out, "[iis] Criando/atualizando site \"" + target.siteName() + "\" em "
+                    + target.applicationName() + "...");
+            IisService.Result result = IisDeployment.ensure(target);
+            writeLine(out, result.success()
+                    ? "[iis] OK. URL: " + target.url()
+                    : "[erro] " + result.message());
+        }, "dotnet-iis-deploy");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void attachToProjectWorkerProcess(Path projectFile) {
+        String pool = IisService.suggestAppPoolName(IisWebProject.projectName(projectFile));
+        Thread worker = new Thread(() -> {
+            long pid = AppCmd.findWorkerProcessPid(pool);
+            if (pid <= 0) {
+                runOnUiThread(() -> setStatusBarText(
+                        text("status.iisNoWorker", "No worker process found for the pool ") + pool));
+                return;
+            }
+            attachTestProcess(pid, true);
+        }, "dotnet-iis-attach");
+        worker.setDaemon(true);
+        worker.start();
     }
 
     private void contributeBuildTargetNewMenu(IdeMenuBuilder menu, Path buildTarget) {

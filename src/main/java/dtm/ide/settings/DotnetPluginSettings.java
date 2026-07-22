@@ -19,6 +19,9 @@ public final class DotnetPluginSettings {
     private static final String KEY_TREE_LAYOUT = "treeLayout";
     private static final String KEY_BREAK_ON_ALL_EXCEPTIONS = "breakOnAllExceptions";
     private static final String KEY_LANGUAGE_SERVER_MODE = "languageServerMode";
+    private static final String KEY_IIS_AUTO_CREATE_SITE = "iisAutoCreateSite";
+    private static final String KEY_IIS_STOP_POOL_ON_EXIT = "iisStopPoolOnExit";
+    private static final String KEY_IIS_LAUNCH_BROWSER = "iisLaunchBrowser";
 
     private final Path settingsFile;
 
@@ -30,6 +33,9 @@ public final class DotnetPluginSettings {
     private TreeLayout treeLayout = TreeLayout.DEFAULT;
     private LanguageServerMode languageServerMode = LanguageServerMode.AUTO;
     private boolean breakOnAllExceptions = false;
+    private boolean iisAutoCreateSite = true;
+    private boolean iisStopPoolOnExit = false;
+    private boolean iisLaunchBrowser = true;
 
     public DotnetPluginSettings(Path settingsDir) {
         this.settingsFile = settingsDir == null ? null : settingsDir.resolve(FILE_NAME);
@@ -58,6 +64,30 @@ public final class DotnetPluginSettings {
 
     public void setBreakOnAllExceptions(boolean breakOnAllExceptions) {
         this.breakOnAllExceptions = breakOnAllExceptions;
+    }
+
+    public boolean isIisAutoCreateSite() {
+        return iisAutoCreateSite;
+    }
+
+    public void setIisAutoCreateSite(boolean iisAutoCreateSite) {
+        this.iisAutoCreateSite = iisAutoCreateSite;
+    }
+
+    public boolean isIisStopPoolOnExit() {
+        return iisStopPoolOnExit;
+    }
+
+    public void setIisStopPoolOnExit(boolean iisStopPoolOnExit) {
+        this.iisStopPoolOnExit = iisStopPoolOnExit;
+    }
+
+    public boolean isIisLaunchBrowser() {
+        return iisLaunchBrowser;
+    }
+
+    public void setIisLaunchBrowser(boolean iisLaunchBrowser) {
+        this.iisLaunchBrowser = iisLaunchBrowser;
     }
 
     public boolean isIncludePrerelease() {
@@ -110,6 +140,9 @@ public final class DotnetPluginSettings {
         treeLayout = TreeLayout.DEFAULT;
         breakOnAllExceptions = false;
         languageServerMode = LanguageServerMode.AUTO;
+        iisAutoCreateSite = true;
+        iisStopPoolOnExit = false;
+        iisLaunchBrowser = true;
     }
 
     public void load() {
@@ -127,6 +160,9 @@ public final class DotnetPluginSettings {
             treeLayout = TreeLayout.fromKey(props.getProperty(KEY_TREE_LAYOUT, TreeLayout.DEFAULT.key()));
             breakOnAllExceptions = Boolean.parseBoolean(props.getProperty(KEY_BREAK_ON_ALL_EXCEPTIONS, "false"));
             languageServerMode = LanguageServerMode.fromKey(props.getProperty(KEY_LANGUAGE_SERVER_MODE, LanguageServerMode.AUTO.key()));
+            iisAutoCreateSite = Boolean.parseBoolean(props.getProperty(KEY_IIS_AUTO_CREATE_SITE, "true"));
+            iisStopPoolOnExit = Boolean.parseBoolean(props.getProperty(KEY_IIS_STOP_POOL_ON_EXIT, "false"));
+            iisLaunchBrowser = Boolean.parseBoolean(props.getProperty(KEY_IIS_LAUNCH_BROWSER, "true"));
         } catch (Exception e) {
             log.debug("Falha ao carregar settings .NET: {}", e.getMessage());
         }
@@ -145,6 +181,9 @@ public final class DotnetPluginSettings {
         props.setProperty(KEY_TREE_LAYOUT, getTreeLayout().key());
         props.setProperty(KEY_BREAK_ON_ALL_EXCEPTIONS, Boolean.toString(breakOnAllExceptions));
         props.setProperty(KEY_LANGUAGE_SERVER_MODE, (languageServerMode == null ? LanguageServerMode.AUTO : languageServerMode).key());
+        props.setProperty(KEY_IIS_AUTO_CREATE_SITE, Boolean.toString(iisAutoCreateSite));
+        props.setProperty(KEY_IIS_STOP_POOL_ON_EXIT, Boolean.toString(iisStopPoolOnExit));
+        props.setProperty(KEY_IIS_LAUNCH_BROWSER, Boolean.toString(iisLaunchBrowser));
         try {
             Path parent = settingsFile.getParent();
             if (parent != null) {

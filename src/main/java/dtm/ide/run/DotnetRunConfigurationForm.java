@@ -2,12 +2,15 @@ package dtm.ide.run;
 
 import dtm.ide.api.extension.runconfig.RunConfigurationData;
 import dtm.ide.api.extension.runconfig.RunConfigurationForm;
+import dtm.ide.iis.IisService;
+import dtm.ide.iis.IisWebProject;
 import dtm.stools.i18n.I18n;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.DefaultListCellRenderer;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
@@ -20,6 +23,7 @@ import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +46,11 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
     private final JTextField argumentsField = new JTextField();
     private final JTextField workingDirectoryField = new JTextField();
     private final JTextArea environmentArea = new JTextArea(4, 36);
+    private final JTextField siteNameField = new JTextField();
+    private final JTextField applicationPathField = new JTextField();
+    private final JTextField applicationPoolField = new JTextField();
+    private final JTextField launchUrlField = new JTextField();
+    private final JCheckBox launchBrowserBox = new JCheckBox(text("label.launchBrowser", "Open browser on start"));
     private final String type;
 
     private RunConfigurationData current;
@@ -53,9 +62,7 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
     public DotnetRunConfigurationForm(Supplier<Path> projectRootSupplier, String type) {
         this.type = type == null ? DotnetRunSupport.TYPE_RUN : type;
         Path root = projectRootSupplier == null ? null : projectRootSupplier.get();
-        List<Path> projects = DotnetRunSupport.TYPE_RUN.equals(this.type)
-                ? TargetFramework.findRunnableProjectFiles(root)
-                : TargetFramework.findProjectFiles(root);
+        List<Path> projects = resolveProjects(root);
         if (projects.isEmpty()) {
             projects = TargetFramework.findProjectFiles(root);
         }
@@ -67,6 +74,30 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         reloadFrameworks();
         reloadProfiles();
         build();
+    }
+
+    private List<Path> resolveProjects(Path root) {
+        if (isIisType()) {
+            List<Path> webProjects = new ArrayList<>();
+            for (Path candidate : TargetFramework.findProjectFiles(root)) {
+                if (IisWebProject.isWebProject(candidate)) {
+                    webProjects.add(candidate);
+                }
+            }
+            return webProjects;
+        }
+        if (DotnetRunSupport.TYPE_RUN.equals(type)) {
+            return TargetFramework.findRunnableProjectFiles(root);
+        }
+        return TargetFramework.findProjectFiles(root);
+    }
+
+    private boolean isIisType() {
+        return DotnetRunSupport.TYPE_IIS_EXPRESS.equals(type) || DotnetRunSupport.TYPE_IIS.equals(type);
+    }
+
+    private boolean isFullIisType() {
+        return DotnetRunSupport.TYPE_IIS.equals(type);
     }
 
     @Override
@@ -93,6 +124,14 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         putIfNotBlank(properties, DotnetRunSupport.PROP_PROGRAM_ARGS, argumentsField.getText());
         putIfNotBlank(properties, DotnetRunSupport.PROP_WORKING_DIRECTORY, workingDirectoryField.getText());
         putIfNotBlank(properties, DotnetRunSupport.PROP_ENVIRONMENT, environmentArea.getText());
+        if (isIisType()) {
+            putIfNotBlank(properties, DotnetRunSupport.PROP_IIS_SITE, siteNameField.getText());
+            putIfNotBlank(properties, DotnetRunSupport.PROP_IIS_APP_PATH, applicationPathField.getText());
+            putIfNotBlank(properties, DotnetRunSupport.PROP_IIS_APP_POOL, applicationPoolField.getText());
+            putIfNotBlank(properties, DotnetRunSupport.PROP_IIS_LAUNCH_URL, launchUrlField.getText());
+            properties.put(DotnetRunSupport.PROP_IIS_LAUNCH_BROWSER,
+                    Boolean.toString(launchBrowserBox.isSelected()));
+        }
         RunConfigurationData data = current != null ? current : new RunConfigurationData();
         data.setType(type);
         data.setProperties(properties);
@@ -127,6 +166,33 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         argumentsField.setText(textProperty(properties, DotnetRunSupport.PROP_PROGRAM_ARGS));
         workingDirectoryField.setText(textProperty(properties, DotnetRunSupport.PROP_WORKING_DIRECTORY));
         environmentArea.setText(textProperty(properties, DotnetRunSupport.PROP_ENVIRONMENT));
+        if (isIisType()) {
+            siteNameField.setText(textProperty(properties, DotnetRunSupport.PROP_IIS_SITE));
+            applicationPathField.setText(textProperty(properties, DotnetRunSupport.PROP_IIS_APP_PATH));
+            applicationPoolField.setText(textProperty(properties, DotnetRunSupport.PROP_IIS_APP_POOL));
+            launchUrlField.setText(textProperty(properties, DotnetRunSupport.PROP_IIS_LAUNCH_URL));
+            launchBrowserBox.setSelected(Boolean.parseBoolean(
+                    textProperty(properties, DotnetRunSupport.PROP_IIS_LAUNCH_BROWSER)));
+            applyIisDefaults();
+        }
+    }
+
+    private void applyIisDefaults() {
+        Path project = (Path) projectCombo.getSelectedItem();
+        if (project == null) {
+            return;
+        }
+        String projectName = IisWebProject.projectName(project);
+        if (siteNameField.getText().isBlank()) {
+            siteNameField.setText(isFullIisType()
+                    ? "Default Web Site" : IisService.suggestSiteName(projectName));
+        }
+        if (applicationPoolField.getText().isBlank()) {
+            applicationPoolField.setText(IisService.suggestAppPoolName(projectName));
+        }
+        if (isFullIisType() && applicationPathField.getText().isBlank()) {
+            applicationPathField.setText("/" + projectName);
+        }
     }
 
     private void build() {
@@ -137,6 +203,29 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         panel.add(labeled(text("label.configuration", "Configuration"), configCombo));
         panel.add(Box.createVerticalStrut(8));
         panel.add(labeled(text("label.framework", "Target framework"), frameworkCombo));
+        if (isIisType()) {
+            panel.add(Box.createVerticalStrut(8));
+            panel.add(labeled(text("label.launchProfile", "Launch profile"), profileCombo));
+            panel.add(Box.createVerticalStrut(8));
+            panel.add(labeled(text("label.iisSite", "IIS site"), siteNameField));
+            if (isFullIisType()) {
+                panel.add(Box.createVerticalStrut(8));
+                panel.add(labeled(text("label.iisAppPath", "Application path"), applicationPathField));
+            }
+            panel.add(Box.createVerticalStrut(8));
+            panel.add(labeled(text("label.iisAppPool", "Application pool"), applicationPoolField));
+            panel.add(Box.createVerticalStrut(8));
+            panel.add(labeled(text("label.iisLaunchUrl", "Launch URL (relative or absolute)"), launchUrlField));
+            panel.add(Box.createVerticalStrut(8));
+            launchBrowserBox.setAlignmentX(Component.LEFT_ALIGNMENT);
+            panel.add(launchBrowserBox);
+            panel.add(Box.createVerticalStrut(8));
+            environmentArea.setLineWrap(false);
+            panel.add(labeledArea(text("label.environment", "Environment variables (one NAME=VALUE per line)"),
+                    environmentArea));
+            applyIisDefaults();
+            return;
+        }
         if (DotnetRunSupport.TYPE_RUN.equals(type)) {
             panel.add(Box.createVerticalStrut(8));
             panel.add(labeled(text("label.launchProfile", "Launch profile"), profileCombo));
@@ -178,7 +267,10 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
         profileCombo.addItem(DEFAULT_PROFILE);
         Path project = (Path) projectCombo.getSelectedItem();
         if (project != null) {
-            for (LaunchSettings.Profile profile : LaunchSettings.runnableProfiles(project)) {
+            List<LaunchSettings.Profile> profiles = isIisType()
+                    ? LaunchSettings.iisProfiles(project)
+                    : LaunchSettings.runnableProfiles(project);
+            for (LaunchSettings.Profile profile : profiles) {
                 profileCombo.addItem(profile.name());
             }
         }

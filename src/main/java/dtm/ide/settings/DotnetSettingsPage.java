@@ -26,6 +26,12 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
     private final JCheckBox includePrerelease = new JCheckBox(text("checkbox.includePrerelease", "Include prerelease versions in NuGet by default"));
     private final JCheckBox ghostText = new JCheckBox(text("checkbox.ghostText", "Inline suggestions (ghost text) while typing"));
     private final JCheckBox breakOnAllExceptions = new JCheckBox(text("checkbox.breakOnAllExceptions", "Break on all thrown exceptions (debug)"));
+    private final JCheckBox iisAutoCreateSite = new JCheckBox(
+            text("checkbox.iisAutoCreateSite", "Create the site/application in IIS automatically when missing"));
+    private final JCheckBox iisLaunchBrowser = new JCheckBox(
+            text("checkbox.iisLaunchBrowser", "Open the browser when starting on IIS"));
+    private final JCheckBox iisStopPoolOnExit = new JCheckBox(
+            text("checkbox.iisStopPoolOnExit", "Stop the application pool when the run ends"));
     private final JComboBox<String> defaultConfiguration = new JComboBox<>(new String[]{"Debug", "Release"});
     private final JComboBox<TreeLayoutOption> treeLayout = new JComboBox<>(TreeLayoutOption.values());
 
@@ -98,6 +104,18 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
 
         gbc.insets = new Insets(16, 0, 4, 0);
         nextRow(gbc);
+        panel.add(sectionLabel(text("section.iis", "IIS")), gbc);
+
+        gbc.insets = new Insets(0, 0, 6, 0);
+        nextRow(gbc);
+        panel.add(iisAutoCreateSite, gbc);
+        nextRow(gbc);
+        panel.add(iisLaunchBrowser, gbc);
+        nextRow(gbc);
+        panel.add(iisStopPoolOnExit, gbc);
+
+        gbc.insets = new Insets(16, 0, 4, 0);
+        nextRow(gbc);
         panel.add(sectionLabel(text("section.project", "Project")), gbc);
 
         addLabeledRow(panel, gbc, text("label.defaultConfiguration", "Default build configuration:"), defaultConfiguration);
@@ -150,6 +168,9 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
         includePrerelease.setSelected(settings.isIncludePrerelease());
         ghostText.setSelected(settings.isGhostTextEnabled());
         breakOnAllExceptions.setSelected(settings.isBreakOnAllExceptions());
+        iisAutoCreateSite.setSelected(settings.isIisAutoCreateSite());
+        iisLaunchBrowser.setSelected(settings.isIisLaunchBrowser());
+        iisStopPoolOnExit.setSelected(settings.isIisStopPoolOnExit());
         defaultConfiguration.setSelectedItem(settings.getDefaultConfiguration());
         treeLayout.setSelectedItem(TreeLayoutOption.of(settings.getTreeLayout()));
     }
@@ -164,6 +185,9 @@ public final class DotnetSettingsPage implements PluginSettingsPage {
         settings.setIncludePrerelease(includePrerelease.isSelected());
         settings.setGhostTextEnabled(ghostText.isSelected());
         settings.setBreakOnAllExceptions(breakOnAllExceptions.isSelected());
+        settings.setIisAutoCreateSite(iisAutoCreateSite.isSelected());
+        settings.setIisLaunchBrowser(iisLaunchBrowser.isSelected());
+        settings.setIisStopPoolOnExit(iisStopPoolOnExit.isSelected());
         settings.setDefaultConfiguration(String.valueOf(defaultConfiguration.getSelectedItem()));
 
         TreeLayout previousLayout = settings.getTreeLayout();

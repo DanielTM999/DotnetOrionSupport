@@ -4,7 +4,24 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="" />
+    <list default="true" id="522ced25-4e72-4cfd-b9fe-deb8f37004eb" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/DotnetIdeAdapter.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetBuild.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetBuild.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunConfigurationContribution.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunConfigurationContribution.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunConfigurationForm.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunConfigurationForm.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunSupport.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/DotnetRunSupport.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/run/LaunchSettings.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/run/LaunchSettings.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetPluginSettings.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetPluginSettings.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetSettingsPage.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/dtm/ide/settings/DotnetSettingsPage.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/docs/dotnet-orion-support.omd" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/docs/dotnet-orion-support.omd" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/de-DE.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/de-DE.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/en-US.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/en-US.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/es-ES.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/es-ES.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/fr-FR.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/fr-FR.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/it-IT.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/it-IT.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/resources/languages/pt-BR.json" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/resources/languages/pt-BR.json" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -13,7 +30,7 @@
   <component name="Git.Settings">
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="Futures" />
+        <entry key="$PROJECT_DIR$" value="main" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -38,32 +55,32 @@
   <component name="ProjectViewState">
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;JAR Application.AppJar.executor&quot;: &quot;Run&quot;,
-    &quot;JUnit.RazorProjectLspIntegrationTest.realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml.executor&quot;: &quot;Debug&quot;,
-    &quot;Maven.DotnetOrionSupport [clean,compile...].executor&quot;: &quot;Run&quot;,
-    &quot;Maven.DotnetOrionSupport [clean,package].executor&quot;: &quot;Run&quot;,
-    &quot;Maven.DotnetOrionSupport [compile].executor&quot;: &quot;Run&quot;,
-    &quot;Maven.DotnetOrionSupport [validate].executor&quot;: &quot;Run&quot;,
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Remote JVM Debug.buildDebugPlugin.executor&quot;: &quot;Debug&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
-    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;kotlin-language-version-configured&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;onboarding.tips.debug.path&quot;: &quot;C:/Users/danie/Documents/development/java/DotnetOrionSupport/src/main/java/dtm/ide/Main.java&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "JAR Application.AppJar.executor": "Debug",
+    "JUnit.RazorProjectLspIntegrationTest.realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml.executor": "Debug",
+    "Maven.DotnetOrionSupport [clean,compile...].executor": "Debug",
+    "Maven.DotnetOrionSupport [clean,package].executor": "Run",
+    "Maven.DotnetOrionSupport [compile].executor": "Run",
+    "Maven.DotnetOrionSupport [validate].executor": "Run",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Remote JVM Debug.buildDebugPlugin.executor": "Debug",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "git-widget-placeholder": "dmelo__iis",
+    "kotlin-language-version-configured": "true",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "onboarding.tips.debug.path": "C:/Users/danie/Documents/development/java/DotnetOrionSupport/src/main/java/dtm/ide/Main.java"
   }
-}</component>
-  <component name="RunManager" selected="Maven.DotnetOrionSupport [clean,compile...]">
+}]]></component>
+  <component name="RunManager" selected="Remote JVM Debug.buildDebugPlugin">
     <configuration name="RazorProjectLspIntegrationTest.realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml" type="JUnit" factoryName="JUnit" temporary="true" nameIsGenerated="true">
       <module name="DotnetOrionSupport" />
       <extension name="coverage">

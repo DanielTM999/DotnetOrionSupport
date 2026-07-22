@@ -30,6 +30,8 @@ public final class DotnetRunConfigurationContribution implements RunConfiguratio
         return switch (type) {
             case DotnetRunSupport.TYPE_BUILD -> ".NET: Compilar";
             case DotnetRunSupport.TYPE_TEST -> ".NET: Testar";
+            case DotnetRunSupport.TYPE_IIS_EXPRESS -> ".NET: IIS Express";
+            case DotnetRunSupport.TYPE_IIS -> ".NET: IIS";
             default -> ".NET: Executar";
         };
     }
