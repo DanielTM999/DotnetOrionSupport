@@ -23,6 +23,7 @@
             <groupId>dtm.ide</groupId>
             <artifactId>OrionApi</artifactId>
             <version>${orion.api.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>dtm.request_actions</groupId>

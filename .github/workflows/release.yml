@@ -1,13 +1,14 @@
 name: Release plugin
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       release_tag:
         description: "Release existente para atualizar. Vazio usa a ultima release; se nao existir, cria v1.0.0."
+        required: false
+        type: string
+      orion_tag:
+        description: "Tag da release do OrionIde usada como dependencia (ex: v1.0.0). Vazio usa a ultima."
         required: false
         type: string
 
@@ -33,21 +34,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout OrionIde dependency with PAT
-        if: env.DEP_TOKEN != ''
-        uses: actions/checkout@v6
-        with:
-          repository: DanielTM999/OrionIde
-          path: .deps/OrionIde
-          token: ${{ env.DEP_TOKEN }}
-
-      - name: Checkout OrionIde dependency
-        if: env.DEP_TOKEN == ''
-        uses: actions/checkout@v6
-        with:
-          repository: DanielTM999/OrionIde
-          path: .deps/OrionIde
-
       - name: Checkout RequestActions dependency with PAT
         if: env.DEP_TOKEN != ''
         uses: actions/checkout@v6
@@ -70,22 +56,88 @@ jobs:
           java-version: "25"
           cache: maven
 
+      - name: Download OrionIde release jar
+        id: orion
+        shell: bash
+        env:
+          ORION_REPO: DanielTM999/OrionIde
+          ORION_TOKEN: ${{ secrets.RELEASE_PAT != '' && secrets.RELEASE_PAT || github.token }}
+        run: |
+          set -euo pipefail
+
+          export GH_TOKEN="$ORION_TOKEN"
+
+          tag="${{ github.event.inputs.orion_tag || '' }}"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh release view --repo "$ORION_REPO" --json tagName --jq '.tagName')"
+          fi
+
+          if [[ -z "$tag" ]]; then
+            echo "Nenhuma release encontrada em $ORION_REPO" >&2
+            exit 1
+          fi
+
+          rm -rf orion-dist
+          mkdir -p orion-dist
+          gh release download "$tag" \
+            --repo "$ORION_REPO" \
+            --pattern 'orion-*.jar' \
+            --pattern 'orion-*sha256.txt' \
+            --dir orion-dist \
+            --clobber
+
+          jar="$(find orion-dist -maxdepth 1 -type f -name 'orion-*.jar' \
+            ! -name '*-sources.jar' ! -name '*-javadoc.jar' | sort | tail -n 1)"
+
+          if [[ -z "$jar" ]]; then
+            echo "Asset orion-*.jar nao encontrado na release $tag de $ORION_REPO" >&2
+            exit 1
+          fi
+
+          checksums="$(find orion-dist -maxdepth 1 -type f -name 'orion-*sha256.txt' | sort | tail -n 1)"
+          if [[ -n "$checksums" ]]; then
+            expected="$(grep -F "$(basename "$jar")" "$checksums" | grep -oE '[0-9a-fA-F]{64}' | head -n 1 || true)"
+            if [[ -n "$expected" ]]; then
+              actual="$(sha256sum "$jar" | cut -d' ' -f1)"
+              if [[ "${expected,,}" != "$actual" ]]; then
+                echo "Checksum divergente para $(basename "$jar"): esperado $expected, obtido $actual" >&2
+                exit 1
+              fi
+              echo "Checksum verificado para $(basename "$jar")."
+            fi
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "jar=${jar}" >> "$GITHUB_OUTPUT"
+
+      - name: Install OrionIde jar into local Maven repository
+        id: orion_install
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          api_version="$(sed -n 's:.*<orion\.api\.version>\(.*\)</orion\.api\.version>.*:\1:p' pom.xml | head -n 1)"
+          if [[ -z "$api_version" ]]; then
+            echo "Propriedade orion.api.version nao encontrada no pom.xml" >&2
+            exit 1
+          fi
+
+          mvn --batch-mode --no-transfer-progress \
+            org.apache.maven.plugins:maven-install-plugin:3.1.2:install-file \
+            -Dfile="${{ steps.orion.outputs.jar }}" \
+            -DgroupId=dtm.ide \
+            -DartifactId=OrionApi \
+            -Dversion="$api_version" \
+            -Dpackaging=jar \
+            -DgeneratePom=true
+
+          echo "api_version=${api_version}" >> "$GITHUB_OUTPUT"
+
       - name: Configure sibling dependency checkout token
         if: env.DEP_TOKEN != ''
         shell: bash
         run: |
           git config --global url."https://x-access-token:${DEP_TOKEN}@github.com/".insteadOf "https://github.com/"
-
-      - name: Install OrionIde sibling dependencies
-        working-directory: .deps/OrionIde
-        env:
-          ORION_DEPS_OWNER: DanielTM999
-          ORION_DEPS_DIR: ${{ runner.temp }}/orion-sibling-deps
-        run: bash scripts/install-deps.sh
-
-      - name: Install OrionIde dependency
-        working-directory: .deps/OrionIde
-        run: mvn --batch-mode --no-transfer-progress -DskipTests clean install
 
       - name: Install RequestActions dependency
         working-directory: .deps/RequestActions
@@ -107,20 +159,12 @@ jobs:
               | tail -n 1 || true
           )"
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            if [[ -n "$requested" ]]; then
-              version="${requested#v}"
-            elif [[ -n "$latest" ]]; then
-              version="$latest"
-            else
-              version="1.0.0"
-            fi
+          if [[ -n "$requested" ]]; then
+            version="${requested#v}"
+          elif [[ -n "$latest" ]]; then
+            version="$latest"
           else
-            if [[ -n "$latest" ]]; then
-              version="$latest"
-            else
-              version="1.0.0"
-            fi
+            version="1.0.0"
           fi
 
           tag="v${version}"
@@ -171,7 +215,7 @@ jobs:
             gh release create "$tag" \
               --target "$GITHUB_SHA" \
               --title "$tag" \
-              --notes "Release automatica gerada pelo GitHub Actions para o commit $GITHUB_SHA."
+              --notes "Release gerada manualmente pelo GitHub Actions para o commit $GITHUB_SHA (OrionIde ${{ steps.orion.outputs.tag }})."
           fi
 
       - name: Replace release assets
