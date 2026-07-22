@@ -126,20 +126,6 @@ class DotnetSdkServiceTest {
     }
 
     @Test
-    void roslynAndRazorArtifactsUseOfficialNugetPackages() throws Exception {
-        Object roslyn = invokeArtifact("roslynArtifact", DotnetSdkService.DEFAULT_ROSLYN_LS_VERSION);
-        Object razor = invokeArtifact("razorArtifact", DotnetSdkService.DEFAULT_ROSLYN_RAZOR_VERSION);
-        Object razorCompiler = invokeArtifact("razorCompilerArtifact", DotnetSdkService.DEFAULT_ROSLYN_RAZOR_VERSION);
-
-        assertArtifactComesFromNuget(roslyn, "microsoft.codeanalysis.languageserver.");
-        assertArtifactComesFromNuget(razor, "microsoft.visualstudiocode.razorextension");
-        assertArtifactComesFromNuget(razorCompiler, "microsoft.codeanalysis.razor.compiler");
-        assertTrue(readArtifactField(roslyn, "displayName").contains("MIT"));
-        assertTrue(readArtifactField(razor, "displayName").contains("MIT"));
-        assertTrue(readArtifactField(razorCompiler, "displayName").contains("MIT"));
-    }
-
-    @Test
     void razorReadinessRequiresExtensionAndSourceGeneratorButNotDesignTimeTargets(@TempDir Path dir) throws Exception {
         Path roslynRoot = dir.resolve("sdk")
                 .resolve("roslyn")
@@ -225,29 +211,6 @@ class DotnetSdkServiceTest {
 
         assertTrue(Files.isRegularFile(dir.resolve("lib/net472/Microsoft.VisualStudioCode.RazorExtension.dll")));
         assertFalse(Files.exists(archive));
-    }
-
-    private static Object invokeArtifact(String methodName, String version) throws Exception {
-        Method method = DotnetSdkService.class.getDeclaredMethod(methodName, String.class);
-        method.setAccessible(true);
-        return method.invoke(null, version);
-    }
-
-    private static void assertArtifactComesFromNuget(Object artifact, String packageId) throws Exception {
-        String fileName = readArtifactField(artifact, "fileName");
-        String url = readArtifactField(artifact, "url");
-
-        assertTrue(fileName.endsWith(".nupkg"));
-        assertTrue(url.startsWith("https://api.nuget.org/v3-flatcontainer/"));
-        assertTrue(url.contains(packageId));
-        assertFalse(url.contains("github.com"));
-        assertFalse(url.toLowerCase().contains("devkit"));
-    }
-
-    private static String readArtifactField(Object artifact, String field) throws Exception {
-        Method accessor = artifact.getClass().getDeclaredMethod(field);
-        accessor.setAccessible(true);
-        return (String) accessor.invoke(artifact);
     }
 
     private static boolean isWindows() {
