@@ -253,7 +253,7 @@ public final class IisExpressLauncher {
                 return candidate;
             }
         }
-        return null;
+        return IisEnvironment.locateAspNetCoreModule();
     }
 
     private static void ensureApplicationPool(Document document, String poolName) {

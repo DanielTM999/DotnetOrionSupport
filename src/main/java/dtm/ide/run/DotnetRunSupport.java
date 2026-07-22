@@ -190,6 +190,14 @@ public final class DotnetRunSupport {
         return data != null && TYPE_IIS_EXPRESS.equals(data.getType());
     }
 
+    public static boolean supportsDebug(RunConfigurationData data, Path projectRoot) {
+        if (isIisType(data)) {
+            Path webProject = resolveWebProjectFile(data, projectRoot);
+            return webProject != null && !IisWebProject.isClassicAspNet(webProject);
+        }
+        return isRunType(data) && projectRoot != null && TargetFramework.canRunOnHost(projectRoot);
+    }
+
     public Collection<RunConfigurationData> staticRunConfigurations() {
         List<RunConfigurationData> list = new ArrayList<>();
         Path project = projectPath;
@@ -240,19 +248,19 @@ public final class DotnetRunSupport {
             boolean addedIis = false;
             for (LaunchSettings.Profile profile : profiles) {
                 if (profile.isIisExpressCommand() && info.iisExpressInstalled()) {
-                    list.add(iisConfig(TYPE_IIS_EXPRESS, "IIS Express: " + profile.name() + suffix,
-                            projectFile, profile.name()));
+                    list.add(iisConfig(TYPE_IIS_EXPRESS, profile.name() + suffix, projectFile, profile.name()));
                     addedExpress = true;
                 } else if (profile.isIisCommand() && info.manageable()) {
-                    list.add(iisConfig(TYPE_IIS, "IIS: " + profile.name() + suffix, projectFile, profile.name()));
+                    list.add(iisConfig(TYPE_IIS, profile.name() + suffix, projectFile, profile.name()));
                     addedIis = true;
                 }
             }
             if (!addedExpress && info.iisExpressInstalled()) {
-                list.add(iisConfig(TYPE_IIS_EXPRESS, "IIS Express" + suffix, projectFile, null));
+                list.add(iisConfig(TYPE_IIS_EXPRESS, "IIS Express — " + projectDisplayName(projectFile),
+                        projectFile, null));
             }
             if (!addedIis && info.manageable()) {
-                list.add(iisConfig(TYPE_IIS, "IIS" + suffix, projectFile, null));
+                list.add(iisConfig(TYPE_IIS, "IIS — " + projectDisplayName(projectFile), projectFile, null));
             }
         }
     }
@@ -299,7 +307,7 @@ public final class DotnetRunSupport {
         properties.put(PROP_LAUNCH_PROFILE, profile);
         return RunConfigurationData.builder()
                 .type(TYPE_RUN)
-                .title(".NET: Executar — " + profile)
+                .title(profile)
                 .properties(properties)
                 .build();
     }
@@ -621,7 +629,7 @@ public final class DotnetRunSupport {
             return DotnetBuild.errorHandle("Depuração no IIS não é suportada para projetos .NET Framework: "
                     + "o netcoredbg depura apenas CoreCLR. Use execução sem depuração para este projeto.");
         }
-        if (IisWebProject.isAspNetCore(projectFile) && !info.aspNetCoreModule() && !iisExpress) {
+        if (IisWebProject.isAspNetCore(projectFile) && !iisExpress && info.aspNetCoreModuleMissing()) {
             return DotnetBuild.errorHandle("O ASP.NET Core Module não está registrado no IIS. "
                     + "Instale o ASP.NET Core Hosting Bundle para hospedar projetos ASP.NET Core.");
         }
@@ -717,7 +725,7 @@ public final class DotnetRunSupport {
         return build.launchIis(request, outputPanels, runOutputFocus);
     }
 
-    private Path resolveWebProjectFile(RunConfigurationData data, Path projectDir) {
+    private static Path resolveWebProjectFile(RunConfigurationData data, Path projectDir) {
         Path explicit = projectFileOf(data);
         if (explicit != null && java.nio.file.Files.isRegularFile(explicit)) {
             return explicit;

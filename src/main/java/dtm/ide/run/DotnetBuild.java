@@ -4,6 +4,7 @@ import dtm.ide.api.extension.output.OutputPanelHandle;
 import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
 import dtm.ide.iis.IisDeployment;
+import dtm.ide.iis.IisEnvironment;
 import dtm.ide.iis.IisExpressLauncher;
 import dtm.ide.iis.IisService;
 import dtm.ide.iis.IisWarmUp;
@@ -802,6 +803,10 @@ public final class DotnetBuild {
         warmUp(url, out);
 
         if (request.debug()) {
+            if (!IisEnvironment.isElevated()) {
+                writeLine(out, "[aviso] A IDE não está elevada: anexar ao w3wp pode ser negado pelo Windows. "
+                        + "Execute a IDE como administrador para depurar no IIS.");
+            }
             long pid = IisWarmUp.awaitWorkerProcess(target.appPoolName(), request.hostingModel(),
                     request.assemblyName(), CLR_WAIT_MS);
             if (pid <= 0) {

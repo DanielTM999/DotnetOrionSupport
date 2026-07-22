@@ -13,11 +13,17 @@ import java.util.regex.Pattern;
 @Slf4j
 public final class IisEnvironment {
 
+    public enum ModuleState {
+        PRESENT,
+        ABSENT,
+        UNKNOWN
+    }
+
     public record Info(boolean windows,
                        Path appCmd,
                        Path applicationHostConfig,
                        Path iisExpress,
-                       boolean aspNetCoreModule) {
+                       ModuleState aspNetCoreModule) {
 
         public boolean iisInstalled() {
             return appCmd != null || applicationHostConfig != null;
@@ -37,6 +43,10 @@ public final class IisEnvironment {
 
         public boolean elevated() {
             return isElevated();
+        }
+
+        public boolean aspNetCoreModuleMissing() {
+            return aspNetCoreModule == ModuleState.ABSENT;
         }
 
         public String describe() {
@@ -87,13 +97,13 @@ public final class IisEnvironment {
     private static Info detect() {
         if (!isWindows()) {
             log.debug("Detecção de IIS ignorada: sistema não é Windows.");
-            return new Info(false, null, null, null, false);
+            return new Info(false, null, null, null, ModuleState.UNKNOWN);
         }
         Info info = new Info(true,
                 locateAppCmd(),
                 locateApplicationHostConfig(),
                 locateIisExpress(),
-                hasAspNetCoreModule());
+                detectAspNetCoreModule());
         log.info("Detecção de IIS: {}", info.describe());
         if (info.iisInstalled() && !info.manageable()) {
             log.warn("IIS detectado, mas appcmd.exe não foi encontrado. Habilite o recurso "
@@ -173,13 +183,72 @@ public final class IisEnvironment {
         return null;
     }
 
-    private static boolean hasAspNetCoreModule() {
-        for (Path candidate : systemDirectories()) {
-            if (Files.isRegularFile(candidate.resolve("inetsrv").resolve("aspnetcorev2.dll"))) {
-                return true;
+    public static Path locateAspNetCoreModule() {
+        for (Path directory : moduleDirectories()) {
+            for (String name : new String[]{"aspnetcorev2.dll", "aspnetcore.dll"}) {
+                Path candidate = directory.resolve(name);
+                if (Files.isRegularFile(candidate)) {
+                    return candidate;
+                }
             }
         }
-        return false;
+        return null;
+    }
+
+    private static List<Path> moduleDirectories() {
+        List<Path> directories = new ArrayList<>();
+        for (Path system : systemDirectories()) {
+            directories.add(system.resolve("inetsrv"));
+        }
+        for (String root : new String[]{System.getenv("ProgramFiles"), System.getenv("ProgramW6432"),
+                System.getenv("ProgramFiles(x86)")}) {
+            if (root == null || root.isBlank()) {
+                continue;
+            }
+            try {
+                Path base = Path.of(root).resolve("IIS").resolve("Asp.Net Core Module");
+                directories.add(base.resolve("V2"));
+                directories.add(base);
+            } catch (Exception e) {
+                log.debug("Caminho inválido para o ASP.NET Core Module: {}", root);
+            }
+        }
+        return directories;
+    }
+
+    private static ModuleState detectAspNetCoreModule() {
+        Path module = locateAspNetCoreModule();
+        if (module != null) {
+            log.debug("ASP.NET Core Module encontrado em {}", module);
+            return ModuleState.PRESENT;
+        }
+        if (registryKeyExists("HKLM\\SOFTWARE\\Microsoft\\IIS Extensions\\IIS AspNetCore Module V2")
+                || registryKeyExists("HKLM\\SOFTWARE\\Microsoft\\IIS Extensions\\IIS AspNetCore Module")) {
+            return ModuleState.PRESENT;
+        }
+        String config = readApplicationHostConfig();
+        if (config == null) {
+            return ModuleState.UNKNOWN;
+        }
+        return config.toLowerCase(Locale.ROOT).contains("aspnetcoremodule")
+                ? ModuleState.PRESENT : ModuleState.ABSENT;
+    }
+
+    private static String readApplicationHostConfig() {
+        Path config = locateApplicationHostConfig();
+        if (config == null) {
+            return null;
+        }
+        try {
+            return Files.readString(config);
+        } catch (Exception e) {
+            log.debug("applicationHost.config não pôde ser lido sem elevação: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean registryKeyExists(String key) {
+        return IisProcess.capture(List.of("reg", "query", key), DETECT_TIMEOUT_SECONDS).ok();
     }
 
     private static List<Path> systemDirectories() {

@@ -3798,8 +3798,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (!DotnetRunSupport.isDotnetType(data)) {
             return;
         }
-        boolean canRun = projectPath != null && TargetFramework.canRunOnHost(projectPath);
-        boolean debuggable = DotnetRunSupport.isRunType(data) && canRun;
+        boolean debuggable = DotnetRunSupport.supportsDebug(data, projectPath);
         SwingUtilities.invokeLater(() -> {
 
             requestSetRunButtonEnabled(true);
