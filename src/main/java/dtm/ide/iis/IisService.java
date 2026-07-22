@@ -130,6 +130,16 @@ public final class IisService {
                 "Falha ao renomear o pool " + name);
     }
 
+    public static Result applyAppPoolBasics(String name, String runtimeVersion, String pipelineMode,
+                                            boolean autoStart) {
+        List<String> arguments = new ArrayList<>(List.of("set", "apppool", name));
+        arguments.add("/managedRuntimeVersion:" + (runtimeVersion == null ? "" : runtimeVersion));
+        arguments.add("/managedPipelineMode:" + (pipelineMode == null || pipelineMode.isBlank()
+                ? "Integrated" : pipelineMode));
+        arguments.add("/autoStart:" + autoStart);
+        return Result.of(AppCmd.write(arguments), "Falha ao aplicar configurações básicas do pool " + name);
+    }
+
     public static Result applyAppPoolSettings(String name, IisAppPool settings) {
         List<String> arguments = new ArrayList<>(List.of("set", "apppool", name));
         arguments.add("/managedRuntimeVersion:" + (settings.managedRuntimeVersion() == null

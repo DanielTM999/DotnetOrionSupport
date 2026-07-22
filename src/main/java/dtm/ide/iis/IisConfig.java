@@ -179,6 +179,27 @@ public final class IisConfig {
                 List.of(new Collection("Documentos", "files.", "add",
                         List.of("value"), List.of("value")))));
 
+        sections.add(new Section("anonymousAuthentication", "Autenticação anônima",
+                "system.webServer/security/authentication/anonymousAuthentication",
+                List.of(Attribute.flag("enabled", "Habilitada"),
+                        Attribute.text("userName", "Usuário"),
+                        Attribute.options("logonMethod", "Método de logon",
+                                "ClearText", "Batch", "Network", "Interactive"))));
+
+        sections.add(new Section("windowsAuthentication", "Autenticação do Windows",
+                "system.webServer/security/authentication/windowsAuthentication",
+                List.of(Attribute.flag("enabled", "Habilitada"),
+                        Attribute.flag("useKernelMode", "Modo kernel"),
+                        Attribute.flag("useAppPoolCredentials", "Usar credenciais do pool")),
+                List.of(new Collection("Provedores", "providers.", "add",
+                        List.of("value"), List.of("value")))));
+
+        sections.add(new Section("basicAuthentication", "Autenticação básica",
+                "system.webServer/security/authentication/basicAuthentication",
+                List.of(Attribute.flag("enabled", "Habilitada"),
+                        Attribute.text("realm", "Realm"),
+                        Attribute.text("defaultLogonDomain", "Domínio de logon padrão"))));
+
         sections.add(new Section("httpLogging", "Log HTTP", "system.webServer/httpLogging",
                 List.of(Attribute.flag("dontLog", "Não registrar"),
                         Attribute.flag("selectiveLogging", "Log seletivo"))));

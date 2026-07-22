@@ -644,5 +644,16 @@
   "IisSectionEditorPanel.action.removeRow": "Quitar fila",
   "IisSectionEditorPanel.label.items": "Elementos",
   "IisFeatureDialog.action.cancel": "Cancelar",
-  "IisSectionEditorPanel.label.settings": "Configuración"
+  "IisSectionEditorPanel.label.settings": "Configuración",
+  "IisManagerPanel.action.basicSettings": "Configuración básica...",
+  "IisManagerPanel.action.advancedSettings": "Configuración avanzada...",
+  "IisManagerPanel.dialog.poolBasic": "Editar grupo de aplicaciones",
+  "IisManagerPanel.dialog.poolAdvanced": "Configuración avanzada",
+  "IisManagerPanel.status.readingPool": "Leyendo configuración del grupo...",
+  "IisPropertyGridPanel.column.property": "Propiedad",
+  "IisPropertyGridPanel.column.value": "Valor",
+  "IisAppPoolBasicPanel.field.name": "Nombre:",
+  "IisAppPoolBasicPanel.field.runtime": "Versión de .NET CLR:",
+  "IisAppPoolBasicPanel.field.pipeline": "Modo de canalización administrada:",
+  "IisAppPoolBasicPanel.field.startImmediately": "Iniciar el grupo de aplicaciones inmediatamente:"
 }

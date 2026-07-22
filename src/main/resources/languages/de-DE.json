@@ -644,5 +644,16 @@
   "IisSectionEditorPanel.action.removeRow": "Zeile entfernen",
   "IisSectionEditorPanel.label.items": "Einträge",
   "IisFeatureDialog.action.cancel": "Abbrechen",
-  "IisSectionEditorPanel.label.settings": "Einstellungen"
+  "IisSectionEditorPanel.label.settings": "Einstellungen",
+  "IisManagerPanel.action.basicSettings": "Basiseinstellungen...",
+  "IisManagerPanel.action.advancedSettings": "Erweiterte Einstellungen...",
+  "IisManagerPanel.dialog.poolBasic": "Anwendungspool bearbeiten",
+  "IisManagerPanel.dialog.poolAdvanced": "Erweiterte Einstellungen",
+  "IisManagerPanel.status.readingPool": "Anwendungspool-Einstellungen werden gelesen...",
+  "IisPropertyGridPanel.column.property": "Eigenschaft",
+  "IisPropertyGridPanel.column.value": "Wert",
+  "IisAppPoolBasicPanel.field.name": "Name:",
+  "IisAppPoolBasicPanel.field.runtime": ".NET CLR-Version:",
+  "IisAppPoolBasicPanel.field.pipeline": "Verwalteter Pipelinemodus:",
+  "IisAppPoolBasicPanel.field.startImmediately": "Anwendungspool sofort starten:"
 }

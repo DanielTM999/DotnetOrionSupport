@@ -644,5 +644,16 @@
   "IisSectionEditorPanel.action.removeRow": "Rimuovi riga",
   "IisSectionEditorPanel.label.items": "Elementi",
   "IisFeatureDialog.action.cancel": "Annulla",
-  "IisSectionEditorPanel.label.settings": "Impostazioni"
+  "IisSectionEditorPanel.label.settings": "Impostazioni",
+  "IisManagerPanel.action.basicSettings": "Impostazioni di base...",
+  "IisManagerPanel.action.advancedSettings": "Impostazioni avanzate...",
+  "IisManagerPanel.dialog.poolBasic": "Modifica pool di applicazioni",
+  "IisManagerPanel.dialog.poolAdvanced": "Impostazioni avanzate",
+  "IisManagerPanel.status.readingPool": "Lettura impostazioni del pool...",
+  "IisPropertyGridPanel.column.property": "Proprietà",
+  "IisPropertyGridPanel.column.value": "Valore",
+  "IisAppPoolBasicPanel.field.name": "Nome:",
+  "IisAppPoolBasicPanel.field.runtime": "Versione .NET CLR:",
+  "IisAppPoolBasicPanel.field.pipeline": "Modalità pipeline gestita:",
+  "IisAppPoolBasicPanel.field.startImmediately": "Avvia subito il pool di applicazioni:"
 }

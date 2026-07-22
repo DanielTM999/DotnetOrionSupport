@@ -1,12 +1,12 @@
 package dtm.ide.ui;
 
 import dtm.ide.iis.IisAppPool;
+import dtm.ide.iis.IisAppPoolConfig;
 import dtm.ide.iis.IisApplication;
 import dtm.ide.iis.IisBinding;
 import dtm.ide.iis.IisBroker;
 import dtm.ide.iis.IisConfig;
 import dtm.ide.iis.IisEnvironment;
-import dtm.ide.iis.IisFeatures;
 import dtm.ide.iis.IisService;
 import dtm.ide.iis.IisSite;
 import dtm.ide.iis.IisVirtualDirectory;
@@ -50,6 +50,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Function;
@@ -227,7 +228,9 @@ public final class IisManagerPanel extends JPanel {
         return withActions(scroll(poolTable),
                 new ActionGroup(text("group.manage", "Manage"), List.of(
                         primaryButton(text("action.addPool", "Add pool"), this::addPool),
-                        secondaryButton(text("action.poolSettings", "Advanced settings..."), this::editPool))),
+                        secondaryButton(text("action.basicSettings", "Basic settings..."), this::editPoolBasic),
+                        secondaryButton(text("action.advancedSettings", "Advanced settings..."),
+                                this::editPoolAdvanced))),
                 new ActionGroup(text("group.control", "Control"), List.of(
                         secondaryButton(text("action.start", "Start"), () -> poolAction(IisService::startAppPool)),
                         secondaryButton(text("action.stop", "Stop"), () -> poolAction(IisService::stopAppPool)),
@@ -243,8 +246,7 @@ public final class IisManagerPanel extends JPanel {
                         primaryButton(text("action.addSite", "Add site"), this::addSite),
                         secondaryButton(text("action.bindings", "Bindings..."), this::editBindings),
                         secondaryButton(text("action.physicalPath", "Physical path..."), this::changeSitePath),
-                        secondaryButton(text("action.features", "Settings..."), this::editSiteFeatures),
-                        secondaryButton(text("action.configuration", "Configuration..."),
+                        secondaryButton(text("action.features", "Features..."),
                                 () -> openConfiguration(siteTarget())),
                         secondaryButton(text("action.logs", "Logging..."), this::editSiteLogs),
                         secondaryButton(text("action.limits", "Limits..."), this::editSiteLimits))),
@@ -307,8 +309,7 @@ public final class IisManagerPanel extends JPanel {
                 new ActionGroup(text("group.manage", "Manage"), List.of(
                         primaryButton(text("action.addApplication", "Add application"), this::addApplication),
                         secondaryButton(text("action.changePool", "Change pool..."), this::changeApplicationPool),
-                        secondaryButton(text("action.features", "Settings..."), this::editApplicationFeatures),
-                        secondaryButton(text("action.configuration", "Configuration..."),
+                        secondaryButton(text("action.features", "Features..."),
                                 () -> openConfiguration(applicationTarget())),
                         secondaryButton(text("action.explore", "Explore"), this::exploreApplication))),
                 new ActionGroup("", List.of(
@@ -715,8 +716,8 @@ public final class IisManagerPanel extends JPanel {
     }
 
     private void addPool() {
-        IisAppPoolSettingsPanel form = new IisAppPoolSettingsPanel(null);
-        if (!dialogs.confirmForm(text("dialog.addPool", "New application pool"), form,
+        IisAppPoolBasicPanel form = new IisAppPoolBasicPanel(null);
+        if (!IisFeatureDialog.show(this, text("dialog.addPool", "Add application pool"), null, form,
                 text("action.create", "Create"))) {
             return;
         }
@@ -725,29 +726,68 @@ public final class IisManagerPanel extends JPanel {
             warn(text("warn.poolName", "Enter a name for the pool."));
             return;
         }
-        IisAppPool settings = form.toPool(null);
+        String runtime = form.runtimeVersion();
+        String pipeline = form.pipelineMode();
+        boolean start = form.startImmediately();
         execute(() -> {
-            IisService.Result created = IisService.addAppPool(name, form.runtimeVersion(), form.pipelineMode());
+            IisService.Result created = IisService.addAppPool(name, runtime, pipeline);
             if (!created.success()) {
                 return created;
             }
-            return IisService.applyAppPoolSettings(name, settings);
+            return start ? IisService.startAppPool(name) : IisService.Result.ok();
         });
     }
 
-    private void editPool() {
+    private void editPoolBasic() {
         IisAppPool pool = selectedPool();
         if (pool == null) {
             warn(text("warn.selectPool", "Select an application pool."));
             return;
         }
-        IisAppPoolSettingsPanel form = new IisAppPoolSettingsPanel(pool);
-        if (!dialogs.confirmForm(text("dialog.poolSettings", "Application pool settings"), form,
-                text("action.apply", "Apply"))) {
+        IisAppPoolBasicPanel form = new IisAppPoolBasicPanel(pool);
+        if (!IisFeatureDialog.show(this, text("dialog.poolBasic", "Edit application pool"), pool.name(),
+                form, text("action.apply", "Apply"))) {
             return;
         }
-        IisAppPool settings = form.toPool(pool);
-        execute(() -> IisService.applyAppPoolSettings(pool.name(), settings));
+        String runtime = form.runtimeVersion();
+        String pipeline = form.pipelineMode();
+        boolean start = form.startImmediately();
+        execute(() -> {
+            IisService.Result applied = IisService.applyAppPoolBasics(pool.name(), runtime, pipeline, start);
+            if (!applied.success()) {
+                return applied;
+            }
+            return start && !pool.started() ? IisService.startAppPool(pool.name()) : IisService.Result.ok();
+        });
+    }
+
+    private void editPoolAdvanced() {
+        IisAppPool pool = selectedPool();
+        if (pool == null) {
+            warn(text("warn.selectPool", "Select an application pool."));
+            return;
+        }
+        statusLabel.setText(text("status.readingPool", "Reading application pool settings..."));
+        executor.execute(() -> {
+            Map<String, String> current;
+            try {
+                current = IisAppPoolConfig.read(IisService.findAppPool(pool.name()));
+            } catch (Exception e) {
+                log.debug("Falha ao ler o pool {}: {}", pool.name(), e.getMessage());
+                current = IisAppPoolConfig.read(pool);
+            }
+            Map<String, String> loaded = current;
+            SwingUtilities.invokeLater(() -> {
+                IisPropertyGridPanel form = new IisPropertyGridPanel(IisAppPoolConfig.properties(), loaded);
+                if (!IisFeatureDialog.show(this, text("dialog.poolAdvanced", "Advanced settings"),
+                        pool.name(), form, text("action.apply", "Apply"))) {
+                    statusLabel.setText("");
+                    return;
+                }
+                Map<String, String> desired = form.toValues();
+                execute(() -> IisAppPoolConfig.apply(pool.name(), loaded, desired));
+            });
+        });
     }
 
     private void removePool() {
@@ -853,47 +893,8 @@ public final class IisManagerPanel extends JPanel {
         }
     }
 
-    private void editSiteFeatures() {
-        IisSite site = selectedSite();
-        if (site == null) {
-            warn(text("warn.selectSite", "Select a site."));
-            return;
-        }
-        editFeatures(site.name(), site.name());
-    }
 
-    private void editApplicationFeatures() {
-        IisApplication application = selectedApplication();
-        if (application == null) {
-            warn(text("warn.selectApplication", "Select an application."));
-            return;
-        }
-        editFeatures(application.name(), application.name());
-    }
 
-    private void editFeatures(String target, String label) {
-        statusLabel.setText(text("status.readingFeatures", "Reading settings..."));
-        executor.execute(() -> {
-            IisFeatures.Settings current;
-            try {
-                current = IisFeatures.read(target);
-            } catch (Exception e) {
-                log.debug("Falha ao ler configurações de {}: {}", target, e.getMessage());
-                current = IisFeatures.Settings.defaults();
-            }
-            IisFeatures.Settings loaded = current;
-            SwingUtilities.invokeLater(() -> {
-                IisFeaturesPanel form = new IisFeaturesPanel(loaded);
-                if (!IisFeatureDialog.show(this, text("dialog.features", "Settings"), label, form,
-                        text("action.apply", "Apply"))) {
-                    statusLabel.setText("");
-                    return;
-                }
-                IisFeatures.Settings desired = form.toSettings();
-                execute(() -> IisFeatures.apply(target, loaded, desired));
-            });
-        });
-    }
 
     private String siteTarget() {
         IisSite site = selectedSite();
