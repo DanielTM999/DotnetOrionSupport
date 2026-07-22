@@ -3858,7 +3858,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return null;
         }
         if (currentTreeLayout() == TreeLayout.VISUAL_STUDIO) {
-            return DotnetProjectConventions.buildFilesystemTree(projectPath);
+            ProjectTreeNode filesystem = DotnetProjectConventions.buildFilesystemTree(projectPath);
+            return filesystem == null
+                    ? null
+                    : DotnetProjectConventions.applyTreeLayout(filesystem, TreeLayout.VISUAL_STUDIO);
         }
         return DotnetProjectConventions.hideRootBuildArtifacts(partialNode);
     }

@@ -832,6 +832,14 @@ final class DotnetDapDebugSession {
             if (LOGGED_COMMANDS.contains(command)) {
                 dlog("<< " + command + " FALHOU: " + reason);
             }
+            if ("attach".equals(command) || "launch".equals(command)) {
+                safeWriteProgram("[erro] netcoredbg recusou " + command + ": "
+                        + (reason.isBlank() ? "sem detalhes" : reason) + System.lineSeparator());
+                if ("attach".equals(command)) {
+                    safeWriteProgram("[dica] Anexar a um processo de outro usuário (w3wp do IIS) exige a IDE "
+                            + "em sessão elevada." + System.lineSeparator());
+                }
+            }
             return;
         }
         if (LOGGED_COMMANDS.contains(command)) {

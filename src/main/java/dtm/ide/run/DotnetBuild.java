@@ -49,6 +49,7 @@ public final class DotnetBuild {
     private static final long CHILD_LOOKUP_GRACE_NANOS = TimeUnit.SECONDS.toNanos(3);
 
     private static final long CLR_WAIT_MS = 45_000;
+    private static final long WORKER_WAIT_MS = 6_000;
     private static final int WARM_UP_ATTEMPTS = 12;
     private static final int WARM_UP_TIMEOUT_MS = 5_000;
     private static final long WARM_UP_RETRY_MS = 1_000;
@@ -815,20 +816,38 @@ public final class DotnetBuild {
         writeLine(out, "[iis] Aplicação disponível em " + url);
         warmUpFullIis(target, url, out);
 
+        long workerPid = IisWarmUp.awaitWorkerPid(target.appPoolName(), WORKER_WAIT_MS);
+        if (workerPid > 0) {
+            monitoredPid.set(workerPid);
+            writeLine(out, "[iis] Worker process do pool \"" + target.appPoolName() + "\": PID " + workerPid + ".");
+        } else {
+            writeLine(out, "[aviso] Não foi possível identificar o w3wp do pool \"" + target.appPoolName()
+                    + "\". O monitor de processo fica sem dados até o pool atender uma requisição.");
+        }
+
         if (request.debug()) {
             if (!IisEnvironment.isElevated()) {
-                writeLine(out, "[aviso] A IDE não está elevada: anexar ao w3wp pode ser negado pelo Windows. "
-                        + "Execute a IDE como administrador para depurar no IIS.");
+                writeLine(out, "[erro] A IDE não está em sessão elevada: o Windows nega o attach ao w3wp, "
+                        + "que roda como identidade do pool. Reabra a IDE como administrador para depurar no IIS "
+                        + "(o Visual Studio faz o mesmo).");
             }
-            long pid = IisWarmUp.awaitWorkerProcess(target.appPoolName(), request.hostingModel(),
-                    request.assemblyName(), CLR_WAIT_MS);
+            long pid = request.hostingModel() == IisWebProject.HostingModel.IN_PROCESS && workerPid > 0
+                    ? workerPid
+                    : IisWarmUp.awaitWorkerProcess(target.appPoolName(), request.hostingModel(),
+                            request.assemblyName(), CLR_WAIT_MS);
             if (pid <= 0) {
-                writeLine(out, "[erro] Nenhum worker process do pool \"" + target.appPoolName()
-                        + "\" foi encontrado. Verifique se o pool está iniciado e se a aplicação respondeu a uma requisição.");
+                writeLine(out, "[erro] Nenhum processo CoreCLR do pool \"" + target.appPoolName()
+                        + "\" foi encontrado em " + (CLR_WAIT_MS / 1000) + "s. Hospedagem "
+                        + request.hostingModel().descriptor() + ": confirme que o pool está iniciado e que a "
+                        + "aplicação respondeu a uma requisição.");
             } else {
-                monitoredPid.set(pid);
-                writeLine(out, "[iis] Anexando depurador ao processo " + pid + ".");
-                attachDebugSession(request, out, sessionRef, contentRoot, pid, stdinBridge);
+                writeLine(out, "[iis] Anexando depurador ao processo " + pid + " ("
+                        + request.hostingModel().descriptor() + ").");
+                Path sourceRoot = request.projectFile().getParent() == null
+                        ? contentRoot : request.projectFile().getParent();
+                attachDebugSession(request, out, sessionRef, sourceRoot, pid, stdinBridge);
+                writeLine(out, "[iis] Breakpoints em código de inicialização só param em um novo start do worker; "
+                        + "recarregue a página para parar em controllers.");
             }
         }
         if (request.launchBrowser()) {

@@ -130,13 +130,54 @@ public final class IisWarmUp {
         return path == null ? null : path.toString().toLowerCase(Locale.ROOT);
     }
 
+    public static long findWorkerPid(String appPoolName) {
+        long pid = AppCmd.findWorkerProcessPid(appPoolName);
+        return pid > 0 ? pid : scanWorkerPid(appPoolName);
+    }
+
+    public static long awaitWorkerPid(String appPoolName, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (true) {
+            long pid = findWorkerPid(appPoolName);
+            if (pid > 0 || System.currentTimeMillis() >= deadline) {
+                return pid;
+            }
+            sleepQuietly(POLL_INTERVAL_MS);
+        }
+    }
+
+    private static long scanWorkerPid(String appPoolName) {
+        if (appPoolName == null || appPoolName.isBlank()) {
+            return 0;
+        }
+        List<ProcessHandle> workers = ProcessHandle.allProcesses()
+                .filter(handle -> "w3wp.exe".equals(processName(handle)))
+                .toList();
+        boolean anyCommandLine = false;
+        for (ProcessHandle handle : workers) {
+            String commandLine = handle.info().commandLine().orElse("");
+            if (commandLine.isBlank()) {
+                continue;
+            }
+            anyCommandLine = true;
+            if (commandLine.contains("-ap \"" + appPoolName + "\"")
+                    || commandLine.contains("-ap " + appPoolName)) {
+                return handle.pid();
+            }
+        }
+        if (!anyCommandLine && workers.size() == 1) {
+            return workers.getFirst().pid();
+        }
+        return 0;
+    }
+
     public static long awaitWorkerProcess(String appPoolName, IisWebProject.HostingModel model,
                                           String assemblyName, long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         long workerPid = 0;
         while (System.currentTimeMillis() < deadline) {
             if (workerPid <= 0 || !ProcessHandle.of(workerPid).filter(ProcessHandle::isAlive).isPresent()) {
-                workerPid = AppCmd.findWorkerProcessPid(appPoolName);
+                workerPid = findWorkerPid(appPoolName);
             }
             if (workerPid > 0) {
                 if (model == IisWebProject.HostingModel.IN_PROCESS) {
