@@ -681,8 +681,13 @@ public final class DotnetRunSupport {
             }
         }
         String appPool = propertyText(data, PROP_IIS_APP_POOL);
+        boolean dedicatedPool = false;
+        if (appPool == null || appPool.isBlank()) {
+            appPool = iisExpress ? null : IisService.existingAppPool(siteName, applicationPath);
+        }
         if (appPool == null || appPool.isBlank()) {
             appPool = IisService.suggestAppPoolName(projectName);
+            dedicatedPool = true;
         }
 
         Map<String, String> environment = new LinkedHashMap<>(profile == null ? Map.of() : profile.env());
@@ -710,6 +715,7 @@ public final class DotnetRunSupport {
                 .siteName(siteName)
                 .applicationPath(applicationPath)
                 .appPoolName(appPool)
+                .dedicatedAppPool(dedicatedPool)
                 .bindings(bindings)
                 .launchUrl(launchUrl)
                 .launchBrowser(launchBrowser)

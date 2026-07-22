@@ -140,12 +140,25 @@ public final class IisDeployment {
             return;
         }
         String identity = "IIS AppPool\\" + target.appPoolName();
+        Path contentRoot = target.contentRoot().toAbsolutePath().normalize();
         IisProcess.Result result = IisBroker.run(IisBroker.Tool.ICACLS,
-                List.of(target.contentRoot().toAbsolutePath().normalize().toString(),
-                        "/grant", identity + ":(OI)(CI)RX", "/T", "/C", "/Q"),
+                List.of(contentRoot.toString(), "/grant", identity + ":(OI)(CI)RX", "/T", "/C", "/Q"),
                 ICACLS_TIMEOUT_SECONDS);
         if (!result.ok()) {
             log.debug("Falha ao conceder permissões para {}: {}", identity, result.output());
+        }
+        grantTraverse(contentRoot.getParent(), identity);
+    }
+
+    private static void grantTraverse(Path directory, String identity) {
+        for (Path current = directory; current != null && current.getParent() != null;
+             current = current.getParent()) {
+            IisProcess.Result granted = IisBroker.run(IisBroker.Tool.ICACLS,
+                    List.of(current.toString(), "/grant", identity + ":(RX)", "/C", "/Q"),
+                    ICACLS_TIMEOUT_SECONDS);
+            if (!granted.ok()) {
+                log.debug("Falha ao conceder travessia em {} para {}: {}", current, identity, granted.output());
+            }
         }
     }
 

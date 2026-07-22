@@ -26,8 +26,12 @@ public final class IisWarmUp {
     }
 
     public static boolean request(String url, int timeoutMs) {
+        return status(url, timeoutMs) > 0;
+    }
+
+    public static int status(String url, int timeoutMs) {
         if (url == null || url.isBlank()) {
-            return false;
+            return 0;
         }
         HttpURLConnection connection = null;
         try {
@@ -40,11 +44,10 @@ public final class IisWarmUp {
             connection.setConnectTimeout(timeoutMs);
             connection.setReadTimeout(timeoutMs);
             connection.setInstanceFollowRedirects(false);
-            connection.getResponseCode();
-            return true;
+            return connection.getResponseCode();
         } catch (Exception e) {
             log.debug("Warm-up de {} não respondeu: {}", url, e.getMessage());
-            return false;
+            return 0;
         } finally {
             if (connection != null) {
                 connection.disconnect();

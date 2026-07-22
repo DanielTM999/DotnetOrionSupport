@@ -3,6 +3,7 @@ package dtm.ide.run;
 import dtm.ide.api.extension.output.OutputPanelHandle;
 import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
+import dtm.ide.iis.IisAppPool;
 import dtm.ide.iis.IisDeployment;
 import dtm.ide.iis.IisEnvironment;
 import dtm.ide.iis.IisExpressLauncher;
@@ -59,6 +60,7 @@ public final class DotnetBuild {
     );
 
     private final Map<String, Process> activeProcesses = new ConcurrentHashMap<>();
+    private final AtomicReference<Runnable> activeIisStop = new AtomicReference<>();
 
     public RunProcessHandle build(Path project, Path dotnet, String configuration) {
         return build(project, dotnet, configuration, null, null);
@@ -602,6 +604,7 @@ public final class DotnetBuild {
         AtomicReference<Process> hostProcess = new AtomicReference<>();
         AtomicReference<DotnetDapDebugSession> sessionRef = new AtomicReference<>();
         AtomicLong monitoredPid = new AtomicLong();
+        AtomicReference<Runnable> stopHolder = new AtomicReference<>();
         DeferredOutputStream stdinBridge = new DeferredOutputStream();
         CountDownLatch stopSignal = new CountDownLatch(1);
 
@@ -631,6 +634,7 @@ public final class DotnetBuild {
             } finally {
                 done.set(true);
                 activeProcesses.remove(DotnetRunSupport.TYPE_RUN);
+                activeIisStop.compareAndSet(stopHolder.get(), null);
                 if (request.sessionSink() != null) {
                     request.sessionSink().accept(null);
                 }
@@ -647,24 +651,31 @@ public final class DotnetBuild {
         worker.setDaemon(true);
         worker.start();
 
+        Runnable stopAction = () -> {
+            stopSignal.countDown();
+            DotnetDapDebugSession session = sessionRef.get();
+            if (session != null) {
+                session.terminate();
+            }
+            Process process = hostProcess.get();
+            if (process != null) {
+                destroyQuietly(process);
+                worker.interrupt();
+            }
+        };
+        stopHolder.set(stopAction);
+        activeIisStop.set(stopAction);
+        if (done.get()) {
+            activeIisStop.compareAndSet(stopAction, null);
+        }
+
         return RunProcessHandle.builder()
                 .output(consoleIn)
                 .input(stdinBridge)
                 .processPid(monitoredPid::get)
                 .readonly(false)
                 .alive(() -> !done.get())
-                .terminate(() -> {
-                    stopSignal.countDown();
-                    DotnetDapDebugSession session = sessionRef.get();
-                    if (session != null) {
-                        session.terminate();
-                    }
-                    Process process = hostProcess.get();
-                    if (process != null) {
-                        destroyQuietly(process);
-                    }
-                    worker.interrupt();
-                })
+                .terminate(stopAction)
                 .stdinMode(RunProcessHandle.StdinMode.TERMINAL)
                 .build();
     }
@@ -799,8 +810,10 @@ public final class DotnetBuild {
         }
 
         String url = request.resolveUrl();
+        writeLine(out, "[iis] Site \"" + target.siteName() + "\" no pool \"" + target.appPoolName()
+                + "\" servindo " + contentRoot);
         writeLine(out, "[iis] Aplicação disponível em " + url);
-        warmUp(url, out);
+        warmUpFullIis(target, url, out);
 
         if (request.debug()) {
             if (!IisEnvironment.isElevated()) {
@@ -828,12 +841,71 @@ public final class DotnetBuild {
             writeLine(out, "[iis] O site continua hospedado no IIS. Use \"Parar\" para encerrar o monitoramento.");
             stopSignal.await();
         }
-        if (request.stopPoolOnExit()) {
+        if (request.stopPoolOnExit() || request.dedicatedAppPool()) {
             IisService.Result stopped = IisDeployment.stop(target);
             writeLine(out, stopped.success()
                     ? "[iis] Pool \"" + target.appPoolName() + "\" parado."
                     : "[aviso] " + stopped.message());
+        } else {
+            writeLine(out, "[iis] O pool \"" + target.appPoolName() + "\" é compartilhado com outras aplicações "
+                    + "e continua ativo. Pare-o pelo gerenciador do IIS se precisar.");
         }
+    }
+
+    private static void warmUpFullIis(IisDeployment.Target target, String url, OutputStream out) {
+        int status = warmUpStatus(url);
+        if (status == 503) {
+            writeLine(out, "[aviso] O IIS respondeu 503: o pool \"" + target.appPoolName()
+                    + "\" não está atendendo. Reiniciando o pool...");
+            IisService.startAppPool(target.appPoolName());
+            IisService.recycleAppPool(target.appPoolName());
+            status = warmUpStatus(url);
+        }
+        if (status == 503) {
+            reportUnavailablePool(target, out);
+            return;
+        }
+        if (status <= 0) {
+            writeLine(out, "[aviso] A aplicação não respondeu ao warm-up em " + url + ".");
+            return;
+        }
+        writeLine(out, "[iis] Warm-up respondeu HTTP " + status + ".");
+    }
+
+    private static int warmUpStatus(String url) {
+        int status = 0;
+        for (int attempt = 0; attempt < WARM_UP_ATTEMPTS; attempt++) {
+            status = IisWarmUp.status(url, WARM_UP_TIMEOUT_MS);
+            if (status > 0 && status != 503) {
+                return status;
+            }
+            try {
+                Thread.sleep(WARM_UP_RETRY_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return status;
+            }
+        }
+        return status;
+    }
+
+    private static void reportUnavailablePool(IisDeployment.Target target, OutputStream out) {
+        IisAppPool pool = IisService.findAppPool(target.appPoolName());
+        writeLine(out, "[erro] 503 Serviço Indisponível: o pool \"" + target.appPoolName() + "\" está "
+                + (pool == null ? "ausente" : IisService.describeState(pool.state()))
+                + " e o worker process não sobe.");
+        if (pool != null && target.aspNetCore() && !pool.noManagedCode()) {
+            writeLine(out, "[dica] O pool está com managedRuntimeVersion=" + pool.managedRuntimeVersion()
+                    + "; ASP.NET Core exige \"Sem Código Gerenciado\".");
+        }
+        if (IisEnvironment.current().aspNetCoreModuleMissing()) {
+            writeLine(out, "[dica] O ASP.NET Core Module não foi encontrado: instale o ASP.NET Core Hosting Bundle.");
+        }
+        writeLine(out, "[dica] Causa mais comum: a identidade do pool não consegue ler " + target.contentRoot()
+                + ". Conceda acesso com:");
+        writeLine(out, "       icacls \"" + target.contentRoot() + "\" /grant \"IIS AppPool\\"
+                + target.appPoolName() + "\":(OI)(CI)RX /T");
+        writeLine(out, "[dica] O Log de Eventos do Windows (Application) traz o motivo exato da parada do pool.");
     }
 
     private void attachDebugSession(IisLaunchRequest request, OutputStream out,
@@ -1086,12 +1158,23 @@ public final class DotnetBuild {
 
     public void stop(String type) {
         if (type == null) {
+            stopIis();
             activeProcesses.values().forEach(DotnetBuild::destroyQuietly);
             activeProcesses.clear();
             return;
         }
+        if (DotnetRunSupport.TYPE_RUN.equals(type)) {
+            stopIis();
+        }
         Process process = activeProcesses.remove(type);
         destroyQuietly(process);
+    }
+
+    public void stopIis() {
+        Runnable stopAction = activeIisStop.getAndSet(null);
+        if (stopAction != null) {
+            stopAction.run();
+        }
     }
 
     private void registerProcess(String type, Process process) {

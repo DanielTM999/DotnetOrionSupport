@@ -367,6 +367,24 @@ public final class IisService {
         return null;
     }
 
+    public static String existingAppPool(String siteName, String applicationPath) {
+        if (siteName == null || siteName.isBlank() || !available()) {
+            return null;
+        }
+        IisApplication application = findApplication(siteName, applicationPath);
+        if (application != null && application.applicationPool() != null
+                && !application.applicationPool().isBlank()) {
+            return application.applicationPool();
+        }
+        if ("/".equals(normalizePath(applicationPath))) {
+            IisSite site = findSite(siteName);
+            if (site != null && site.applicationPool() != null && !site.applicationPool().isBlank()) {
+                return site.applicationPool();
+            }
+        }
+        return null;
+    }
+
     public static String normalizePath(String path) {
         if (path == null || path.isBlank() || "/".equals(path)) {
             return "/";
