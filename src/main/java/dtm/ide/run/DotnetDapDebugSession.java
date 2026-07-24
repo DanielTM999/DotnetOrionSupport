@@ -69,6 +69,9 @@ final class DotnetDapDebugSession {
     private volatile Process process;
     private volatile Process debuggee;
     private volatile OutputStream dapIn;
+    private volatile NetcoredbgLauncher.DapChannel channel;
+    private volatile boolean elevatedServer;
+    private volatile boolean hotReloadOnAttach = true;
     private final Path startupHook;
     private final long externalAttachPid;
     private volatile Path gateFile;
@@ -121,6 +124,14 @@ final class DotnetDapDebugSession {
         this.breakOnAllExceptions = breakOnAllExceptions;
     }
 
+    void setElevatedServer(boolean elevatedServer) {
+        this.elevatedServer = elevatedServer;
+    }
+
+    void setHotReloadOnAttach(boolean hotReloadOnAttach) {
+        this.hotReloadOnAttach = hotReloadOnAttach;
+    }
+
     private void seedBreakpoints(List<RunBreakpointData> breakpoints) {
         if (breakpoints == null) {
             return;
@@ -142,17 +153,24 @@ final class DotnetDapDebugSession {
     }
 
     void start() throws IOException {
-        ProcessBuilder adapterBuilder = new ProcessBuilder(netcoredbg.toString(), "--interpreter=vscode").directory(cwd.toFile());
-        applyDotnetEnv(adapterBuilder);
-        process = adapterBuilder.start();
-        dapIn = process.getOutputStream();
+        if (elevatedServer) {
+            channel = NetcoredbgLauncher.startServer(netcoredbg, dotnetRoot(), cwd);
+            safeWriteProgram("[debug] " + channel.describe() + "." + System.lineSeparator());
+        } else {
+            ProcessBuilder adapterBuilder = new ProcessBuilder(netcoredbg.toString(), "--interpreter=vscode")
+                    .directory(cwd.toFile());
+            applyDotnetEnv(adapterBuilder);
+            process = adapterBuilder.start();
+            channel = NetcoredbgLauncher.ofProcess(process);
+            Thread errReader = new Thread(() -> pumpToProgramOut(process.getErrorStream()), "dotnet-dap-stderr");
+            errReader.setDaemon(true);
+            errReader.start();
+            process.onExit().thenAccept(p -> dlog("[debug] netcoredbg encerrou (codigo " + p.exitValue() + ")."));
+        }
+        dapIn = channel.output();
         Thread reader = new Thread(this::readLoop, "dotnet-dap-reader");
         reader.setDaemon(true);
         reader.start();
-        Thread errReader = new Thread(() -> pumpToProgramOut(process.getErrorStream()), "dotnet-dap-stderr");
-        errReader.setDaemon(true);
-        errReader.start();
-        process.onExit().thenAccept(p -> dlog("[debug] netcoredbg encerrou (codigo " + p.exitValue() + ")."));
 
         if (useAttach && externalAttachPid <= 0) {
             startInferior();
@@ -410,13 +428,13 @@ final class DotnetDapDebugSession {
             }
             d.destroyForcibly();
         }
-        Process p = process;
-        if (p != null) {
+        NetcoredbgLauncher.DapChannel current = channel;
+        channel = null;
+        if (current != null) {
             try {
-                p.descendants().forEach(ProcessHandle::destroyForcibly);
+                current.close();
             } catch (Exception ignored) {
             }
-            p.destroyForcibly();
         }
         DotnetHotReloadAgent agent = hotReloadAgent;
         hotReloadAgent = null;
@@ -749,7 +767,7 @@ final class DotnetDapDebugSession {
 
     private void readLoop() {
         try {
-            InputStream in = process.getInputStream();
+            InputStream in = channel.input();
             while (true) {
                 int length = readContentLength(in);
                 if (length < 0) {
@@ -765,9 +783,10 @@ final class DotnetDapDebugSession {
             log.debug("Leitura DAP encerrada: {}", e.getMessage());
         } finally {
             dlog("[debug] conexão com o netcoredbg encerrada.");
+            NetcoredbgLauncher.DapChannel current = channel;
             Process p = process;
             dlog("[debug] stream DAP fechado; netcoredbg vivo="
-                    + (p != null && p.isAlive())
+                    + (current != null && current.alive())
                     + (p != null && !p.isAlive() ? " codigo=" + p.exitValue() : "") + ".");
             terminated.countDown();
         }
@@ -836,8 +855,10 @@ final class DotnetDapDebugSession {
                 safeWriteProgram("[erro] netcoredbg recusou " + command + ": "
                         + (reason.isBlank() ? "sem detalhes" : reason) + System.lineSeparator());
                 if ("attach".equals(command)) {
-                    safeWriteProgram("[dica] Anexar a um processo de outro usuário (w3wp do IIS) exige a IDE "
-                            + "em sessão elevada." + System.lineSeparator());
+                    safeWriteProgram("[dica] Anexar ao w3wp exige um depurador elevado com SeDebugPrivilege e "
+                            + "com a mesma arquitetura do pool (64 bits). Confira também se o processo ainda "
+                            + "estava vivo: o IIS recicla o worker por ociosidade."
+                            + System.lineSeparator());
                 }
             }
             return;
@@ -1213,7 +1234,7 @@ final class DotnetDapDebugSession {
         }
         ObjectNode attach = MAPPER.createObjectNode();
         attach.put("processId", (int) pid);
-        attach.put("hotReload", true);
+        attach.put("hotReload", hotReloadOnAttach);
         dlog(">> attach pid=" + pid);
         sendRequest("attach", attach);
     }

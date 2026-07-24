@@ -65,6 +65,8 @@ public class DotnetSdkService {
 
     private static final String SDK_DIR = "sdk";
     private static final String DOTNET_DIR = "dotnet";
+    private static final String DOTNET_HOST_DIR = "host";
+    private static final String DOTNET_HOST_STASH_DIR = ".orion-hosts";
     private static final String OMNISHARP_DIR = "omnisharp";
     private static final String ROSLYN_DIR = "roslyn";
     private static final String NETCOREDBG_DIR = "netcoredbg";
@@ -99,9 +101,11 @@ public class DotnetSdkService {
 
     public Optional<Path> getDotnetPath(String sdkVersion) {
         String version = normalizeSdkVersion(sdkVersion);
-        Optional<Path> bundled = resolveExecutable(dotnetRoots(version), "dotnet");
-        if (bundled.isPresent()) {
-            return bundled;
+        for (Path home : dotnetHomes()) {
+            Optional<Path> muxer = dotnetExecutableIn(home);
+            if (muxer.isPresent() && homeHasSdk(home, version)) {
+                return muxer;
+            }
         }
         Optional<Path> external = findExternalExecutable("dotnet", commonDotnetDirs());
         if (external.isPresent()) {
@@ -114,16 +118,7 @@ public class DotnetSdkService {
     }
 
     public Path ensureDotnet(DownloadProgressListener progressListener) {
-        Optional<Path> existing = getDotnetPath();
-        if (existing.isPresent()) {
-            return existing.get();
-        }
-        DownloadProgressListener listener = progressListener == null ? DownloadProgressListener.NOOP : progressListener;
-        Path root = dotnetRoot(DEFAULT_DOTNET_SDK_VERSION);
-        downloadToRoot(dotnetArtifact(DEFAULT_DOTNET_SDK_VERSION), root, listener);
-        return getDotnetPath().orElseThrow(() ->
-                displayException(text("error.dotnetMissing",
-                        "The .NET SDK was downloaded, but the dotnet executable was not found."), null));
+        return ensureDotnet(DEFAULT_DOTNET_SDK_VERSION, progressListener);
     }
 
     public Optional<Path> getDotnetRoot() {
@@ -141,8 +136,7 @@ public class DotnetSdkService {
             return existing.get();
         }
         DownloadProgressListener listener = progressListener == null ? DownloadProgressListener.NOOP : progressListener;
-        Path root = dotnetRoot(version);
-        downloadToRoot(dotnetArtifact(version), root, listener);
+        installDotnetSdk(version, dotnetHome(), listener);
         return getDotnetPath(version).orElseThrow(() ->
                 displayException(text("error.dotnetMissing",
                         "The .NET SDK was downloaded, but the dotnet executable was not found."), null));
@@ -535,15 +529,127 @@ public class DotnetSdkService {
         }
     }
 
-    private Path dotnetRoot(String version) {
+    private Path dotnetHome() {
         Path sdk = sdkRoot();
-        return sdk == null ? null : sdk.resolve(DOTNET_DIR).resolve(version);
+        return sdk == null ? null : sdk.resolve(DOTNET_DIR).resolve(DOTNET_HOST_DIR);
     }
 
-    private List<Path> dotnetRoots(String version) {
+    private List<Path> dotnetHomes() {
         return sdkRoots().stream()
-                .map(root -> root.resolve(DOTNET_DIR).resolve(version))
+                .map(root -> root.resolve(DOTNET_DIR).resolve(DOTNET_HOST_DIR))
                 .toList();
+    }
+
+    private static Optional<Path> dotnetExecutableIn(Path home) {
+        if (home == null) {
+            return Optional.empty();
+        }
+        Path muxer = home.resolve("dotnet" + executableSuffix());
+        return Files.isRegularFile(muxer)
+                ? Optional.of(muxer.toAbsolutePath().normalize())
+                : Optional.empty();
+    }
+
+    private static boolean homeHasSdk(Path home, String version) {
+        return home != null && version != null && !version.isBlank()
+                && Files.isDirectory(home.resolve("sdk").resolve(version));
+    }
+
+    private void installDotnetSdk(String version, Path home, DownloadProgressListener listener) {
+        if (home == null) {
+            throw displayException(text("error.resourceDirUnavailable",
+                    "Plugin resource directory is not available."), null);
+        }
+        downloadToRoot(dotnetArtifact(version), home, listener);
+        stashHostMuxer(home, version);
+        reassertNewestHostMuxer(home);
+    }
+
+    private void stashHostMuxer(Path home, String version) {
+        Optional<Path> muxer = dotnetExecutableIn(home);
+        if (muxer.isEmpty()) {
+            return;
+        }
+        try {
+            Path stash = home.resolve(DOTNET_HOST_STASH_DIR).resolve(version);
+            Files.createDirectories(stash);
+            Files.copy(muxer.get(), stash.resolve(muxer.get().getFileName()),
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception e) {
+            log.debug("Falha ao preservar o host dotnet {}: {}", version, e.getMessage());
+        }
+    }
+
+    private void reassertNewestHostMuxer(Path home) {
+        Path stashRoot = home.resolve(DOTNET_HOST_STASH_DIR);
+        if (!Files.isDirectory(stashRoot)) {
+            return;
+        }
+        String newest = null;
+        try (Stream<Path> versions = Files.list(stashRoot)) {
+            newest = versions
+                    .filter(Files::isDirectory)
+                    .map(path -> path.getFileName().toString())
+                    .max(DotnetSdkService::compareSdkVersions)
+                    .orElse(null);
+        } catch (Exception e) {
+            log.debug("Falha ao inspecionar hosts dotnet preservados: {}", e.getMessage());
+        }
+        if (newest == null) {
+            return;
+        }
+        String muxerName = "dotnet" + executableSuffix();
+        Path source = stashRoot.resolve(newest).resolve(muxerName);
+        Path target = home.resolve(muxerName);
+        if (!Files.isRegularFile(source)) {
+            return;
+        }
+        try {
+            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING);
+            if (!isWindows()) {
+                target.toFile().setExecutable(true, false);
+            }
+        } catch (Exception e) {
+            log.debug("Falha ao restaurar o host dotnet mais recente ({}): {}", newest, e.getMessage());
+        }
+    }
+
+    static int compareSdkVersions(String a, String b) {
+        int[] va = parseVersionParts(a);
+        int[] vb = parseVersionParts(b);
+        for (int i = 0; i < 3; i++) {
+            int cmp = Integer.compare(va[i], vb[i]);
+            if (cmp != 0) {
+                return cmp;
+            }
+        }
+        boolean aPre = a != null && a.indexOf('-') >= 0;
+        boolean bPre = b != null && b.indexOf('-') >= 0;
+        if (aPre == bPre) {
+            return 0;
+        }
+        return aPre ? -1 : 1;
+    }
+
+    private static int[] parseVersionParts(String version) {
+        int[] parts = new int[3];
+        if (version == null) {
+            return parts;
+        }
+        String core = version;
+        int dash = core.indexOf('-');
+        if (dash >= 0) {
+            core = core.substring(0, dash);
+        }
+        String[] segments = core.split("\\.");
+        for (int i = 0; i < parts.length && i < segments.length; i++) {
+            try {
+                parts[i] = Integer.parseInt(segments[i].trim());
+            } catch (NumberFormatException e) {
+                parts[i] = 0;
+            }
+        }
+        return parts;
     }
 
     private Path omniSharpRoot(String version) {
@@ -683,15 +789,6 @@ public class DotnetSdkService {
         }
     }
 
-    private Optional<Path> resolveExecutable(List<Path> roots, String baseName) {
-        for (Path root : roots) {
-            Optional<Path> hit = resolveExecutable(root, baseName);
-            if (hit.isPresent()) {
-                return hit;
-            }
-        }
-        return Optional.empty();
-    }
 
     private static SdkArtifact dotnetArtifact(String version) {
         Platform p = currentPlatform();

@@ -194,7 +194,7 @@
                         <configuration>
                             <target>
                                 <delete>
-                                    <fileset dir="C:\Users\danie\AppData\Roaming\Orion\plugins" includes="${project.artifactId}-*.jar"/>
+                                    <fileset dir="C:\Users\danie\AppData\Roaming\Orion\plugins" includes="${project.artifactId}-*.jar" casesensitive="false"/>
                                 </delete>
                                 <copy file="${project.build.directory}/${project.artifactId}-${project.version}.jar" todir="C:\Users\danie\AppData\Roaming\Orion\plugins"/>
                             </target>

@@ -76,6 +76,43 @@ class DotnetVisualStudioLayoutTest {
                 childLabels(pagesNode));
     }
 
+    @Test
+    void solutionLayoutSurvivesShallowRootAndRepeatedReorganization(@TempDir Path dir) throws Exception {
+        Path appDir = dir.resolve("MyApp");
+        Path libDir = dir.resolve("src").resolve("MyLib");
+        Files.createDirectories(appDir);
+        Files.createDirectories(libDir);
+        Files.writeString(appDir.resolve("MyApp.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk.Web\"></Project>");
+        Files.writeString(appDir.resolve("Program.cs"), "class P {}");
+        Files.writeString(libDir.resolve("MyLib.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>");
+        Files.writeString(dir.resolve("MyApp.sln"), """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyApp", "MyApp\\MyApp.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MyLib", "src\\MyLib\\MyLib.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                EndGlobal
+                """);
+
+        ProjectTreeNode shallowRoot = ProjectTreeNode.of(dir);
+        shallowRoot.children(List.of(
+                ProjectTreeNode.of(dir.resolve("MyApp.sln")),
+                ProjectTreeNode.of(appDir),
+                ProjectTreeNode.of(dir.resolve("src"))
+        ));
+
+        ProjectTreeNode layout = DotnetProjectConventions.applyTreeLayout(shallowRoot, TreeLayout.VISUAL_STUDIO);
+        assertNotNull(layout);
+        assertEquals("MyApp.sln", layout.getLabel());
+        assertEquals(List.of("MyApp.csproj", "MyLib.csproj"), childLabels(layout));
+
+        ProjectTreeNode reapplied = DotnetProjectConventions.applyTreeLayout(layout, TreeLayout.VISUAL_STUDIO);
+        assertNotNull(reapplied);
+        assertEquals("MyApp.sln", reapplied.getLabel());
+        assertEquals(List.of("MyApp.csproj", "MyLib.csproj"), childLabels(reapplied));
+    }
+
     private static List<String> childLabels(ProjectTreeNode node) {
         return node.getChildren().stream()
                 .map(DotnetVisualStudioLayoutTest::nodeName)

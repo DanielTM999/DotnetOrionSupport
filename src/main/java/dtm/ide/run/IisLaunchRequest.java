@@ -72,7 +72,7 @@ public record IisLaunchRequest(Path projectFile,
         }
         String url = base + path;
         if (suffix.isEmpty()) {
-            return url;
+            return path.isEmpty() || url.endsWith("/") ? url : url + "/";
         }
         return url + (suffix.startsWith("/") ? suffix : "/" + suffix);
     }

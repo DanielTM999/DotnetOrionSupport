@@ -162,6 +162,40 @@ public final class IisService {
         return Result.of(AppCmd.write(arguments), "Falha ao aplicar configurações do pool " + name);
     }
 
+    public record DebugPoolState(String poolName,
+                                 String pingingEnabled,
+                                 String idleTimeout,
+                                 String periodicRestart) {
+    }
+
+    public static DebugPoolState suspendPoolWatchdogs(String poolName) {
+        IisAppPool pool = findAppPool(poolName);
+        if (pool == null) {
+            return null;
+        }
+        DebugPoolState previous = new DebugPoolState(poolName,
+                pool.rawAttributes().getOrDefault("processModel.pingingEnabled", "true"),
+                pool.rawAttributes().getOrDefault("processModel.idleTimeout", "00:20:00"),
+                pool.rawAttributes().getOrDefault("recycling.periodicRestart.time", "1.05:00:00"));
+        Result applied = Result.of(AppCmd.write(List.of("set", "apppool", poolName,
+                        "/processModel.pingingEnabled:false",
+                        "/processModel.idleTimeout:00:00:00",
+                        "/recycling.periodicRestart.time:00:00:00")),
+                "Falha ao suspender os watchdogs do pool " + poolName);
+        return applied.success() ? previous : null;
+    }
+
+    public static Result restorePoolWatchdogs(DebugPoolState previous) {
+        if (previous == null) {
+            return Result.ok();
+        }
+        return Result.of(AppCmd.write(List.of("set", "apppool", previous.poolName(),
+                        "/processModel.pingingEnabled:" + previous.pingingEnabled(),
+                        "/processModel.idleTimeout:" + previous.idleTimeout(),
+                        "/recycling.periodicRestart.time:" + previous.periodicRestart())),
+                "Falha ao restaurar os watchdogs do pool " + previous.poolName());
+    }
+
     public static Result startSite(String name) {
         return Result.of(AppCmd.write(List.of("start", "site", name)), "Falha ao iniciar o site " + name);
     }

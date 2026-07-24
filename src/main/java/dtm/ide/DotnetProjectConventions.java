@@ -244,10 +244,26 @@ final class DotnetProjectConventions {
             return null;
         }
         if (layout == TreeLayout.VISUAL_STUDIO) {
+            ProjectTreeNode visualStudio = buildVisualStudioTree(root.getPath());
+            if (visualStudio != null) {
+                return visualStudio;
+            }
             ProjectTreeNode reorganized = buildVisualStudioLayout(root);
             return reorganized != null ? reorganized : hideRootBuildArtifacts(root);
         }
         return hideRootBuildArtifacts(root);
+    }
+
+    static ProjectTreeNode buildVisualStudioTree(Path rootPath) {
+        if (rootPath == null || !Files.isDirectory(rootPath)) {
+            return null;
+        }
+        ProjectTreeNode filesystem = buildFilesystemTree(rootPath);
+        if (filesystem == null) {
+            return null;
+        }
+        ProjectTreeNode reorganized = buildVisualStudioLayout(filesystem);
+        return reorganized != null ? reorganized : hideRootBuildArtifacts(filesystem);
     }
 
     static ProjectTreeNode buildFilesystemTree(Path path) {

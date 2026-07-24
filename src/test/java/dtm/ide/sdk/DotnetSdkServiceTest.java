@@ -59,12 +59,7 @@ class DotnetSdkServiceTest {
 
     @Test
     void dotnetPathPrefersBundledResourceSdk(@TempDir Path dir) throws Exception {
-        Path dotnet = dir.resolve("sdk")
-                .resolve("dotnet")
-                .resolve(DotnetSdkService.DOTNET_10_SDK_VERSION)
-                .resolve(isWindows() ? "dotnet.exe" : "dotnet");
-        Files.createDirectories(dotnet.getParent());
-        Files.createFile(dotnet);
+        Path dotnet = bundleDotnetHome(dir, DotnetSdkService.DOTNET_10_SDK_VERSION);
 
         DotnetSdkService service = new DotnetSdkService(new TestResource(dir), null);
 
@@ -90,12 +85,7 @@ class DotnetSdkServiceTest {
                   </PropertyGroup>
                 </Project>
                 """);
-        Path dotnet = dir.resolve("sdk")
-                .resolve("dotnet")
-                .resolve(DotnetSdkService.DOTNET_10_SDK_VERSION)
-                .resolve(isWindows() ? "dotnet.exe" : "dotnet");
-        Files.createDirectories(dotnet.getParent());
-        Files.createFile(dotnet);
+        bundleDotnetHome(dir, DotnetSdkService.DOTNET_10_SDK_VERSION);
 
         DotnetSdkService service = new DotnetSdkService(new TestResource(dir), null);
 
@@ -113,12 +103,7 @@ class DotnetSdkServiceTest {
                   </PropertyGroup>
                 </Project>
                 """);
-        Path dotnet = dir.resolve("sdk")
-                .resolve("dotnet")
-                .resolve(DotnetSdkService.DEFAULT_DOTNET_SDK_VERSION)
-                .resolve(isWindows() ? "dotnet.exe" : "dotnet");
-        Files.createDirectories(dotnet.getParent());
-        Files.createFile(dotnet);
+        Path dotnet = bundleDotnetHome(dir, DotnetSdkService.DEFAULT_DOTNET_SDK_VERSION);
 
         DotnetSdkService service = new DotnetSdkService(new TestResource(dir), null);
 
@@ -211,6 +196,14 @@ class DotnetSdkServiceTest {
 
         assertTrue(Files.isRegularFile(dir.resolve("lib/net472/Microsoft.VisualStudioCode.RazorExtension.dll")));
         assertFalse(Files.exists(archive));
+    }
+
+    private static Path bundleDotnetHome(Path dir, String sdkVersion) throws Exception {
+        Path home = dir.resolve("sdk").resolve("dotnet").resolve("host");
+        Path muxer = home.resolve(isWindows() ? "dotnet.exe" : "dotnet");
+        Files.createDirectories(home.resolve("sdk").resolve(sdkVersion));
+        Files.createFile(muxer);
+        return muxer;
     }
 
     private static boolean isWindows() {

@@ -3847,7 +3847,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public ProjectTreeNode resolveProjectTreeReorganization(ProjectTreeNode currentRoot) {
-        return DotnetProjectConventions.applyTreeLayout(currentRoot, currentTreeLayout());
+        TreeLayout layout = currentTreeLayout();
+        if (layout == TreeLayout.VISUAL_STUDIO) {
+            ProjectTreeNode visualStudio = DotnetProjectConventions.buildVisualStudioTree(projectPath);
+            if (visualStudio != null) {
+                return visualStudio;
+            }
+        }
+        return DotnetProjectConventions.applyTreeLayout(currentRoot, layout);
     }
 
     @Override
@@ -3858,10 +3865,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return null;
         }
         if (currentTreeLayout() == TreeLayout.VISUAL_STUDIO) {
-            ProjectTreeNode filesystem = DotnetProjectConventions.buildFilesystemTree(projectPath);
-            return filesystem == null
-                    ? null
-                    : DotnetProjectConventions.applyTreeLayout(filesystem, TreeLayout.VISUAL_STUDIO);
+            return DotnetProjectConventions.buildVisualStudioTree(projectPath);
         }
         return DotnetProjectConventions.hideRootBuildArtifacts(partialNode);
     }

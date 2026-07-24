@@ -25,13 +25,43 @@ public final class IisWarmUp {
     private IisWarmUp() {
     }
 
+    private static final int MAX_REDIRECTS = 5;
+
+    public record WarmUpResult(int status, String url, int redirects) {
+
+        public boolean reachedApplication() {
+            return status > 0 && (status < 300 || status >= 400);
+        }
+    }
+
     public static boolean request(String url, int timeoutMs) {
-        return status(url, timeoutMs) > 0;
+        return warm(url, timeoutMs).status() > 0;
     }
 
     public static int status(String url, int timeoutMs) {
+        return send(url, timeoutMs).status();
+    }
+
+    public static WarmUpResult warm(String url, int timeoutMs) {
+        String current = url;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            WarmUpResult response = send(current, timeoutMs);
+            String location = response.url();
+            if (response.status() < 300 || response.status() >= 400 || location == null || location.isBlank()) {
+                return new WarmUpResult(response.status(), current, hop);
+            }
+            String next = resolveLocation(current, location);
+            if (next == null || next.equals(current)) {
+                return new WarmUpResult(response.status(), current, hop);
+            }
+            current = next;
+        }
+        return new WarmUpResult(0, current, MAX_REDIRECTS);
+    }
+
+    private static WarmUpResult send(String url, int timeoutMs) {
         if (url == null || url.isBlank()) {
-            return 0;
+            return new WarmUpResult(0, null, 0);
         }
         HttpURLConnection connection = null;
         try {
@@ -44,14 +74,24 @@ public final class IisWarmUp {
             connection.setConnectTimeout(timeoutMs);
             connection.setReadTimeout(timeoutMs);
             connection.setInstanceFollowRedirects(false);
-            return connection.getResponseCode();
+            int status = connection.getResponseCode();
+            return new WarmUpResult(status, connection.getHeaderField("Location"), 0);
         } catch (Exception e) {
             log.debug("Warm-up de {} não respondeu: {}", url, e.getMessage());
-            return 0;
+            return new WarmUpResult(0, null, 0);
         } finally {
             if (connection != null) {
                 connection.disconnect();
             }
+        }
+    }
+
+    public static String resolveLocation(String base, String location) {
+        try {
+            return URI.create(base).resolve(location).toString();
+        } catch (Exception e) {
+            log.debug("Location inválido em {}: {}", base, location);
+            return null;
         }
     }
 
@@ -140,6 +180,17 @@ public final class IisWarmUp {
         while (true) {
             long pid = findWorkerPid(appPoolName);
             if (pid > 0 || System.currentTimeMillis() >= deadline) {
+                return pid;
+            }
+            sleepQuietly(POLL_INTERVAL_MS);
+        }
+    }
+
+    public static long awaitWorkerExit(String appPoolName, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (true) {
+            long pid = findWorkerPid(appPoolName);
+            if (pid <= 0 || System.currentTimeMillis() >= deadline) {
                 return pid;
             }
             sleepQuietly(POLL_INTERVAL_MS);

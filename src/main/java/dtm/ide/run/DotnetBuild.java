@@ -10,6 +10,7 @@ import dtm.ide.iis.IisExpressLauncher;
 import dtm.ide.iis.IisService;
 import dtm.ide.iis.IisWarmUp;
 import dtm.ide.iis.IisWebProject;
+import dtm.ide.iis.IisWorkerProcess;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.ByteArrayOutputStream;
@@ -50,6 +51,7 @@ public final class DotnetBuild {
 
     private static final long CLR_WAIT_MS = 45_000;
     private static final long WORKER_WAIT_MS = 6_000;
+    private static final long POOL_STOP_WAIT_MS = 20_000;
     private static final int WARM_UP_ATTEMPTS = 12;
     private static final int WARM_UP_TIMEOUT_MS = 5_000;
     private static final long WARM_UP_RETRY_MS = 1_000;
@@ -619,7 +621,9 @@ public final class DotnetBuild {
                 if (separatePanels) {
                     buildPanel.show();
                 }
+                releaseContentLocks(request, buildOut);
                 if (!prepareIisContent(request, buildOut, out)) {
+                    restartPoolAfterFailedPublish(request, out);
                     return;
                 }
                 if (separatePanels && showRunOutput != null) {
@@ -681,6 +685,49 @@ public final class DotnetBuild {
                 .build();
     }
 
+    private static void releaseContentLocks(IisLaunchRequest request, OutputStream buildOut) {
+        if (request.iisExpress() || !IisWebProject.requiresPublish(request.projectFile())) {
+            return;
+        }
+        String pool = publishBlockingPool(request);
+        if (pool == null) {
+            return;
+        }
+        writeLine(buildOut, "[iis] Parando o pool \"" + pool
+                + "\" antes de publicar (o w3wp mantém os assemblies em uso).");
+        IisService.Result stopped = IisService.stopAppPool(pool);
+        if (!stopped.success()) {
+            writeLine(buildOut, "[aviso] " + stopped.message());
+        }
+        long alive = IisWarmUp.awaitWorkerExit(pool, POOL_STOP_WAIT_MS);
+        if (alive > 0) {
+            writeLine(buildOut, "[aviso] O w3wp " + alive + " do pool \"" + pool + "\" não encerrou em "
+                    + (POOL_STOP_WAIT_MS / 1000) + "s: a publicação pode falhar por arquivo em uso.");
+        } else {
+            writeLine(buildOut, "[iis] Pool parado; os arquivos publicados estão liberados.");
+        }
+    }
+
+    private static void restartPoolAfterFailedPublish(IisLaunchRequest request, OutputStream out) {
+        String pool = publishBlockingPool(request);
+        if (pool == null) {
+            return;
+        }
+        IisService.Result started = IisService.startAppPool(pool);
+        writeLine(out, started.success()
+                ? "[iis] Pool \"" + pool + "\" reiniciado com o conteúdo anterior."
+                : "[aviso] " + started.message());
+    }
+
+    private static String publishBlockingPool(IisLaunchRequest request) {
+        String existing = IisService.existingAppPool(request.siteName(), request.applicationPath());
+        String pool = existing == null || existing.isBlank() ? request.appPoolName() : existing;
+        if (pool == null || pool.isBlank() || IisService.findAppPool(pool) == null) {
+            return null;
+        }
+        return pool;
+    }
+
     private boolean prepareIisContent(IisLaunchRequest request, OutputStream buildOut, OutputStream out)
             throws Exception {
         Path projectFile = request.projectFile();
@@ -693,6 +740,10 @@ public final class DotnetBuild {
                 request.dotnet().toString(), "publish", projectFile.toString(),
                 "-c", request.effectiveConfiguration(), "-o", publishDirectory.toString(), "--nologo"));
         addFrameworkOption(publishCmd, request.targetFramework());
+        if (request.debug()) {
+            publishCmd.add("-p:DebugType=portable");
+            publishCmd.add("-p:DebugSymbols=true");
+        }
         writeLine(buildOut, "> " + String.join(" ", publishCmd));
         int exit = runAndStream(publishCmd, projectFile.getParent(), buildOut, DotnetRunSupport.TYPE_RUN, null);
         if (exit != 0) {
@@ -760,7 +811,7 @@ public final class DotnetBuild {
                 writeLine(out, "[erro] Não foi possível localizar o processo CoreCLR do IIS Express para depurar.");
             } else {
                 monitoredPid.set(pid);
-                attachDebugSession(request, out, sessionRef, contentRoot, pid, stdinBridge);
+                attachDebugSession(request, out, sessionRef, contentRoot, pid, stdinBridge, false);
             }
         }
         if (request.launchBrowser()) {
@@ -798,11 +849,13 @@ public final class DotnetBuild {
             IisService.Result ensured = IisDeployment.ensure(target);
             if (!ensured.success()) {
                 writeLine(out, "[erro] " + ensured.message());
+                IisService.startAppPool(target.appPoolName());
                 return;
             }
         } else if (IisService.findSite(target.siteName()) == null) {
             writeLine(out, "[erro] O site \"" + target.siteName() + "\" não existe no IIS e a criação automática "
                     + "está desativada nas configurações do plugin.");
+            IisService.startAppPool(target.appPoolName());
             return;
         }
         IisService.Result started = IisDeployment.start(target);
@@ -810,42 +863,79 @@ public final class DotnetBuild {
             writeLine(out, "[aviso] " + started.message());
         }
 
+        if (request.debug() && !checkIisDebugPrerequisites(request, target, contentRoot, out)) {
+            return;
+        }
+
+        IisService.DebugPoolState watchdogs = null;
+        if (request.debug()) {
+            watchdogs = IisService.suspendPoolWatchdogs(target.appPoolName());
+            if (watchdogs == null) {
+                writeLine(out, "[aviso] Não foi possível desligar o ping/idle timeout do pool. O IIS pode "
+                        + "encerrar o w3wp enquanto ele estiver parado em um breakpoint.");
+            } else {
+                writeLine(out, "[iis] Watchdogs do pool suspensos durante a depuração "
+                        + "(ping, idle timeout e reciclagem periódica).");
+            }
+        }
+        try {
+            runFullIisSession(request, out, sessionRef, monitoredPid, stdinBridge, stopSignal,
+                    target, contentRoot);
+        } finally {
+            if (watchdogs != null) {
+                IisService.Result restored = IisService.restorePoolWatchdogs(watchdogs);
+                writeLine(out, restored.success()
+                        ? "[iis] Watchdogs do pool restaurados."
+                        : "[aviso] " + restored.message());
+            }
+        }
+    }
+
+    private void runFullIisSession(IisLaunchRequest request, OutputStream out,
+                                   AtomicReference<DotnetDapDebugSession> sessionRef,
+                                   AtomicLong monitoredPid,
+                                   DeferredOutputStream stdinBridge,
+                                   CountDownLatch stopSignal,
+                                   IisDeployment.Target target,
+                                   Path contentRoot) throws Exception {
         String url = request.resolveUrl();
         writeLine(out, "[iis] Site \"" + target.siteName() + "\" no pool \"" + target.appPoolName()
                 + "\" servindo " + contentRoot);
         writeLine(out, "[iis] Aplicação disponível em " + url);
         warmUpFullIis(target, url, out);
 
-        long workerPid = IisWarmUp.awaitWorkerPid(target.appPoolName(), WORKER_WAIT_MS);
+        String effectivePool = effectiveAppPool(target, out);
+        long workerPid = IisWarmUp.awaitWorkerPid(effectivePool, WORKER_WAIT_MS);
         if (workerPid > 0) {
             monitoredPid.set(workerPid);
-            writeLine(out, "[iis] Worker process do pool \"" + target.appPoolName() + "\": PID " + workerPid + ".");
+            writeLine(out, "[iis] Worker process do pool \"" + effectivePool + "\": PID " + workerPid + ".");
         } else {
-            writeLine(out, "[aviso] Não foi possível identificar o w3wp do pool \"" + target.appPoolName()
+            writeLine(out, "[aviso] Não foi possível identificar o w3wp do pool \"" + effectivePool
                     + "\". O monitor de processo fica sem dados até o pool atender uma requisição.");
+            describeWorkers(out);
         }
 
         if (request.debug()) {
             if (!IisEnvironment.isElevated()) {
-                writeLine(out, "[erro] A IDE não está em sessão elevada: o Windows nega o attach ao w3wp, "
-                        + "que roda como identidade do pool. Reabra a IDE como administrador para depurar no IIS "
-                        + "(o Visual Studio faz o mesmo).");
+                writeLine(out, "[iis] A IDE não está elevada: o netcoredbg será iniciado em uma sessão "
+                        + "administrativa própria (o Windows vai pedir confirmação do UAC).");
             }
             long pid = request.hostingModel() == IisWebProject.HostingModel.IN_PROCESS && workerPid > 0
                     ? workerPid
-                    : IisWarmUp.awaitWorkerProcess(target.appPoolName(), request.hostingModel(),
+                    : IisWarmUp.awaitWorkerProcess(effectivePool, request.hostingModel(),
                             request.assemblyName(), CLR_WAIT_MS);
             if (pid <= 0) {
-                writeLine(out, "[erro] Nenhum processo CoreCLR do pool \"" + target.appPoolName()
+                writeLine(out, "[erro] Nenhum processo CoreCLR do pool \"" + effectivePool
                         + "\" foi encontrado em " + (CLR_WAIT_MS / 1000) + "s. Hospedagem "
                         + request.hostingModel().descriptor() + ": confirme que o pool está iniciado e que a "
                         + "aplicação respondeu a uma requisição.");
+                describeWorkers(out);
             } else {
                 writeLine(out, "[iis] Anexando depurador ao processo " + pid + " ("
                         + request.hostingModel().descriptor() + ").");
                 Path sourceRoot = request.projectFile().getParent() == null
                         ? contentRoot : request.projectFile().getParent();
-                attachDebugSession(request, out, sessionRef, sourceRoot, pid, stdinBridge);
+                attachDebugSession(request, out, sessionRef, sourceRoot, pid, stdinBridge, true);
                 writeLine(out, "[iis] Breakpoints em código de inicialização só param em um novo start do worker; "
                         + "recarregue a página para parar em controllers.");
             }
@@ -872,40 +962,43 @@ public final class DotnetBuild {
     }
 
     private static void warmUpFullIis(IisDeployment.Target target, String url, OutputStream out) {
-        int status = warmUpStatus(url);
-        if (status == 503) {
+        IisWarmUp.WarmUpResult result = warmUpStatus(url);
+        if (result.status() == 503) {
             writeLine(out, "[aviso] O IIS respondeu 503: o pool \"" + target.appPoolName()
                     + "\" não está atendendo. Reiniciando o pool...");
             IisService.startAppPool(target.appPoolName());
             IisService.recycleAppPool(target.appPoolName());
-            status = warmUpStatus(url);
+            result = warmUpStatus(url);
         }
-        if (status == 503) {
+        if (result.status() == 503) {
             reportUnavailablePool(target, out);
             return;
         }
-        if (status <= 0) {
+        if (result.status() <= 0) {
             writeLine(out, "[aviso] A aplicação não respondeu ao warm-up em " + url + ".");
             return;
         }
-        writeLine(out, "[iis] Warm-up respondeu HTTP " + status + ".");
+        writeLine(out, "[iis] Warm-up respondeu HTTP " + result.status()
+                + (result.redirects() > 0 ? " em " + result.url() + " (após " + result.redirects()
+                        + (result.redirects() == 1 ? " redirecionamento)" : " redirecionamentos)") : "")
+                + ".");
     }
 
-    private static int warmUpStatus(String url) {
-        int status = 0;
+    private static IisWarmUp.WarmUpResult warmUpStatus(String url) {
+        IisWarmUp.WarmUpResult result = new IisWarmUp.WarmUpResult(0, url, 0);
         for (int attempt = 0; attempt < WARM_UP_ATTEMPTS; attempt++) {
-            status = IisWarmUp.status(url, WARM_UP_TIMEOUT_MS);
-            if (status > 0 && status != 503) {
-                return status;
+            result = IisWarmUp.warm(url, WARM_UP_TIMEOUT_MS);
+            if (result.reachedApplication() && result.status() != 503) {
+                return result;
             }
             try {
                 Thread.sleep(WARM_UP_RETRY_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return status;
+                return result;
             }
         }
-        return status;
+        return result;
     }
 
     private static void reportUnavailablePool(IisDeployment.Target target, OutputStream out) {
@@ -930,7 +1023,8 @@ public final class DotnetBuild {
     private void attachDebugSession(IisLaunchRequest request, OutputStream out,
                                     AtomicReference<DotnetDapDebugSession> sessionRef,
                                     Path contentRoot, long pid,
-                                    DeferredOutputStream stdinBridge) throws Exception {
+                                    DeferredOutputStream stdinBridge,
+                                    boolean elevatedServer) throws Exception {
         writeLine(out, "> netcoredbg attach PID " + pid);
         DotnetDapDebugSession session = new DotnetDapDebugSession(
                 request.netcoredbg(), request.dotnet(), null, contentRoot, null, null,
@@ -938,11 +1032,70 @@ public final class DotnetBuild {
                 request.breakpoints() == null ? List.of() : request.breakpoints(),
                 request.debugView(), out, stdinBridge, null, pid, null);
         session.setBreakOnAllExceptions(request.breakOnAllExceptions());
+        session.setElevatedServer(elevatedServer);
+        session.setHotReloadOnAttach(false);
         sessionRef.set(session);
         if (request.sessionSink() != null) {
             request.sessionSink().accept(session);
         }
         session.start();
+    }
+
+    private static String effectiveAppPool(IisDeployment.Target target, OutputStream out) {
+        String actual = IisService.existingAppPool(target.siteName(), target.applicationPath());
+        if (actual == null || actual.isBlank() || actual.equalsIgnoreCase(target.appPoolName())) {
+            return target.appPoolName();
+        }
+        writeLine(out, "[iis] A aplicação \"" + target.applicationName() + "\" está no pool \"" + actual
+                + "\", não em \"" + target.appPoolName() + "\": o worker será procurado no pool real.");
+        return actual;
+    }
+
+    private static void describeWorkers(OutputStream out) {
+        List<IisWorkerProcess> workers = IisService.workerProcesses();
+        if (workers.isEmpty()) {
+            writeLine(out, "[dica] O IIS não tem nenhum w3wp ativo: a requisição de warm-up não chegou a "
+                    + "executar a aplicação. Abra a URL no navegador e tente depurar de novo.");
+            return;
+        }
+        StringBuilder text = new StringBuilder("[dica] Workers ativos no IIS:");
+        for (IisWorkerProcess worker : workers) {
+            text.append(System.lineSeparator()).append("       PID ").append(worker.pid())
+                    .append(" no pool \"").append(worker.appPoolName()).append('"');
+        }
+        writeLine(out, text.toString());
+    }
+
+    private static boolean checkIisDebugPrerequisites(IisLaunchRequest request, IisDeployment.Target target,
+                                                      Path contentRoot, OutputStream out) {
+        IisAppPool pool = IisService.findAppPool(target.appPoolName());
+        if (pool != null) {
+            writeLine(out, "[iis] Pool \"" + pool.name() + "\": identidade=" + pool.identityLabel()
+                    + ", runtime=" + pool.runtimeLabel()
+                    + ", 32 bits=" + (pool.enable32Bit() ? "sim" : "não") + ".");
+            if (pool.enable32Bit()) {
+                writeLine(out, "[erro] O pool está em modo 32 bits e o netcoredbg é 64 bits: o attach ao w3wp "
+                        + "é impossível nessa combinação. Desative com:");
+                writeLine(out, "       appcmd set apppool \"" + pool.name()
+                        + "\" /enable32BitAppOnWin64:false");
+                return false;
+            }
+        }
+        String assembly = request.assemblyName();
+        if (assembly != null && !assembly.isBlank() && contentRoot != null) {
+            Path pdb = contentRoot.resolve(assembly + ".pdb");
+            if (!Files.isRegularFile(pdb)) {
+                writeLine(out, "[erro] Símbolos ausentes: " + pdb + " não existe. Sem o .pdb ao lado do "
+                        + "assembly publicado nenhum breakpoint é resolvido. Publique em Debug ou defina "
+                        + "<DebugType>portable</DebugType> no projeto.");
+                return false;
+            }
+        }
+        if ("Release".equalsIgnoreCase(request.effectiveConfiguration())) {
+            writeLine(out, "[aviso] Configuração Release: o código está otimizado e muitos breakpoints "
+                    + "não param ou param em linhas deslocadas. Use Debug para depurar no IIS.");
+        }
+        return true;
     }
 
     private static void warmUp(String url, OutputStream out) {
