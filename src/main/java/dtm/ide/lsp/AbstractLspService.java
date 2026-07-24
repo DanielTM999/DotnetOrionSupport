@@ -207,7 +207,16 @@ public abstract class AbstractLspService implements LspService {
         } catch (IOException e) {
             return normalized;
         }
-        return solutions.size() == 1 ? solutions.getFirst() : normalized;
+        if (solutions.size() == 1) {
+            return solutions.getFirst();
+        }
+        if (solutions.size() > 1) {
+            Path selected = dtm.ide.DotnetSolutionSelection.selected(normalized);
+            if (selected != null && solutions.contains(selected)) {
+                return selected;
+            }
+        }
+        return normalized;
     }
 
     private static boolean isWorkspaceFile(Path path) {

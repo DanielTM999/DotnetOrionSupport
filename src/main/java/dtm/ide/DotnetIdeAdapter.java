@@ -81,6 +81,7 @@ import dtm.ide.ui.IisProjectSettingsPanel;
 import dtm.ide.ui.NuGetManagerPanel;
 import dtm.ide.ui.ProjectReferenceDialog;
 import dtm.ide.ui.RunProjectChooserPanel;
+import dtm.ide.ui.SolutionChooserPanel;
 import dtm.ide.ui.SolutionReferenceDialog;
 import dtm.ide.wizard.NewSolutionProjectPanel;
 import dtm.request_actions.http.download.core.DownloadObserver;
@@ -291,6 +292,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public void onProjectClosed(IdeProjectContext context) {
         projectLifecycleTicket.incrementAndGet();
+        DotnetSolutionSelection.clear(projectPath);
         shutdownProjectProcesses();
         debugFinished();
         wordCaretTicket.incrementAndGet();
@@ -341,6 +343,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (context != null) {
             this.projectPath = context.getProjectPath().map(DotnetProjectConventions::normalizePath).orElse(null);
         }
+        ensureSolutionSelection();
         projectLifecycleTicket.incrementAndGet();
         runSupport.bindProject(projectPath);
         runSupport.bindDownloadProgress(progressListener());
@@ -3325,6 +3328,59 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return handle;
     }
 
+    private void ensureSolutionSelection() {
+        Path root = projectPath;
+        if (root == null || !Files.isDirectory(root)) {
+            return;
+        }
+        List<Path> solutions = DotnetSolutionSelection.listSolutions(root);
+        if (solutions.size() < 2) {
+            DotnetSolutionSelection.clear(root);
+            return;
+        }
+        if (DotnetSolutionSelection.selected(root) != null) {
+            return;
+        }
+        Path chosen = chooseSolution(solutions);
+        DotnetSolutionSelection.select(root, chosen != null ? chosen : solutions.get(0));
+        requestProjectTreeViewRefresh();
+    }
+
+    private Path chooseSolution(List<Path> solutions) {
+        if (solutions == null || solutions.isEmpty()) {
+            return null;
+        }
+        if (solutions.size() == 1) {
+            return solutions.get(0);
+        }
+        Path[] result = new Path[1];
+        Runnable prompt = () -> {
+            SolutionChooserPanel panel = new SolutionChooserPanel(solutions);
+            result[0] = createModernComponentDialogBuilder(Path.class)
+                    .title(text("dialog.selectSolution", "Select solution to open"))
+                    .draggable(true)
+                    .showIcon(false)
+                    .accentColor(new Color(59, 130, 246))
+                    .confirmText(text("action.open", "Open"))
+                    .cancelText(text("action.cancel", "Cancel"))
+                    .enterConfirms(true)
+                    .component(panel)
+                    .result(ctx -> panel.getSelected())
+                    .show();
+        };
+        try {
+            if (SwingUtilities.isEventDispatchThread()) {
+                prompt.run();
+            } else {
+                SwingUtilities.invokeAndWait(prompt);
+            }
+        } catch (Exception e) {
+            log.debug("Falha ao escolher solução: {}", e.getMessage());
+            return null;
+        }
+        return result[0];
+    }
+
     private Path chooseRunnableProject(List<Path> projects) {
         if (projects == null || projects.isEmpty()) {
             return null;
@@ -4486,6 +4542,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
         Path root = projectPath;
         if (root == null) {
             return null;
+        }
+        Path selected = DotnetSolutionSelection.selected(root);
+        if (selected != null && Files.isRegularFile(selected)) {
+            return selected;
         }
         try (var stream = Files.list(root)) {
             return stream.filter(Files::isRegularFile)

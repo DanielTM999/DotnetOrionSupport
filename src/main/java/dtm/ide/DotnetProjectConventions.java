@@ -311,6 +311,10 @@ final class DotnetProjectConventions {
         if (directory == null || !Files.isDirectory(directory)) {
             return null;
         }
+        Path selected = DotnetSolutionSelection.selected(directory);
+        if (selected != null && Files.isRegularFile(selected)) {
+            return selected;
+        }
         Path projectFile = null;
         try (Stream<Path> entries = Files.list(directory)) {
             for (Path entry : (Iterable<Path>) entries::iterator) {
@@ -650,13 +654,20 @@ final class DotnetProjectConventions {
     }
 
     private static Path findSolutionFile(ProjectTreeNode root) {
+        Path selected = DotnetSolutionSelection.selected(root.getPath());
+        Path first = null;
         for (ProjectTreeNode child : root.getChildren()) {
             Path path = child.getPath();
             if (path != null && Files.isRegularFile(path) && hasExtension(path, SOLUTION_EXTENSIONS)) {
-                return path;
+                if (selected != null && samePath(path, selected)) {
+                    return path;
+                }
+                if (first == null) {
+                    first = path;
+                }
             }
         }
-        return null;
+        return first;
     }
 
     private static boolean hasExtension(Path path, Set<String> extensions) {
