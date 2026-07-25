@@ -163,9 +163,12 @@ public final class IisDeployment {
     }
 
     public static IisService.Result start(Target target) {
-        IisService.Result pool = IisService.startAppPool(target.appPoolName());
+        IisService.Result pool = IisService.startAppPoolStarted(target.appPoolName());
         IisService.Result site = IisService.startSite(target.siteName());
-        if (!site.success() && !pool.success()) {
+        if (!pool.success()) {
+            return pool;
+        }
+        if (!site.success()) {
             return site;
         }
         return IisService.Result.ok();

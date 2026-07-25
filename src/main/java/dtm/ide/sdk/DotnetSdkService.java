@@ -146,6 +146,30 @@ public class DotnetSdkService {
         return getDotnetPath(projectRoot).map(Path::getParent);
     }
 
+    public Optional<Path> getManagedDotnetPath(String sdkVersion) {
+        String version = normalizeSdkVersion(sdkVersion);
+        for (Path home : dotnetHomes()) {
+            Optional<Path> muxer = dotnetExecutableIn(home);
+            if (muxer.isPresent() && homeHasSdk(home, version)) {
+                return muxer;
+            }
+        }
+        return Optional.empty();
+    }
+
+    public Path ensureManagedDotnet(String sdkVersion, DownloadProgressListener progressListener) {
+        String version = normalizeSdkVersion(sdkVersion);
+        Optional<Path> existing = getManagedDotnetPath(version);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        DownloadProgressListener listener = progressListener == null ? DownloadProgressListener.NOOP : progressListener;
+        installDotnetSdk(version, dotnetHome(), listener);
+        return getManagedDotnetPath(version).orElseThrow(() ->
+                displayException(text("error.dotnetMissing",
+                        "The .NET SDK was downloaded, but the dotnet executable was not found."), null));
+    }
+
     public String resolveSdkVersion(Path projectRoot) {
         String pinned = readGlobalJsonSdkVersion(projectRoot);
         if (!pinned.isBlank()) {

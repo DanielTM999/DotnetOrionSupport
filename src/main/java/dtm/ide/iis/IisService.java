@@ -105,6 +105,42 @@ public final class IisService {
         return Result.of(AppCmd.write(List.of("start", "apppool", name)), "Falha ao iniciar o pool " + name);
     }
 
+    private static final long POOL_START_WAIT_MS = 6000;
+    private static final long POOL_START_POLL_MS = 400;
+
+    public static Result startAppPoolStarted(String name) {
+        if (name == null || name.isBlank()) {
+            return Result.fail("Pool inválido para iniciar.");
+        }
+        Result started = startAppPool(name);
+        boolean retried = false;
+        long deadline = System.currentTimeMillis() + POOL_START_WAIT_MS;
+        while (System.currentTimeMillis() < deadline) {
+            IisAppPool pool = findAppPool(name);
+            if (pool != null && pool.started()) {
+                return Result.ok();
+            }
+            if (pool != null && !retried && !pool.started()) {
+                startAppPool(name);
+                retried = true;
+            }
+            try {
+                Thread.sleep(POOL_START_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        IisAppPool pool = findAppPool(name);
+        if (pool != null && pool.started()) {
+            return Result.ok();
+        }
+        return started.success()
+                ? Result.fail("O pool \"" + name + "\" não alcançou o estado Iniciado (verifique rapid-fail "
+                        + "protection / Log de Eventos).")
+                : started;
+    }
+
     public static Result stopAppPool(String name) {
         return Result.of(AppCmd.write(List.of("stop", "apppool", name)), "Falha ao parar o pool " + name);
     }
@@ -126,8 +162,65 @@ public final class IisService {
     }
 
     public static Result renameAppPool(String name, String newName) {
-        return Result.of(AppCmd.write(List.of("set", "apppool", name, "/name:" + newName)),
-                "Falha ao renomear o pool " + name);
+        if (name == null || name.isBlank()) {
+            return Result.fail("Pool de origem inválido para renomear.");
+        }
+        if (newName == null || newName.isBlank()) {
+            return Result.fail("Informe um novo nome para o pool.");
+        }
+        String target = newName.strip();
+        if (target.equals(name)) {
+            return Result.ok();
+        }
+        IisAppPool source = findAppPool(name);
+        if (source == null) {
+            return Result.fail("O pool \"" + name + "\" não existe.");
+        }
+        if (findAppPool(target) != null) {
+            return Result.fail("Já existe um pool chamado \"" + target + "\".");
+        }
+        IisProcess.Result added = AppCmd.write(List.of("add", "apppool", "/name:" + target));
+        if (!added.ok()) {
+            return Result.of(added, "Falha ao criar o pool \"" + target + "\"");
+        }
+        Result applied = applyAppPoolSettings(target, renamedPool(source, target));
+        if (!applied.success()) {
+            AppCmd.write(List.of("delete", "apppool", target));
+            return applied;
+        }
+        Result reassigned = reassignAppPool(name, target);
+        if (!reassigned.success()) {
+            return reassigned;
+        }
+        if ("Started".equalsIgnoreCase(source.state())) {
+            startAppPool(target);
+        }
+        IisProcess.Result deleted = AppCmd.write(List.of("delete", "apppool", name));
+        if (!deleted.ok()) {
+            return Result.of(deleted,
+                    "Pool \"" + target + "\" criado, mas falha ao remover o antigo \"" + name + "\"");
+        }
+        return Result.ok("Pool renomeado para \"" + target + "\".");
+    }
+
+    private static IisAppPool renamedPool(IisAppPool source, String newName) {
+        return new IisAppPool(newName, source.state(), source.managedRuntimeVersion(),
+                source.managedPipelineMode(), source.identityType(), source.userName(),
+                source.enable32Bit(), source.startMode(), source.autoStart(), source.queueLength(),
+                source.idleTimeoutMinutes(), source.maxProcesses(), source.recyclingIntervalMinutes(),
+                source.recyclingPrivateMemoryKb(), source.recyclingVirtualMemoryKb(), source.rawAttributes());
+    }
+
+    private static Result reassignAppPool(String oldName, String newName) {
+        for (IisApplication application : applications()) {
+            if (oldName.equalsIgnoreCase(application.applicationPool())) {
+                Result moved = setApplicationPool(application.name(), newName);
+                if (!moved.success()) {
+                    return moved;
+                }
+            }
+        }
+        return Result.ok();
     }
 
     public static Result applyAppPoolBasics(String name, String runtimeVersion, String pipelineMode,

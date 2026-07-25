@@ -211,7 +211,14 @@ public final class DotnetRunSupport {
             List<Path> runnable = TargetFramework.findRunnableProjectFiles(project);
             if (runnable.size() > 1) {
                 for (Path projectFile : runnable) {
-                    list.add(runConfigForProject(projectFile));
+                    List<LaunchSettings.Profile> profiles = LaunchSettings.runnableProfiles(projectFile);
+                    if (profiles.isEmpty()) {
+                        list.add(runConfigForProject(projectFile, null));
+                    } else {
+                        for (LaunchSettings.Profile profile : profiles) {
+                            list.add(runConfigForProject(projectFile, profile.name()));
+                        }
+                    }
                 }
             } else {
                 Path projectFile = runnable.size() == 1
@@ -279,11 +286,21 @@ public final class DotnetRunSupport {
     }
 
     private static RunConfigurationData runConfigForProject(Path projectFile) {
+        return runConfigForProject(projectFile, null);
+    }
+
+    private static RunConfigurationData runConfigForProject(Path projectFile, String profile) {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put(PROP_PROJECT, projectFile.toString());
+        boolean hasProfile = profile != null && !profile.isBlank();
+        if (hasProfile) {
+            properties.put(PROP_LAUNCH_PROFILE, profile);
+        }
+        String title = ".NET: Executar — " + projectDisplayName(projectFile)
+                + (hasProfile ? " (" + profile + ")" : "");
         return RunConfigurationData.builder()
                 .type(TYPE_RUN)
-                .title(".NET: Executar — " + projectDisplayName(projectFile))
+                .title(title)
                 .properties(properties)
                 .build();
     }
@@ -384,6 +401,14 @@ public final class DotnetRunSupport {
             return runnable.getFirst();
         }
         if (runnable.size() > 1) {
+            Path startup = dtm.ide.DotnetStartupProject.get(projectDir);
+            if (startup != null) {
+                for (Path candidate : runnable) {
+                    if (candidate.toAbsolutePath().normalize().equals(startup)) {
+                        return candidate;
+                    }
+                }
+            }
             Function<List<Path>, Path> chooser = runnableProjectChooser;
             Path chosen = chooser == null ? null : chooser.apply(runnable);
             return chosen != null ? chosen : runnable.getFirst();

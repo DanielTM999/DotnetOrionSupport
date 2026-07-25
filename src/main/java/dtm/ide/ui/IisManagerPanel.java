@@ -230,7 +230,8 @@ public final class IisManagerPanel extends JPanel {
                         primaryButton(text("action.addPool", "Add pool"), this::addPool),
                         secondaryButton(text("action.basicSettings", "Basic settings..."), this::editPoolBasic),
                         secondaryButton(text("action.advancedSettings", "Advanced settings..."),
-                                this::editPoolAdvanced))),
+                                this::editPoolAdvanced),
+                        secondaryButton(text("action.renamePool", "Rename..."), this::renamePool))),
                 new ActionGroup(text("group.control", "Control"), List.of(
                         secondaryButton(text("action.start", "Start"), () -> poolAction(IisService::startAppPool)),
                         secondaryButton(text("action.stop", "Stop"), () -> poolAction(IisService::stopAppPool)),
@@ -701,6 +702,25 @@ public final class IisManagerPanel extends JPanel {
             IisService.stopAppPool(pool.name());
             return IisService.startAppPool(pool.name());
         });
+    }
+
+    private void renamePool() {
+        IisAppPool pool = selectedPool();
+        if (pool == null) {
+            warn(text("warn.selectPool", "Select an application pool."));
+            return;
+        }
+        JTextField nameField = new JTextField(pool.name());
+        JPanel form = form(text("field.newName", "New name:"), nameField);
+        if (!dialogs.confirmForm(text("dialog.renamePool", "Rename application pool") + " — " + pool.name(),
+                form, text("action.rename", "Rename"))) {
+            return;
+        }
+        String newName = nameField.getText() == null ? "" : nameField.getText().strip();
+        if (newName.isBlank() || newName.equals(pool.name())) {
+            return;
+        }
+        execute(() -> IisService.renameAppPool(pool.name(), newName));
     }
 
     private void restartSite() {

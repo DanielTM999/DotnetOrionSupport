@@ -293,6 +293,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public void onProjectClosed(IdeProjectContext context) {
         projectLifecycleTicket.incrementAndGet();
         DotnetSolutionSelection.clear(projectPath);
+        DotnetStartupProject.clear(projectPath);
         shutdownProjectProcesses();
         debugFinished();
         wordCaretTicket.incrementAndGet();
@@ -407,7 +408,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 boolean roslyn = kind == LspServerKind.ROSLYN;
                 boolean needsRazor = roslyn && projectHasRazor;
                 bindRazorProject(service, needsRazor);
-                boolean needDotnet = sdk.getDotnetPath(requiredSdkVersion).isEmpty();
+                boolean needDotnet = roslyn
+                        ? sdk.getManagedDotnetPath(requiredSdkVersion).isEmpty()
+                        : sdk.getDotnetPath(requiredSdkVersion).isEmpty();
                 boolean needBaseServer = roslyn
                         ? sdk.getRoslynLanguageServerPath().isEmpty()
                         : sdk.getOmniSharpPath().isEmpty();
@@ -422,7 +425,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 }
 
                 if (needDotnet) {
-                    sdk.ensureDotnet(requiredSdkVersion, progress);
+                    if (roslyn) {
+                        sdk.ensureManagedDotnet(requiredSdkVersion, progress);
+                    } else {
+                        sdk.ensureDotnet(requiredSdkVersion, progress);
+                    }
                 }
 
                 if (needRoslynRuntime) {
@@ -3983,6 +3990,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     }
                 });
         contributeIisMenu(menu, buildTarget);
+        if (!solution) {
+            contributeStartupProjectMenu(menu, buildTarget);
+        }
         menu.separator();
         menu.item(text("action.build", "Build") + suffix,
                 e -> runDotnetOnTarget(buildTarget, text("action.build", "Build"), List.of("build")));
@@ -3990,6 +4000,33 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 e -> runDotnetOnTarget(buildTarget, text("action.rebuild", "Rebuild"), List.of("build", "--no-incremental")));
         menu.item(text("action.clean", "Clean") + suffix,
                 e -> runDotnetOnTarget(buildTarget, text("action.clean", "Clean"), List.of("clean")));
+    }
+
+    private void contributeStartupProjectMenu(IdeMenuBuilder menu, Path projectFile) {
+        Path root = projectPath;
+        if (root == null || !TargetFramework.isExecutableProjectFile(projectFile)) {
+            return;
+        }
+        if (TargetFramework.findRunnableProjectFiles(root).size() < 2) {
+            return;
+        }
+        boolean current = DotnetStartupProject.is(root, projectFile);
+        menu.separator();
+        String label = current
+                ? text("ctx.startupProjectCurrent", "✓ Startup Project")
+                : text("ctx.setStartupProject", "Set as Startup Project");
+        menu.item(label, e -> {
+            DotnetStartupProject.set(root, projectFile);
+            setStatusBarText(text("status.startupProjectSet", "Startup project: ") + startupProjectName(projectFile));
+            requestProjectTreeViewRefresh();
+        });
+    }
+
+    private static String startupProjectName(Path projectFile) {
+        if (projectFile == null || projectFile.getFileName() == null) {
+            return "";
+        }
+        return projectFile.getFileName().toString().replaceFirst("(?i)\\.(csproj|vbproj|fsproj)$", "");
     }
 
     private void contributeIisMenu(IdeMenuBuilder menu, Path buildTarget) {

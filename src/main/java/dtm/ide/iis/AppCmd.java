@@ -316,7 +316,7 @@ public final class AppCmd {
             return 0;
         }
         for (IisWorkerProcess process : listWorkerProcesses()) {
-            if (appPoolName.equals(process.appPoolName()) && process.alive()) {
+            if (appPoolName.equals(process.appPoolName()) && process.pid() > 0) {
                 return process.pid();
             }
         }

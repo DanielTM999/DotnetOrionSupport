@@ -321,6 +321,10 @@ public final class TargetFramework {
     }
 
     private static List<Path> solutionsIn(Path dir) {
+        Path selected = dtm.ide.DotnetSolutionSelection.selected(dir);
+        if (selected != null && Files.isRegularFile(selected) && isSolutionFile(selected)) {
+            return List.of(selected);
+        }
         try (Stream<Path> list = Files.list(dir)) {
             return list.filter(Files::isRegularFile)
                     .filter(TargetFramework::isSolutionFile)

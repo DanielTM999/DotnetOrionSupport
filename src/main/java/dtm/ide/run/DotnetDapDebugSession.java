@@ -62,6 +62,7 @@ final class DotnetDapDebugSession {
     private final AtomicBoolean initializedEventSeen = new AtomicBoolean(false);
     private final AtomicBoolean debugStartAccepted = new AtomicBoolean(false);
     private final AtomicBoolean configurationSent = new AtomicBoolean(false);
+    private final CountDownLatch configured = new CountDownLatch(1);
 
     private final Map<Path, NavigableMap<Integer, String>> liveBreakpoints = new ConcurrentHashMap<>();
 
@@ -914,6 +915,7 @@ final class DotnetDapDebugSession {
             case "output" -> routeOutput(msg.path("body"));
             case "exited", "terminated" -> {
                 stoppedTicket.incrementAndGet();
+                configured.countDown();
                 terminated.countDown();
             }
             default -> {
@@ -1113,6 +1115,7 @@ final class DotnetDapDebugSession {
         configurationRequests.add(sendExceptionBreakpoints());
         if (configurationRequests.isEmpty()) {
             sendRequest("configurationDone", null);
+            configured.countDown();
             return;
         }
         CompletableFuture.allOf(configurationRequests.toArray(CompletableFuture[]::new))
@@ -1123,7 +1126,17 @@ final class DotnetDapDebugSession {
                                 error.getMessage());
                     }
                     sendRequest("configurationDone", null);
+                    configured.countDown();
                 });
+    }
+
+    boolean awaitConfigured(long timeout, TimeUnit unit) {
+        try {
+            return configured.await(timeout, unit);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private void startInferior() throws IOException {
@@ -1227,7 +1240,7 @@ final class DotnetDapDebugSession {
                 return;
             }
             pid = child.pid();
-        } else if (ProcessHandle.of(pid).isEmpty() || !ProcessHandle.of(pid).get().isAlive()) {
+        } else if (ProcessHandle.of(pid).map(handle -> !handle.isAlive()).orElse(false)) {
             safeWriteProgram("[debug] processo do programa não está ativo para anexar." + System.lineSeparator());
             terminate();
             return;

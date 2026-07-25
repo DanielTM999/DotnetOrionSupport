@@ -16,7 +16,8 @@ public final class IisBroker {
     public enum Tool {
         APP_CMD,
         IIS_RESET,
-        ICACLS
+        ICACLS,
+        LAUNCH_SCRIPT
     }
 
     private static final long LAUNCH_TIMEOUT_MS = 120_000;
@@ -66,6 +67,13 @@ public final class IisBroker {
             log.debug("Heartbeat do assistente indisponível no momento: {}", e.getMessage());
             return null;
         }
+    }
+
+    public static IisProcess.Result launchDetachedScript(Path script, long timeoutSeconds) {
+        if (script == null) {
+            return new IisProcess.Result(-1, "Script indisponível para execução elevada.");
+        }
+        return run(Tool.LAUNCH_SCRIPT, List.of(script.toAbsolutePath().toString()), timeoutSeconds);
     }
 
     public static IisProcess.Result run(Tool tool, List<String> arguments, long timeoutSeconds) {
@@ -223,6 +231,19 @@ public final class IisBroker {
                 "  if ($lines.Count -gt 1) { $arguments = $lines[1..($lines.Count - 1)] }",
                 "  $outFile = Join-Path $dir (\"out-$sequence.txt\")",
                 "  $exit = 0",
+                "  if ($index -eq 3) {",
+                "    try {",
+                "      Start-Process -FilePath 'powershell.exe' -ArgumentList "
+                        + "'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',"
+                        + "'-WindowStyle','Hidden','-File',$arguments[0] -WindowStyle Hidden | Out-Null",
+                "      Set-Content -LiteralPath $outFile -Value 'launched' -Encoding UTF8",
+                "    } catch {",
+                "      Set-Content -LiteralPath $outFile -Value $_.Exception.Message -Encoding UTF8",
+                "      $exit = 1",
+                "    }",
+                "    Set-Content -LiteralPath (Join-Path $dir (\"rc-$sequence.txt\")) -Value $exit -Encoding UTF8",
+                "    continue",
+                "  }",
                 "  try {",
                 "    $exe = $tools[$index]",
                 "    if ([string]::IsNullOrWhiteSpace($exe)) { throw 'Ferramenta indisponivel.' }",

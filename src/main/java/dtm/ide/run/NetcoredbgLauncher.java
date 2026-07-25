@@ -1,5 +1,6 @@
 package dtm.ide.run;
 
+import dtm.ide.iis.IisBroker;
 import dtm.ide.iis.IisEnvironment;
 import dtm.ide.iis.IisProcess;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +24,7 @@ final class NetcoredbgLauncher {
     private static final long CONNECT_TIMEOUT_MS = 60_000;
     private static final long CONNECT_RETRY_MS = 250;
     private static final int SOCKET_CONNECT_TIMEOUT_MS = 500;
+    private static final long BROKER_LAUNCH_TIMEOUT_S = 60;
 
     private NetcoredbgLauncher() {
     }
@@ -55,9 +57,21 @@ final class NetcoredbgLauncher {
         Files.writeString(script, serverScript(netcoredbg, dotnetRoot, cwd, port, pidFile), StandardCharsets.UTF_8);
 
         boolean elevated = IisEnvironment.isElevated();
-        Process launcher = elevated ? runDirect(script) : runElevated(script);
+        Process launcher = elevated ? runDirect(script) : runViaBrokerOrElevate(script);
         Socket socket = connect(port, launcher, directory);
         return new ServerChannel(socket, readPid(pidFile), directory, elevated, port);
+    }
+
+    private static Process runViaBrokerOrElevate(Path script) throws IOException {
+        if (IisBroker.available()) {
+            IisProcess.Result submitted = IisBroker.launchDetachedScript(script, BROKER_LAUNCH_TIMEOUT_S);
+            if (submitted.ok()) {
+                return null;
+            }
+            log.debug("Broker elevado indisponível para o netcoredbg ({}); usando elevação direta.",
+                    submitted.output());
+        }
+        return runElevated(script);
     }
 
     private static Process runDirect(Path script) throws IOException {
