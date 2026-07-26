@@ -2866,12 +2866,36 @@ public abstract class AbstractLspService implements LspService {
         }
         String detail = textOrEmpty(item.get("detail"));
         String description = extractDocumentation(item.get("documentation"));
-        AutoCompleteItem.Kind kind = item.path("insertTextFormat").asInt(1) == 2
-                ? AutoCompleteItem.Kind.SNIPPET
-                : AutoCompleteItem.Kind.TEXT;
+        AutoCompleteItem.Kind kind = completionKind(
+                item.path("kind").asInt(1),
+                item.path("insertTextFormat").asInt(1) == 2);
         List<TextEdit> additionalEdits = parseTextEditsStatic(item.get("additionalTextEdits"));
         return new AutoCompleteItem(insertText, label, nullIfBlank(detail),
                 nullIfBlank(description), null, kind, additionalEdits);
+    }
+
+    private static AutoCompleteItem.Kind completionKind(int lspKind, boolean isSnippet) {
+        if (isSnippet) {
+            return AutoCompleteItem.Kind.SNIPPET;
+        }
+        String name = switch (lspKind) {
+            case 2 -> "METHOD";
+            case 3 -> "FUNCTION";
+            case 4 -> "CONSTRUCTOR";
+            case 5 -> "FIELD";
+            case 6 -> "VARIABLE";
+            case 7 -> "CLASS";
+            case 8 -> "INTERFACE";
+            case 9 -> "MODULE";
+            case 24 -> "OPERATOR";
+            case 25 -> "TYPE_PARAMETER";
+            default -> "TEXT";
+        };
+        try {
+            return AutoCompleteItem.Kind.valueOf(name);
+        } catch (IllegalArgumentException ignored) {
+            return AutoCompleteItem.Kind.TEXT;
+        }
     }
 
     private static String completionSortKey(JsonNode item) {

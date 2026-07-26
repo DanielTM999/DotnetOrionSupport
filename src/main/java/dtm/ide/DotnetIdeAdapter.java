@@ -37,6 +37,7 @@ import dtm.ide.api.theme.EditorTheme;
 import dtm.ide.api.theme.EditorThemeConfig;
 import dtm.ide.editor.HtmlMarkupCompletionProvider;
 import dtm.ide.editor.HtmlMarkupDiagnosticsProvider;
+import dtm.ide.editor.CSharpSnippetCompletionProvider;
 import dtm.ide.editor.condition.CSharpConditionAutoCompleteProvider;
 import dtm.ide.editor.condition.CSharpConditionDiagnosticsProvider;
 import dtm.ide.editor.theme.DotnetEditorTheme;
@@ -182,6 +183,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private final DotnetEditorRegistry editorRegistry = new DotnetEditorRegistry();
     private final EditorTheme editorTheme = new DotnetEditorTheme();
     private final HtmlMarkupCompletionProvider htmlCompletionProvider = new HtmlMarkupCompletionProvider();
+    private final CSharpSnippetCompletionProvider csharpSnippetCompletionProvider = new CSharpSnippetCompletionProvider();
     private final HtmlMarkupDiagnosticsProvider htmlDiagnosticsProvider = new HtmlMarkupDiagnosticsProvider();
     private volatile Path projectPath;
     private volatile IdeProjectContext projectContext;
@@ -1221,7 +1223,29 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (DotnetProjectConventions.isRazorLike(file)) {
             return mergeHtmlCompletions(lspItems, context);
         }
-        return lspItems;
+        return DotnetProjectConventions.isCSharpLike(file)
+                ? mergeCSharpSnippets(lspItems, context.prefix())
+                : lspItems;
+    }
+
+    private List<AutoCompleteItem> mergeCSharpSnippets(List<AutoCompleteItem> lspItems, String prefix) {
+        List<AutoCompleteItem> snippets = csharpSnippetCompletionProvider.suggestions(prefix);
+        if (snippets.isEmpty()) {
+            return lspItems;
+        }
+        Set<String> seen = new HashSet<>();
+        List<AutoCompleteItem> merged = new ArrayList<>(snippets.size() + lspItems.size());
+        for (AutoCompleteItem item : snippets) {
+            if (item != null && item.label() != null && seen.add(item.label().toLowerCase(Locale.ROOT))) {
+                merged.add(item);
+            }
+        }
+        for (AutoCompleteItem item : lspItems) {
+            if (item != null && item.label() != null && seen.add(item.label().toLowerCase(Locale.ROOT))) {
+                merged.add(item);
+            }
+        }
+        return merged;
     }
 
     private List<AutoCompleteItem> mergeHtmlCompletions(List<AutoCompleteItem> lspItems,

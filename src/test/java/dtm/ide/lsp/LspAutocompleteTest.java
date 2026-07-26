@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LspAutocompleteTest {
@@ -33,6 +34,11 @@ class LspAutocompleteTest {
             List<AutoCompleteItem> items = service.complete(program, text, 0, caret);
             assertFalse(items.isEmpty(), "esperava autocompletes do servidor");
             assertTrue(hasLabel(items, "WriteLine"), "esperava 'WriteLine' entre os autocompletes");
+            assertEquals(AutoCompleteItem.Kind.METHOD, items.stream()
+                    .filter(item -> "WriteLine".equals(item.label()))
+                    .findFirst()
+                    .orElseThrow()
+                    .kind(), "o tipo LSP Method deve ser preservado no autocomplete");
 
             List<AutoCompleteItem> filtered = service.completeForEditor(program, text, 0, caret, "Wr");
             assertFalse(filtered.isEmpty(), "esperava autocompletes filtrados por prefixo");
