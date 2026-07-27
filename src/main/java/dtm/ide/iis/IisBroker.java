@@ -44,11 +44,19 @@ public final class IisBroker {
         if (directory == null) {
             return false;
         }
+        long pid = brokerPid;
+        if (processAlive(pid)) {
+            return true;
+        }
         Long modified = heartbeatAt(directory);
         if (modified != null) {
             lastHeartbeat = Math.max(lastHeartbeat, modified);
         }
         return lastHeartbeat > 0 && System.currentTimeMillis() - lastHeartbeat < HEARTBEAT_STALE_MS;
+    }
+
+    static boolean processAlive(long pid) {
+        return pid > 0 && ProcessHandle.of(pid).filter(ProcessHandle::isAlive).isPresent();
     }
 
     static boolean heartbeatFresh(Path directory) {

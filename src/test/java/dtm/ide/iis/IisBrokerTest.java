@@ -114,6 +114,12 @@ class IisBrokerTest {
     }
 
     @Test
+    void detectsLiveBrokerProcessWithoutDependingOnHeartbeat() {
+        assertTrue(IisBroker.processAlive(ProcessHandle.current().pid()));
+        assertTrue(!IisBroker.processAlive(-1));
+    }
+
+    @Test
     @EnabledOnOs(OS.WINDOWS)
     void brokerStopsWhenSignalled(@TempDir Path directory) throws Exception {
         Process broker = startBroker(directory);

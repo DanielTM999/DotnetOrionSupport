@@ -3,7 +3,6 @@ package dtm.ide.run;
 import dtm.ide.api.extension.output.OutputPanelHandle;
 import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
-import dtm.ide.iis.IisApplication;
 import dtm.ide.iis.IisAppPool;
 import dtm.ide.iis.IisDeployment;
 import dtm.ide.iis.IisEnvironment;
@@ -55,13 +54,6 @@ public final class DotnetBuild {
     private static final long WORKER_WATCH_INTERVAL_MS = 2_000;
     private static final long POOL_STOP_WAIT_MS = 20_000;
 
-    private static final Set<String> BUILT_IN_SHARED_POOLS = Set.of(
-            "defaultapppool",
-            "classic .net apppool",
-            ".net v4.5",
-            ".net v4.5 classic",
-            ".net v2.0",
-            ".net v2.0 classic");
     private static final int WARM_UP_ATTEMPTS = 12;
     private static final int WARM_UP_TIMEOUT_MS = 5_000;
     private static final long WARM_UP_RETRY_MS = 1_000;
@@ -633,9 +625,14 @@ public final class DotnetBuild {
                 if (separatePanels) {
                     buildPanel.show();
                 }
-                releaseContentLocks(request, buildOut);
-                if (!prepareIisContent(request, buildOut, out)) {
-                    restartPoolAfterFailedPublish(request, out);
+                String stoppedPool = stopPoolForBuild(request, buildOut);
+                boolean prepared;
+                try {
+                    prepared = prepareIisContent(request, buildOut, out);
+                } finally {
+                    startPoolAfterBuild(stoppedPool, out);
+                }
+                if (!prepared) {
                     return;
                 }
                 if (separatePanels && showRunOutput != null) {
@@ -649,6 +646,7 @@ public final class DotnetBuild {
             } catch (Exception e) {
                 safeWriteLine(consoleOut, "[erro] " + e.getClass().getSimpleName() + ": " + e.getMessage());
             } finally {
+                stopSignal.countDown();
                 done.set(true);
                 activeProcesses.remove(DotnetRunSupport.TYPE_RUN);
                 activeIisStop.compareAndSet(stopHolder.get(), null);
@@ -697,13 +695,13 @@ public final class DotnetBuild {
                 .build();
     }
 
-    private static void releaseContentLocks(IisLaunchRequest request, OutputStream buildOut) {
+    private static String stopPoolForBuild(IisLaunchRequest request, OutputStream buildOut) {
         if (request.iisExpress() || !IisWebProject.requiresPublish(request.projectFile())) {
-            return;
+            return null;
         }
         String pool = publishBlockingPool(request);
         if (pool == null) {
-            return;
+            return null;
         }
         writeLine(buildOut, "[iis] Parando o pool \"" + pool
                 + "\" antes de publicar (o w3wp mantém os assemblies em uso).");
@@ -718,16 +716,16 @@ public final class DotnetBuild {
         } else {
             writeLine(buildOut, "[iis] Pool parado; os arquivos publicados estão liberados.");
         }
+        return pool;
     }
 
-    private static void restartPoolAfterFailedPublish(IisLaunchRequest request, OutputStream out) {
-        String pool = publishBlockingPool(request);
-        if (pool == null) {
+    private static void startPoolAfterBuild(String pool, OutputStream out) {
+        if (pool == null || pool.isBlank()) {
             return;
         }
-        IisService.Result started = IisService.startAppPool(pool);
+        IisService.Result started = IisService.startAppPoolStarted(pool);
         writeLine(out, started.success()
-                ? "[iis] Pool \"" + pool + "\" reiniciado com o conteúdo anterior."
+                ? "[iis] Pool \"" + pool + "\" iniciado após a compilação/publicação."
                 : "[aviso] " + started.message());
     }
 
@@ -872,7 +870,9 @@ public final class DotnetBuild {
         }
         IisService.Result started = IisDeployment.start(target);
         if (!started.success()) {
-            writeLine(out, "[aviso] " + started.message());
+            writeLine(out, "[erro] " + started.message());
+            writeLine(out, "[erro] O depurador não será anexado enquanto o site e o pool não estiverem iniciados.");
+            return;
         }
 
         if (request.debug() && !checkIisDebugPrerequisites(request, target, contentRoot, out)) {
@@ -914,12 +914,20 @@ public final class DotnetBuild {
         writeLine(out, "[iis] Site \"" + target.siteName() + "\" no pool \"" + target.appPoolName()
                 + "\" servindo " + contentRoot);
         writeLine(out, "[iis] Aplicação disponível em " + url);
-        warmUpFullIis(target, url, out);
 
         String effectivePool = effectiveAppPool(target, out);
+        boolean publishWorkerDuringStartup = !request.debug()
+                || request.hostingModel() == IisWebProject.HostingModel.IN_PROCESS;
+        Thread pidWatcher = publishWorkerDuringStartup
+                ? startWorkerPidWatcher(effectivePool, monitoredPid, stopSignal)
+                : null;
+
+        warmUpFullIis(target, url, out);
         long workerPid = IisWarmUp.awaitWorkerPid(effectivePool, WORKER_WAIT_MS);
         if (workerPid > 0) {
-            monitoredPid.set(workerPid);
+            if (publishWorkerDuringStartup) {
+                monitoredPid.set(workerPid);
+            }
             writeLine(out, "[iis] Worker process do pool \"" + effectivePool + "\": PID " + workerPid + ".");
         } else {
             writeLine(out, "[aviso] w3wp do pool \"" + effectivePool
@@ -944,6 +952,7 @@ public final class DotnetBuild {
                         + "aplicação respondeu a uma requisição.");
                 describeWorkers(out);
             } else {
+                monitoredPid.set(pid);
                 writeLine(out, "[iis] Anexando depurador ao processo " + pid + " ("
                         + request.hostingModel().descriptor() + ").");
                 Path sourceRoot = request.projectFile().getParent() == null
@@ -968,9 +977,14 @@ public final class DotnetBuild {
         }
 
         if (request.debug() && sessionRef.get() != null) {
-            sessionRef.get().awaitTermination();
+            try {
+                sessionRef.get().awaitTermination();
+            } finally {
+                if (pidWatcher != null) {
+                    pidWatcher.interrupt();
+                }
+            }
         } else {
-            Thread pidWatcher = startWorkerPidWatcher(effectivePool, monitoredPid, stopSignal);
             writeLine(out, "[iis] O site continua hospedado no IIS. Use \"Parar\" para encerrar o monitoramento.");
             try {
                 stopSignal.await();
@@ -1021,33 +1035,19 @@ public final class DotnetBuild {
                                       String effectivePool, OutputStream out) {
         String pool = effectivePool == null || effectivePool.isBlank()
                 ? target.appPoolName() : effectivePool;
-        boolean stopPool = request.stopPoolOnExit() || request.dedicatedAppPool()
-                || poolExclusiveToApp(pool);
-        if (stopPool) {
+        if (shouldStopPoolOnExit(request)) {
             IisService.Result stopped = IisService.stopAppPool(pool);
             writeLine(out, stopped.success()
                     ? "[iis] Pool \"" + pool + "\" parado."
                     : "[aviso] " + stopped.message());
         } else {
-            writeLine(out, "[iis] O pool \"" + pool + "\" é compartilhado com outras aplicações "
-                    + "e continua ativo. Pare-o pelo gerenciador do IIS se precisar.");
+            writeLine(out, "[iis] Pool \"" + pool
+                    + "\" mantido iniciado; o site continua disponível após encerrar Run/Debug.");
         }
     }
 
-    private static boolean poolExclusiveToApp(String pool) {
-        if (pool == null || pool.isBlank() || BUILT_IN_SHARED_POOLS.contains(pool.toLowerCase(Locale.ROOT))) {
-            return false;
-        }
-        int users = 0;
-        for (IisApplication app : IisService.applications()) {
-            if (pool.equalsIgnoreCase(app.applicationPool())) {
-                users++;
-                if (users > 1) {
-                    return false;
-                }
-            }
-        }
-        return true;
+    static boolean shouldStopPoolOnExit(IisLaunchRequest request) {
+        return request != null && request.stopPoolOnExit();
     }
 
     private static void warmUpFullIis(IisDeployment.Target target, String url, OutputStream out) {

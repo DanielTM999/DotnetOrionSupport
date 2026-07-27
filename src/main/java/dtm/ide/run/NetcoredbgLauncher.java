@@ -68,8 +68,8 @@ final class NetcoredbgLauncher {
             if (submitted.ok()) {
                 return null;
             }
-            log.debug("Broker elevado indisponível para o netcoredbg ({}); usando elevação direta.",
-                    submitted.output());
+            throw new IOException("O assistente elevado do IIS não iniciou o netcoredbg: "
+                    + submitted.output());
         }
         return runElevated(script);
     }
