@@ -5,10 +5,7 @@ import dtm.stools.component.panels.editor.code.prototype.constants.TokenType;
 import dtm.stools.component.panels.editor.code.provider.TokenClassifierCodeEditorProvider;
 import dtm.stools.component.panels.editor.code.provider.TokenizerCodeEditorProvider;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class CSharpTokenizerProvider implements TokenizerCodeEditorProvider {
 
@@ -55,7 +52,7 @@ public class CSharpTokenizerProvider implements TokenizerCodeEditorProvider {
     }
 
     @Override
-    public synchronized java.util.Collection<Token> tokenize(
+    public synchronized Collection<Token> tokenize(
             String text, TokenClassifierCodeEditorProvider classifier) {
         String src = text == null ? "" : text;
         List<LexToken> raw = lex(src);

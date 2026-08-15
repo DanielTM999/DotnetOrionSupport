@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -24,6 +25,8 @@ final class DotnetSolutionModel {
             "Project\\(\"\\{([0-9A-Fa-f-]+)\\}\"\\)\\s*=\\s*\"([^\"]*)\",\\s*\"([^\"]*)\",\\s*\"\\{([0-9A-Fa-f-]+)\\}\"");
     private static final Pattern SLN_NESTED = Pattern.compile(
             "\\{([0-9A-Fa-f-]+)\\}\\s*=\\s*\\{([0-9A-Fa-f-]+)\\}");
+
+    private static final Map<Path, Cached> CACHE = new ConcurrentHashMap<>();
 
     private final List<Entry> roots;
 
@@ -51,16 +54,35 @@ final class DotnetSolutionModel {
         return false;
     }
 
+    static void invalidateCache() {
+        CACHE.clear();
+    }
+
     static DotnetSolutionModel parse(Path solution) {
         if (solution == null || solution.getParent() == null || !Files.isRegularFile(solution)) {
             return null;
         }
+        Path key = solution.toAbsolutePath().normalize();
+        String stamp = FileStamp.of(solution);
+        Cached cached = CACHE.get(key);
+        if (cached != null && cached.stamp.equals(stamp)) {
+            return cached.model;
+        }
+        DotnetSolutionModel model = doParse(solution);
+        CACHE.put(key, new Cached(stamp, model));
+        return model;
+    }
+
+    private static DotnetSolutionModel doParse(Path solution) {
         String name = solution.getFileName().toString().toLowerCase(Locale.ROOT);
         try {
             return name.endsWith(".slnx") ? parseSlnx(solution) : parseSln(solution);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private record Cached(String stamp, DotnetSolutionModel model) {
     }
 
     private static DotnetSolutionModel parseSln(Path solution) throws Exception {

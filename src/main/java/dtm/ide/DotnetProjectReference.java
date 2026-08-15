@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,6 +30,8 @@ final class DotnetProjectReference {
     private static final Pattern ASSEMBLY_VERSION = Pattern.compile(
             "(?:^|,)\\s*Version\\s*=\\s*([^,]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern VERSION_DIRECTORY = Pattern.compile("^\\d+(?:\\.\\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$");
+
+    private static final Map<Path, Cached> CACHE = new ConcurrentHashMap<>();
 
     private final Kind kind;
     private final String name;
@@ -54,12 +57,30 @@ final class DotnetProjectReference {
         return target;
     }
 
+    static void invalidateCache() {
+        CACHE.clear();
+    }
+
     static List<DotnetProjectReference> read(Path projectFile) {
         if (projectFile == null || !Files.isRegularFile(projectFile)) {
             return List.of();
         }
+        Path directory = projectFile.getParent();
+        Path packagesConfig = directory == null ? null : directory.resolve("packages.config");
+        Path centralProps = findCentralPackagesProps(directory);
+        Path key = projectFile.toAbsolutePath().normalize();
+        String stamp = FileStamp.of(projectFile, packagesConfig, centralProps);
+        Cached cached = CACHE.get(key);
+        if (cached != null && cached.stamp.equals(stamp)) {
+            return cached.references;
+        }
+        List<DotnetProjectReference> references = doRead(projectFile, centralProps);
+        CACHE.put(key, new Cached(stamp, references));
+        return references;
+    }
 
-        Map<String, String> centralVersions = readCentralPackageVersions(projectFile.getParent());
+    private static List<DotnetProjectReference> doRead(Path projectFile, Path centralProps) {
+        Map<String, String> centralVersions = readCentralPackageVersions(centralProps);
         Map<String, DotnetProjectReference> references = new LinkedHashMap<>();
         try {
             Document document = parse(projectFile);
@@ -70,7 +91,10 @@ final class DotnetProjectReference {
             // An invalid project must not prevent the rest of the project tree from being displayed.
         }
         readPackagesConfig(projectFile, references);
-        return new ArrayList<>(references.values());
+        return List.copyOf(references.values());
+    }
+
+    private record Cached(String stamp, List<DotnetProjectReference> references) {
     }
 
     private static void readAssemblyReferences(Document document, Path projectFile,
@@ -144,25 +168,31 @@ final class DotnetProjectReference {
         }
     }
 
-    private static Map<String, String> readCentralPackageVersions(Path directory) {
-        Map<String, String> versions = new LinkedHashMap<>();
+    private static Path findCentralPackagesProps(Path directory) {
         for (Path current = directory; current != null; current = current.getParent()) {
             Path props = current.resolve("Directory.Packages.props");
-            if (!Files.isRegularFile(props)) {
-                continue;
+            if (Files.isRegularFile(props)) {
+                return props;
             }
-            try {
-                Document document = parse(props);
-                for (Element element : elements(document, "PackageVersion")) {
-                    String name = firstNonBlank(attribute(element, "Include"), attribute(element, "Update"));
-                    String version = firstNonBlank(attribute(element, "Version"), childText(element, "Version"));
-                    if (name != null && version != null) {
-                        versions.putIfAbsent(name.toLowerCase(Locale.ROOT), cleanVersion(version));
-                    }
+        }
+        return null;
+    }
+
+    private static Map<String, String> readCentralPackageVersions(Path props) {
+        Map<String, String> versions = new LinkedHashMap<>();
+        if (props == null) {
+            return versions;
+        }
+        try {
+            Document document = parse(props);
+            for (Element element : elements(document, "PackageVersion")) {
+                String name = firstNonBlank(attribute(element, "Include"), attribute(element, "Update"));
+                String version = firstNonBlank(attribute(element, "Version"), childText(element, "Version"));
+                if (name != null && version != null) {
+                    versions.putIfAbsent(name.toLowerCase(Locale.ROOT), cleanVersion(version));
                 }
-            } catch (Exception ignored) {
             }
-            break;
+        } catch (Exception ignored) {
         }
         return versions;
     }

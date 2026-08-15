@@ -150,6 +150,20 @@ public final class IisDeployment {
         grantTraverse(contentRoot.getParent(), identity);
     }
 
+    public static void grantPoolWrite(String appPoolName, Path directory) {
+        if (appPoolName == null || appPoolName.isBlank() || directory == null) {
+            return;
+        }
+        String identity = "IIS AppPool\\" + appPoolName;
+        Path normalized = directory.toAbsolutePath().normalize();
+        IisProcess.Result result = IisBroker.run(IisBroker.Tool.ICACLS,
+                List.of(normalized.toString(), "/grant", identity + ":(OI)(CI)M", "/T", "/C", "/Q"),
+                ICACLS_TIMEOUT_SECONDS);
+        if (!result.ok()) {
+            log.debug("Falha ao conceder escrita em {} para {}: {}", normalized, identity, result.output());
+        }
+    }
+
     private static void grantTraverse(Path directory, String identity) {
         for (Path current = directory; current != null && current.getParent() != null;
              current = current.getParent()) {

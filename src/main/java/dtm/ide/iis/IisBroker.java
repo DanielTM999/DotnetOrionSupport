@@ -45,6 +45,12 @@ public final class IisBroker {
             return false;
         }
         long pid = brokerPid;
+        if (pid <= 0) {
+            pid = parsePid(readText(directory.resolve("pid.txt")));
+            if (pid > 0) {
+                brokerPid = pid;
+            }
+        }
         if (processAlive(pid)) {
             return true;
         }
@@ -278,13 +284,13 @@ public final class IisBroker {
     }
 
     private static void restrictAccess(Path directory) {
-        String user = System.getenv("USERNAME");
-        if (user == null || user.isBlank()) {
+        String grantee = currentUserGrantee();
+        if (grantee == null || grantee.isBlank()) {
             return;
         }
         String path = directory.toAbsolutePath().toString();
         IisProcess.Result granted = IisProcess.capture(
-                List.of("icacls", path, "/grant:r", user + ":(OI)(CI)F", "/grant:r", "*S-1-5-32-544:(OI)(CI)F"),
+                List.of("icacls", path, "/grant:r", grantee + ":(OI)(CI)F", "/grant:r", "*S-1-5-32-544:(OI)(CI)F"),
                 30);
         if (!granted.ok()) {
             log.debug("Não foi possível conceder permissões ao diretório do assistente: {}", granted.output());
@@ -300,6 +306,34 @@ public final class IisBroker {
             log.warn("Diretório do assistente ficou inacessível após restringir a ACL; restaurando permissões.");
             IisProcess.capture(List.of("icacls", path, "/reset"), 30);
         }
+    }
+
+    private static String currentUserGrantee() {
+        String sid = currentUserSid();
+        if (sid != null && !sid.isBlank()) {
+            return "*" + sid;
+        }
+        String user = System.getenv("USERNAME");
+        String domain = System.getenv("USERDOMAIN");
+        if (user == null || user.isBlank()) {
+            return null;
+        }
+        return domain == null || domain.isBlank() ? user : domain + "\\" + user;
+    }
+
+    private static String currentUserSid() {
+        IisProcess.Result result = IisProcess.capture(
+                List.of("whoami", "/user", "/fo", "list"), 15);
+        if (!result.ok()) {
+            return null;
+        }
+        for (String line : result.output().split("\\R")) {
+            int index = line.indexOf("S-1-");
+            if (index >= 0) {
+                return line.substring(index).trim();
+            }
+        }
+        return null;
     }
 
     private static boolean canWrite(Path directory) {

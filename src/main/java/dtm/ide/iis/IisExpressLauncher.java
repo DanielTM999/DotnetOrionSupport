@@ -33,7 +33,7 @@ public final class IisExpressLauncher {
         }
     }
 
-    public record Prepared(Path configFile, String siteName, String url, boolean reusedVisualStudioConfig) {
+    public record Prepared(Path configFile, String siteName, String url) {
     }
 
     public static final String DEFAULT_POOL = "OrionAspNetCorePool";
@@ -56,17 +56,12 @@ public final class IisExpressLauncher {
         if (iisExpress == null) {
             throw new IllegalStateException("IIS Express não está instalado nesta máquina.");
         }
-        Path visualStudioConfig = visualStudioConfig(workspaceRoot, projectFile);
-        if (visualStudioConfig != null && containsSite(visualStudioConfig, spec.siteName())) {
-            return new Prepared(visualStudioConfig, spec.siteName(), resolveUrl(spec), true);
-        }
-
         Document document = buildConfig(locateTemplate(iisExpress), spec, locateAspNetCoreModule(iisExpress));
 
         Path target = orionConfig(workspaceRoot, projectFile);
         Files.createDirectories(target.getParent());
         write(document, target);
-        return new Prepared(target, spec.siteName(), resolveUrl(spec), false);
+        return new Prepared(target, spec.siteName(), resolveUrl(spec));
     }
 
     public static List<String> command(Path configFile, String siteName) {
@@ -84,32 +79,10 @@ public final class IisExpressLauncher {
         return binding == null ? null : binding.url();
     }
 
-    private static Path visualStudioConfig(Path workspaceRoot, Path projectFile) {
-        Path root = workspaceRoot != null ? workspaceRoot : parentOf(projectFile);
-        if (root == null) {
-            return null;
-        }
-        Path vs = root.resolve(".vs");
-        if (!Files.isDirectory(vs)) {
-            return null;
-        }
-        try (var children = Files.list(vs)) {
-            for (Path child : children.toList()) {
-                Path candidate = child.resolve("config").resolve("applicationhost.config");
-                if (Files.isRegularFile(candidate)) {
-                    return candidate;
-                }
-            }
-        } catch (Exception e) {
-            log.debug("Falha ao inspecionar .vs: {}", e.getMessage());
-        }
-        return null;
-    }
-
     private static Path orionConfig(Path workspaceRoot, Path projectFile) {
         Path root = workspaceRoot != null ? workspaceRoot : parentOf(projectFile);
-        return root.resolve(".vs")
-                .resolve("orion")
+        return root.resolve(".orion")
+                .resolve("iisexpress")
                 .resolve("config")
                 .resolve("applicationhost.config")
                 .toAbsolutePath()
@@ -118,26 +91,6 @@ public final class IisExpressLauncher {
 
     private static Path parentOf(Path projectFile) {
         return projectFile == null ? null : projectFile.getParent();
-    }
-
-    private static boolean containsSite(Path configFile, String siteName) {
-        try {
-            Document document = read(configFile);
-            Element sites = firstChild(document.getDocumentElement(), "system.applicationHost", "sites");
-            if (sites == null) {
-                return false;
-            }
-            NodeList nodes = sites.getElementsByTagName("site");
-            for (int i = 0; i < nodes.getLength(); i++) {
-                if (nodes.item(i) instanceof Element element
-                        && siteName.equalsIgnoreCase(element.getAttribute("name"))) {
-                    return true;
-                }
-            }
-        } catch (Exception e) {
-            log.debug("Falha ao ler applicationhost.config do Visual Studio: {}", e.getMessage());
-        }
-        return false;
     }
 
     static Document buildConfig(Path templateFile, SiteSpec spec, Path aspNetCoreModule) throws Exception {

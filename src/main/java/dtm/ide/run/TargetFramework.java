@@ -6,9 +6,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -39,7 +41,35 @@ public final class TargetFramework {
 
     private static final Set<String> PROJECT_EXTENSIONS = Set.of(".csproj", ".vbproj", ".fsproj");
 
+    private static final Set<String> SCAN_IGNORED_DIRS = Set.of("bin", "obj", ".vs", ".git", "node_modules");
+
+    private static final Map<Path, List<Path>> PROJECT_FILES_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Path, Optional<Path>> PRIMARY_PROJECT_CACHE = new ConcurrentHashMap<>();
+    private static final Map<Path, List<String>> TFM_CACHE = new ConcurrentHashMap<>();
+
     private TargetFramework() {
+    }
+
+    public static void invalidateCaches() {
+        PROJECT_FILES_CACHE.clear();
+        PRIMARY_PROJECT_CACHE.clear();
+        TFM_CACHE.clear();
+    }
+
+    private static boolean isScannable(Path root, Path candidate) {
+        Path relative;
+        try {
+            relative = root.relativize(candidate);
+        } catch (Exception e) {
+            return true;
+        }
+        for (int i = 0; i < relative.getNameCount(); i++) {
+            String part = relative.getName(i).toString();
+            if (SCAN_IGNORED_DIRS.contains(part.toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public static boolean isNetFramework(String tfm) {
@@ -274,19 +304,24 @@ public final class TargetFramework {
         if (dir == null) {
             return null;
         }
+        return PRIMARY_PROJECT_CACHE
+                .computeIfAbsent(dir.toAbsolutePath().normalize(), TargetFramework::computePrimaryProjectFile)
+                .orElse(null);
+    }
 
+    private static Optional<Path> computePrimaryProjectFile(Path dir) {
         Path top = firstProjectIn(dir);
         if (top != null) {
-            return top;
+            return Optional.of(top);
         }
 
         try (Stream<Path> walk = Files.walk(dir, 3)) {
-            return walk.filter(Files::isRegularFile)
+            return walk.filter(path -> isScannable(dir, path))
+                    .filter(Files::isRegularFile)
                     .filter(TargetFramework::isProjectFile)
-                    .findFirst()
-                    .orElse(null);
+                    .findFirst();
         } catch (Exception e) {
-            return null;
+            return Optional.empty();
         }
     }
 
@@ -298,19 +333,25 @@ public final class TargetFramework {
         if (dir == null) {
             return List.of();
         }
+        return PROJECT_FILES_CACHE.computeIfAbsent(dir.toAbsolutePath().normalize(),
+                TargetFramework::computeProjectFiles);
+    }
+
+    private static List<Path> computeProjectFiles(Path dir) {
         LinkedHashSet<Path> result = new LinkedHashSet<>();
         for (Path solution : solutionsIn(dir)) {
             result.addAll(parseSolutionProjects(solution));
         }
         if (result.isEmpty()) {
             try (Stream<Path> walk = Files.walk(dir, 4)) {
-                walk.filter(Files::isRegularFile)
+                walk.filter(path -> isScannable(dir, path))
+                        .filter(Files::isRegularFile)
                         .filter(TargetFramework::isProjectFile)
                         .forEach(result::add);
             } catch (Exception ignored) {
             }
         }
-        return new ArrayList<>(result);
+        return List.copyOf(result);
     }
 
     public static List<Path> findProjectFilesInSolution(Path solution) {
@@ -365,7 +406,11 @@ public final class TargetFramework {
 
     public static List<String> resolveTfms(Path projectRoot) {
         Path projectFile = findPrimaryProjectFile(projectRoot);
-        return projectFile == null ? List.of() : readTfms(projectFile);
+        if (projectFile == null) {
+            return List.of();
+        }
+        return TFM_CACHE.computeIfAbsent(projectFile.toAbsolutePath().normalize(),
+                file -> List.copyOf(readTfms(file)));
     }
 
     public static boolean hasRunnableModernTarget(Path projectRoot) {

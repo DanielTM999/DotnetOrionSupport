@@ -224,6 +224,16 @@ class RazorProjectLspIntegrationTest {
         }
 
         @Override
+        public Path getResourcePath(String s) {
+            return s == null ? root : root.resolve(s);
+        }
+
+        @Override
+        public Path getResourcePath(Path path) {
+            return path == null ? root : root.resolve(path);
+        }
+
+        @Override
         public URL getResource(String s) {
             return null;
         }

@@ -9,6 +9,7 @@ import dtm.ide.iis.IisEnvironment;
 import dtm.ide.iis.IisExpressLauncher;
 import dtm.ide.iis.IisService;
 import dtm.ide.iis.IisWarmUp;
+import dtm.ide.iis.IisWebConfig;
 import dtm.ide.iis.IisWebProject;
 import dtm.ide.iis.IisWorkerProcess;
 import lombok.extern.slf4j.Slf4j;
@@ -781,11 +782,7 @@ public final class DotnetBuild {
                 request.siteName(), contentRoot, request.bindings(), request.aspNetCore());
         IisExpressLauncher.Prepared prepared = IisExpressLauncher.prepare(
                 request.projectFile(), request.workspaceRoot(), spec);
-        if (prepared.reusedVisualStudioConfig()) {
-            writeLine(out, "[iis] Reutilizando applicationhost.config do Visual Studio: " + prepared.configFile());
-        } else {
-            writeLine(out, "[iis] applicationhost.config gerado em " + prepared.configFile());
-        }
+        writeLine(out, "[iis] applicationhost.config gerado em " + prepared.configFile());
 
         List<String> command = IisExpressLauncher.command(prepared.configFile(), prepared.siteName());
         writeLine(out, "> " + String.join(" ", command));
@@ -868,6 +865,9 @@ public final class DotnetBuild {
             IisService.startAppPool(target.appPoolName());
             return;
         }
+        if (request.aspNetCore()) {
+            applyWebConfigEnvironment(request, target, contentRoot, out);
+        }
         IisService.Result started = IisDeployment.start(target);
         if (!started.success()) {
             writeLine(out, "[erro] " + started.message());
@@ -900,6 +900,30 @@ public final class DotnetBuild {
                         ? "[iis] Watchdogs do pool restaurados."
                         : "[aviso] " + restored.message());
             }
+        }
+    }
+
+    private static void applyWebConfigEnvironment(IisLaunchRequest request, IisDeployment.Target target,
+                                                  Path contentRoot, OutputStream out) {
+        IisWebConfig.Result result = IisWebConfig.applyAspNetCore(contentRoot, request.environment(), true);
+        if (!result.changed()) {
+            return;
+        }
+        String environment = request.environment() == null
+                ? null : request.environment().get("ASPNETCORE_ENVIRONMENT");
+        writeLine(out, "[iis] web.config ajustado para o IIS: ASPNETCORE_ENVIRONMENT="
+                + (environment == null || environment.isBlank() ? "(herdado)" : environment)
+                + " (o IIS, ao contrário do IIS Express, não herda o ambiente da IDE).");
+        if (result.stdoutLogEnabled()) {
+            Path logs = contentRoot.resolve(IisWebConfig.LOGS_FOLDER);
+            try {
+                Files.createDirectories(logs);
+            } catch (IOException e) {
+                log.debug("Falha ao criar a pasta de logs do IIS: {}", e.getMessage());
+            }
+            IisDeployment.grantPoolWrite(target.appPoolName(), logs);
+            writeLine(out, "[iis] Log de startup do ASP.NET Core habilitado em " + logs
+                    + " (consulte stdout*.log para ver a exceção do 500.30).");
         }
     }
 

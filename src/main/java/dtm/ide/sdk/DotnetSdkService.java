@@ -31,6 +31,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -81,6 +82,10 @@ public class DotnetSdkService {
 
     private final Resource resource;
     private final DownloadObserver downloadObserver;
+    private final Map<String, Boolean> sdkSupportCache = new ConcurrentHashMap<>();
+    private final Map<String, Optional<Path>> dotnetPathCache = new ConcurrentHashMap<>();
+    private final Map<String, Optional<Path>> managedDotnetPathCache = new ConcurrentHashMap<>();
+    private final Map<String, Optional<Path>> roslynBundleCache = new ConcurrentHashMap<>();
 
     public DotnetSdkService(Resource resource, DownloadObserver downloadObserver) {
         this.resource = resource;
@@ -101,6 +106,10 @@ public class DotnetSdkService {
 
     public Optional<Path> getDotnetPath(String sdkVersion) {
         String version = normalizeSdkVersion(sdkVersion);
+        return dotnetPathCache.computeIfAbsent(version, this::resolveDotnetPath);
+    }
+
+    private Optional<Path> resolveDotnetPath(String version) {
         for (Path home : dotnetHomes()) {
             Optional<Path> muxer = dotnetExecutableIn(home);
             if (muxer.isPresent() && homeHasSdk(home, version)) {
@@ -148,6 +157,10 @@ public class DotnetSdkService {
 
     public Optional<Path> getManagedDotnetPath(String sdkVersion) {
         String version = normalizeSdkVersion(sdkVersion);
+        return managedDotnetPathCache.computeIfAbsent(version, this::resolveManagedDotnetPath);
+    }
+
+    private Optional<Path> resolveManagedDotnetPath(String version) {
         for (Path home : dotnetHomes()) {
             Optional<Path> muxer = dotnetExecutableIn(home);
             if (muxer.isPresent() && homeHasSdk(home, version)) {
@@ -155,6 +168,13 @@ public class DotnetSdkService {
             }
         }
         return Optional.empty();
+    }
+
+    public void clearProbeCaches() {
+        sdkSupportCache.clear();
+        dotnetPathCache.clear();
+        managedDotnetPathCache.clear();
+        roslynBundleCache.clear();
     }
 
     public Path ensureManagedDotnet(String sdkVersion, DownloadProgressListener progressListener) {
@@ -216,15 +236,15 @@ public class DotnetSdkService {
     }
 
     public Optional<Path> getRazorExtensionPath() {
-        return findInRoslynBundle(ROSLYN_RAZOR_EXTENSION_DLL::equals);
+        return findInRoslynBundle(ROSLYN_RAZOR_EXTENSION_DLL, ROSLYN_RAZOR_EXTENSION_DLL::equals);
     }
 
     public Optional<Path> getRazorSourceGeneratorPath() {
-        return findInRoslynBundle(ROSLYN_RAZOR_SOURCE_GENERATOR_DLL::equals);
+        return findInRoslynBundle(ROSLYN_RAZOR_SOURCE_GENERATOR_DLL, ROSLYN_RAZOR_SOURCE_GENERATOR_DLL::equals);
     }
 
     public Optional<Path> getRazorDesignTimeTargets() {
-        return findInRoslynBundle(name -> {
+        return findInRoslynBundle("razor.designtime.targets", name -> {
             String lower = name.toLowerCase(Locale.ROOT);
             return lower.endsWith("designtime.targets") && lower.contains("razor");
         });
@@ -266,6 +286,7 @@ public class DotnetSdkService {
     }
 
     private void clearRoslynCompositionCache() {
+        roslynBundleCache.clear();
         for (Path root : roslynSearchRoots(DEFAULT_ROSLYN_LS_VERSION)) {
             if (root == null || !Files.isDirectory(root)) {
                 continue;
@@ -400,11 +421,25 @@ public class DotnetSdkService {
         return "";
     }
 
-    private static boolean supportsSdkVersion(Path dotnet, String sdkVersion) {
+    private boolean supportsSdkVersion(Path dotnet, String sdkVersion) {
         String requiredVersion = normalizeSdkVersion(sdkVersion);
         if (sdkMajor(requiredVersion).isEmpty()) {
             return true;
         }
+        String key = dotnet + "|" + requiredVersion;
+        Boolean cached = sdkSupportCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        Boolean supports = probeSdkVersion(dotnet, requiredVersion);
+        if (supports == null) {
+            return false;
+        }
+        sdkSupportCache.put(key, supports);
+        return supports;
+    }
+
+    private static Boolean probeSdkVersion(Path dotnet, String requiredVersion) {
         Process process = null;
         try {
             process = new ProcessBuilder(dotnet.toString(), "--list-sdks")
@@ -426,11 +461,11 @@ public class DotnetSdkService {
             }
             if (!process.waitFor(5, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
-                return false;
+                return null;
             }
             return supports;
         } catch (Exception e) {
-            return false;
+            return null;
         } finally {
             if (process != null && process.isAlive()) {
                 process.destroyForcibly();
@@ -587,6 +622,9 @@ public class DotnetSdkService {
         downloadToRoot(dotnetArtifact(version), home, listener);
         stashHostMuxer(home, version);
         reassertNewestHostMuxer(home);
+        sdkSupportCache.clear();
+        dotnetPathCache.clear();
+        managedDotnetPathCache.clear();
     }
 
     private void stashHostMuxer(Path home, String version) {
@@ -716,7 +754,19 @@ public class DotnetSdkService {
         return sdk == null ? null : sdk.resolve(NETCOREDBG_DIR).resolve(version);
     }
 
-    private Optional<Path> findInRoslynBundle(java.util.function.Predicate<String> nameMatch) {
+    private Optional<Path> findInRoslynBundle(String cacheKey, java.util.function.Predicate<String> nameMatch) {
+        Optional<Path> cached = roslynBundleCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        Optional<Path> found = searchRoslynBundle(nameMatch);
+        if (found.isPresent()) {
+            roslynBundleCache.put(cacheKey, found);
+        }
+        return found;
+    }
+
+    private Optional<Path> searchRoslynBundle(java.util.function.Predicate<String> nameMatch) {
         for (Path root : roslynSearchRoots(DEFAULT_ROSLYN_LS_VERSION)) {
             if (root == null || !Files.isDirectory(root)) {
                 continue;

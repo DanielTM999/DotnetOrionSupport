@@ -129,6 +129,7 @@ import javax.swing.JRootPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
 import javax.swing.text.JTextComponent;
@@ -198,7 +199,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile DotnetTestExplorerPanel testPanel;
     private String testToolPanelId;
     private static final int CODE_LENS_LIMIT = 100;
-    private final Set<Path> featureRefreshedFiles = ConcurrentHashMap.newKeySet();
+    private final Map<Path, Long> featureRefreshedFiles = new ConcurrentHashMap<>();
+    private final Set<Path> highlightSettledFiles = ConcurrentHashMap.newKeySet();
+    private final AtomicLong lspGeneration = new AtomicLong();
     private final AtomicBoolean analyzeProgressShown = new AtomicBoolean(false);
     private final AtomicBoolean languageServicesStarting = new AtomicBoolean(false);
     private final AtomicBoolean razorToolchainPrompted = new AtomicBoolean(false);
@@ -209,6 +212,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile Path activeFile;
     private volatile RunConfigurationData selectedRunConfig;
     private final AtomicLong projectLifecycleTicket = new AtomicLong();
+    private volatile long razorScanTicket = -1L;
+    private volatile Path razorScanRoot;
+    private volatile boolean razorScanResult;
 
     private final DebugVariablesPanel debugVariablesPanel = new DebugVariablesPanel();
     private final DebugCallStackPanel debugCallStackPanel = new DebugCallStackPanel();
@@ -251,17 +257,22 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return t;
     });
 
+    private volatile ExecutorService restoreExecutor;
+
     private static final String NUGET_TAB_ID = "dotnet.nuget";
     private static final String IIS_TAB_ID = "dotnet.iis";
     private static final String PROJECT_CONFIG_TAB_ID = "dotnet.projectConfig";
     private static final String LSP_PROGRESS_ID = "dotnetLspStartup";
     private static final long RESTORE_TIMEOUT_SECONDS = 180;
     private static final String LSP_ANALYZE_PROGRESS_ID = "dotnetLspAnalyze";
+    private static final String LSP_SETUP_PROGRESS_ID = "dotnetLspSetup";
     private static final long LSP_HOVER_WAIT_MS = 2000L;
     private static final long LSP_COMPLETION_WAIT_MS = 1200L;
     private static final long LSP_DIAGNOSTICS_WAIT_MS = 4000L;
     private static final String NAV_PROGRESS_ID = "dotnetNavigate";
     private static final String HOT_RELOAD_PROGRESS_ID = "dotnetHotReload";
+    private static final int INITIAL_HIGHLIGHT_RETRIES = 6;
+    private static final int INITIAL_HIGHLIGHT_RETRY_DELAY_MS = 120;
 
     private static String text(String key, String def) {
         return dtm.stools.i18n.I18n.getText(DotnetIdeAdapter.class, key, def);
@@ -308,6 +319,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
         languageServicesStarting.set(false);
         razorToolchainPrompted.set(false);
         editorRegistry.clearProjectEditors();
+        highlightSettledFiles.clear();
+        featureRefreshedFiles.clear();
+        invalidateProjectScans();
         this.projectContext = null;
         this.projectPath = null;
         this.activeFile = null;
@@ -325,11 +339,34 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void clearCaches() {
+        invalidateProjectScans();
+        DotnetSdkService sdk = sdkService;
+        if (sdk != null) {
+            sdk.clearProbeCaches();
+        }
         LspService service = lspService;
         if (service != null) {
             service.clearMetadataCache();
             service.stop();
             service.start();
+        }
+    }
+
+    private void invalidateProjectScans() {
+        TargetFramework.invalidateCaches();
+        DotnetSolutionModel.invalidateCache();
+        DotnetProjectReference.invalidateCache();
+        invalidateRazorScan();
+    }
+
+    @Override
+    public void onAfterFileSave(Path filePath, String content) {
+        if (filePath == null) {
+            return;
+        }
+        if (DotnetProjectConventions.affectsProjectStructure(filePath)
+                || DotnetProjectConventions.isRazorLike(filePath)) {
+            invalidateProjectScans();
         }
     }
 
@@ -347,6 +384,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             this.projectPath = context.getProjectPath().map(DotnetProjectConventions::normalizePath).orElse(null);
         }
         ensureSolutionSelection();
+        invalidateProjectScans();
         projectLifecycleTicket.incrementAndGet();
         runSupport.bindProject(projectPath);
         runSupport.bindDownloadProgress(progressListener());
@@ -394,13 +432,17 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 if (!isProjectCurrent(ticket, project)) {
                     return;
                 }
+                SwingUtilities.invokeLater(() -> showProgress(LSP_SETUP_PROGRESS_ID,
+                        text("progress.setupPreparing", "Preparing .NET environment")));
                 DotnetSdkService sdk = ensureSdkService();
                 if (sdk == null) {
                     return;
                 }
                 runSupport.bindSdk(sdk);
                 DotnetSdkService.DownloadProgressListener progress = progressListener();
+                setupProgress(5, "progress.setupDetectingSdk", "Detecting .NET SDK");
                 String requiredSdkVersion = sdk.resolveSdkVersion(project);
+                setupProgress(15, "progress.setupAnalyzingProjects", "Analyzing projects");
                 boolean projectHasRazor = hasRazorFiles(project) || editorRegistry.hasOpenRazorEditors();
                 LspServerKind kind = projectHasRazor
                         ? LspServerKind.ROSLYN
@@ -410,6 +452,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 boolean roslyn = kind == LspServerKind.ROSLYN;
                 boolean needsRazor = roslyn && projectHasRazor;
                 bindRazorProject(service, needsRazor);
+                setupProgress(30, "progress.setupCheckingToolchain", "Checking toolchain");
                 boolean needDotnet = roslyn
                         ? sdk.getManagedDotnetPath(requiredSdkVersion).isEmpty()
                         : sdk.getDotnetPath(requiredSdkVersion).isEmpty();
@@ -455,10 +498,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 if (!isProjectCurrent(ticket, project)) {
                     return;
                 }
-                ensureProjectRestored(sdk, project, requiredSdkVersion, ticket);
+                if (!roslyn) {
+                    ensureProjectRestored(sdk, project, requiredSdkVersion, ticket);
+                }
                 if (!isProjectCurrent(ticket, project)) {
                     return;
                 }
+                setupProgress(55, "progress.setupStartingIntellisense", "Starting IntelliSense");
                 analyzeProgressShown.set(true);
                 SwingUtilities.invokeLater(() -> {
                     showProgress(LSP_ANALYZE_PROGRESS_ID, text("progress.loadingProject", "Loading C# / Razor project"));
@@ -470,12 +516,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     return;
                 }
                 if (service.isRunning()) {
-                    SwingUtilities.invokeLater(() -> {
-                        createNotification(new NotificationContext("C#", text("notif.intellisenseActive", "IntelliSense active.")));
-                    });
-
                     refreshOpenEditors();
                     requestBackgroundTestDiscovery();
+                    if (roslyn) {
+                        scheduleBackgroundRestore(sdk, project, requiredSdkVersion, ticket);
+                    }
                 } else {
                     if (analyzeProgressShown.compareAndSet(true, false)) {
                         SwingUtilities.invokeLater(() -> hideProgress(LSP_ANALYZE_PROGRESS_ID));
@@ -487,34 +532,63 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 log.warn("Falha ao iniciar serviços de linguagem .NET: {}", e.getMessage());
             } finally {
                 languageServicesStarting.set(false);
+                SwingUtilities.invokeLater(() -> hideProgress(LSP_SETUP_PROGRESS_ID));
             }
         });
     }
 
-    private void ensureProjectRestored(DotnetSdkService sdk, Path project, String sdkVersion, long ticket) {
+    private void setupProgress(int percent, String key, String def) {
+        SwingUtilities.invokeLater(() -> updateProgress(LSP_SETUP_PROGRESS_ID, text(key, def), percent));
+    }
+
+    private void scheduleBackgroundRestore(DotnetSdkService sdk, Path project, String sdkVersion, long ticket) {
+        restoreExecutor().execute(() -> {
+            try {
+                if (!isProjectCurrent(ticket, project)) {
+                    return;
+                }
+                if (ensureProjectRestored(sdk, project, sdkVersion, ticket)
+                        && isProjectCurrent(ticket, project)) {
+                    refreshOpenEditors();
+                }
+            } catch (Exception e) {
+                log.debug("Falha ao restaurar pacotes em segundo plano: {}", e.getMessage());
+            }
+        });
+    }
+
+    private boolean ensureProjectRestored(DotnetSdkService sdk, Path project, String sdkVersion, long ticket) {
         if (sdk == null || project == null) {
-            return;
+            return false;
         }
         List<Path> projectFiles = TargetFramework.findProjectFiles(project);
         if (projectFiles.isEmpty() || !needsRestore(projectFiles)) {
-            return;
+            return false;
         }
         Path dotnet = sdk.getDotnetPath(sdkVersion).orElse(null);
         if (dotnet == null || !isProjectCurrent(ticket, project)) {
-            return;
+            return false;
         }
+        Path solution = DotnetProjectConventions.findSolutionFile(project);
         SwingUtilities.invokeLater(() -> showProgress(LSP_PROGRESS_ID, text("progress.restoring", "Restoring packages (dotnet restore)...")));
         try {
+            if (solution != null) {
+                restoreProject(dotnet, solution);
+                return true;
+            }
             for (Path projectFile : projectFiles) {
                 if (!isProjectCurrent(ticket, project) || !needsRestore(projectFile)) {
                     continue;
                 }
                 restoreProject(dotnet, projectFile);
             }
+            return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         } catch (Exception e) {
             log.debug("Falha ao restaurar pacotes do projeto: {}", e.getMessage());
+            return false;
         } finally {
             SwingUtilities.invokeLater(() -> hideProgress(LSP_PROGRESS_ID));
         }
@@ -557,18 +631,24 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return dir != null && !Files.isRegularFile(dir.resolve("obj").resolve("project.assets.json"));
     }
 
-    private static boolean hasRazorFiles(Path project) {
-        if (project == null || !Files.isDirectory(project)) {
+    private boolean hasRazorFiles(Path project) {
+        if (project == null) {
             return false;
         }
-        try (Stream<Path> paths = Files.walk(project, 8)) {
-            return paths
-                    .filter(Files::isRegularFile)
-                    .filter(path -> !DotnetProjectConventions.isInsideHiddenArtifact(project, path))
-                    .anyMatch(DotnetProjectConventions::isRazorLike);
-        } catch (Exception e) {
-            return false;
+        long ticket = projectLifecycleTicket.get();
+        if (razorScanTicket == ticket && Objects.equals(razorScanRoot, project)) {
+            return razorScanResult;
         }
+        boolean found = DotnetProjectConventions.containsRazorFile(project);
+        razorScanResult = found;
+        razorScanRoot = project;
+        razorScanTicket = ticket;
+        return found;
+    }
+
+    private void invalidateRazorScan() {
+        razorScanTicket = -1L;
+        razorScanRoot = null;
     }
 
     private static void drainQuietly(InputStream in) {
@@ -629,6 +709,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 ? new RoslynLspService(getResource(), sdk)
                 : new OmniSharpLspService(getResource(), sdk);
         lspServiceKind = kind;
+        lspGeneration.incrementAndGet();
         if (lspService instanceof RoslynLspService roslynService) {
             roslynService.addRazorCohostReadyListener(() ->
                     SwingUtilities.invokeLater(this::refreshOpenEditors));
@@ -641,17 +722,26 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
             requestRefreshDiagnostics(file);
             Path normalized = normalizePath(file);
-            if (featureRefreshedFiles.add(normalized)) {
-                refreshEditorFeatures(normalized);
+            long generation = lspGeneration.get();
+            if (!Objects.equals(featureRefreshedFiles.get(normalized), generation)
+                    && refreshEditorFeatures(normalized)) {
+                featureRefreshedFiles.put(normalized, generation);
             }
         });
         lspService.addLoadProgressListener((percent, finished) -> SwingUtilities.invokeLater(() -> {
             if (finished) {
                 lspLoadPercent = 100;
+                lspGeneration.incrementAndGet();
                 if (analyzeProgressShown.compareAndSet(true, false)) {
                     hideProgress(LSP_ANALYZE_PROGRESS_ID);
-                    refreshOpenEditors();
                 }
+                LspService running = lspService;
+                if (running == null || !running.isRunning()) {
+                    return;
+                }
+                refreshOpenEditors();
+                createNotification(new NotificationContext("C#",
+                        text("notif.intellisenseActive", "IntelliSense active.")));
                 return;
             }
             lspLoadPercent = percent;
@@ -793,32 +883,24 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private LspService waitForEditorService(Path filePath, long waitMs) {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0, waitMs));
-        do {
-            LspService service = lspService;
-            if (service != null) {
-                if (!service.isRunning() && isLspLoading(service)) {
-                    service.awaitReady(Math.max(1, deadlineMillisRemaining(deadline)));
-                }
-                if (service.isRunning() || waitMs <= 0) {
-                    return service;
-                }
-            }
-            if (waitMs <= 0) {
-                return null;
-            }
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
-        } while (System.nanoTime() < deadline);
-        return null;
+        LspService service = lspService;
+        if (service == null) {
+            return null;
+        }
+        if (!service.isRunning() && waitMs > 0 && isLspLoading(service)) {
+            awaitReadyOffEdt(service, waitMs);
+        }
+        return service.isRunning() || waitMs <= 0 ? service : null;
     }
 
-    private static long deadlineMillisRemaining(long deadlineNanos) {
-        return Math.max(0, TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()));
+    private boolean awaitReadyOffEdt(LspService service, long timeoutMs) {
+        if (service == null) {
+            return false;
+        }
+        if (SwingUtilities.isEventDispatchThread()) {
+            return service.isRunning();
+        }
+        return service.awaitReady(timeoutMs);
     }
 
     private DotnetSdkService.DownloadProgressListener progressListener() {
@@ -897,6 +979,23 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return executor;
     }
 
+    private ExecutorService restoreExecutor() {
+        ExecutorService executor = restoreExecutor;
+        if (executor == null) {
+            synchronized (this) {
+                if (restoreExecutor == null) {
+                    restoreExecutor = Executors.newSingleThreadExecutor(r -> {
+                        Thread t = new Thread(r, "dotnet-restore");
+                        t.setDaemon(true);
+                        return t;
+                    });
+                }
+                executor = restoreExecutor;
+            }
+        }
+        return executor;
+    }
+
     @Override
     public EditorTheme getEditorTheme() {
         return editorTheme;
@@ -968,18 +1067,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void configureEditor(IdeEditorContext context) {
-        if (context == null || context.filePath() == null || !isHighlightable(context.filePath())) {
-            return;
-        }
-        Path normalized = normalizePath(context.filePath());
-        editorRegistry.trackEditor(normalized, context);
-        if (applyDecompiledEditorGuards(context)) {
-            applyInitialSyntaxHighlight(context);
-            return;
-        }
-        installCodeActionCommandHandler(context);
-        applyInitialSyntaxHighlight(context);
-        triggerDiagnostics(normalized, context.getText());
+        attachEditor(context);
     }
 
     @Override
@@ -988,26 +1076,105 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         setActiveFile(editorContext.filePath());
-        if (!isHighlightable(editorContext.filePath())) {
-            return;
-        }
-        Path file = normalizePath(editorContext.filePath());
-        editorRegistry.trackEditor(file, editorContext);
-        if (applyDecompiledEditorGuards(editorContext)) {
-            applyInitialSyntaxHighlight(editorContext);
-            return;
-        }
-        installCodeActionCommandHandler(editorContext);
-        applyInitialSyntaxHighlight(editorContext);
-        triggerDiagnostics(file, editorContext.getText());
+        attachEditor(editorContext);
     }
 
-    private void applyInitialSyntaxHighlight(IdeEditorContext context) {
+    private void attachEditor(IdeEditorContext context) {
+        if (context == null || context.filePath() == null || !isHighlightable(context.filePath())) {
+            return;
+        }
+        Path normalized = normalizePath(context.filePath());
+        editorRegistry.trackEditor(normalized, context);
+        highlightSettledFiles.add(normalized);
+        if (applyDecompiledEditorGuards(context)) {
+            beginInitialSyntaxHighlight(context, normalized);
+            return;
+        }
+        installCodeActionCommandHandler(context);
+        beginInitialSyntaxHighlight(context, normalized);
+        triggerDiagnostics(normalized, context.getText());
+    }
+
+    private void beginInitialSyntaxHighlight(IdeEditorContext context, Path normalized) {
+        SwingUtilities.invokeLater(() -> {
+            applySyntaxHighlightNow(context, normalized);
+            scheduleHighlightRetry(context, normalized, INITIAL_HIGHLIGHT_RETRIES);
+        });
+    }
+
+    private void scheduleHighlightRetry(IdeEditorContext context, Path normalized, int remaining) {
+        if (remaining <= 0 || highlightSettled(context)) {
+            return;
+        }
+        Timer timer = new Timer(INITIAL_HIGHLIGHT_RETRY_DELAY_MS, e -> {
+            if (highlightSettled(context)) {
+                return;
+            }
+            applySyntaxHighlightNow(context, normalized);
+            scheduleHighlightRetry(context, normalized, remaining - 1);
+        });
+        timer.setRepeats(false);
+        timer.start();
+    }
+
+    private void applySyntaxHighlightNow(IdeEditorContext context, Path normalized) {
+        if (context == null) {
+            return;
+        }
         try {
+            installTokenizerProvider(context, normalized);
             context.setSyntaxHighlightEnabled(true);
             context.applySyntaxHighlight();
+            if (normalized != null) {
+                requestRepaintCodeEditor(normalized);
+            }
         } catch (Exception e) {
-            log.debug("Falha ao aplicar realce inicial: {}", e.getMessage());
+            log.warn("Falha ao aplicar realce de sintaxe em {}: {}", normalized, e.getMessage());
+        }
+    }
+
+    private void installTokenizerProvider(IdeEditorContext context, Path normalized) {
+        TokenizerCodeEditorProvider provider = editorRegistry.tokenizerFor(normalized);
+        if (provider == null) {
+            return;
+        }
+        Object codeEditor = resolveField(context, "codeEditor");
+        if (codeEditor == null) {
+            return;
+        }
+        try {
+            Method method = codeEditor.getClass().getMethod("setTokenizerProvider", TokenizerCodeEditorProvider.class);
+            method.invoke(codeEditor, provider);
+        } catch (Exception e) {
+            log.debug("Nao foi possivel instalar o tokenizer diretamente: {}", e.getMessage());
+        }
+    }
+
+    private boolean highlightSettled(IdeEditorContext context) {
+        if (context == null) {
+            return true;
+        }
+        try {
+            String text = context.getText();
+            if (text == null || text.isBlank()) {
+                return false;
+            }
+            Object codeEditor = resolveField(context, "codeEditor");
+            Component textArea = invokeGetTextArea(codeEditor);
+            if (textArea == null) {
+                return true;
+            }
+            Object provider = textArea.getClass().getMethod("getTokenizerProvider").invoke(textArea);
+            if (provider == null) {
+                return false;
+            }
+            Object tokens = resolveField(textArea, "lastHighlightTokens");
+            if (tokens instanceof Collection<?> collection) {
+                return !collection.isEmpty();
+            }
+            return true;
+        } catch (Exception e) {
+            return true;
         }
     }
 
@@ -1035,6 +1202,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         setActiveFile(editorContext.filePath());
+        if (!isHighlightable(editorContext.filePath())) {
+            return;
+        }
+        Path normalized = normalizePath(editorContext.filePath());
+        editorRegistry.trackEditor(normalized, editorContext);
+        if (highlightSettledFiles.add(normalized)) {
+            beginInitialSyntaxHighlight(editorContext, normalized);
+        }
     }
 
     @Override
@@ -1174,33 +1349,46 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
     }
 
-    private void refreshEditorFeatures(Path file) {
+    private boolean refreshEditorFeatures(Path file) {
         requestRefreshCodeLenses(file);
         requestRefreshInlayHints(file);
         IdeEditorContext context = editorRegistry.editorContext(file);
-        if (context != null) {
-            SwingUtilities.invokeLater(() -> {
-                try {
-                    context.applySyntaxHighlight();
-                } catch (Exception ignored) {
-                }
-            });
+        if (context == null) {
+            return false;
         }
+        SwingUtilities.invokeLater(() -> applySyntaxHighlightNow(context, file));
+        return true;
     }
 
     @Override
     public void onEditorClose(Path filePath) {
         editorRegistry.close(filePath);
+        forgetHighlightState(filePath);
     }
 
     @Override
     public void onPathDeleted(Path path) {
         editorRegistry.delete(path);
+        forgetHighlightState(path);
     }
 
     @Override
     public void onPathRenamed(Path oldPath, Path newPath) {
         editorRegistry.rename(oldPath, newPath);
+        forgetHighlightState(oldPath);
+    }
+
+    private void forgetHighlightState(Path path) {
+        Path normalized = normalizePath(path);
+        if (normalized == null) {
+            return;
+        }
+        highlightSettledFiles.remove(normalized);
+        featureRefreshedFiles.remove(normalized);
+        if (DotnetProjectConventions.affectsProjectStructure(normalized)
+                || DotnetProjectConventions.isRazorLike(normalized)) {
+            invalidateProjectScans();
+        }
     }
 
     @Override
@@ -1213,7 +1401,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         List<AutoCompleteItem> lspItems = Collections.emptyList();
         if (service != null && lspHandlesEditor(file)) {
             if (!service.isRunning() && isLspLoading(service)) {
-                service.awaitReady(LSP_COMPLETION_WAIT_MS);
+                awaitReadyOffEdt(service, LSP_COMPLETION_WAIT_MS);
             }
             if (!DotnetProjectConventions.isRazorLike(file) || service instanceof RoslynLspService) {
                 lspItems = service.completeForEditor(
@@ -1389,7 +1577,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             if (!isLspLoading(service)) {
                 return null;
             }
-            service.awaitReady(LSP_HOVER_WAIT_MS);
+            awaitReadyOffEdt(service, LSP_HOVER_WAIT_MS);
             if (!service.isRunning()) {
                 return lspLoadingHover();
             }
@@ -2746,16 +2934,24 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private Object resolveField(IdeEditorContext editorContext, String field) {
-        if (editorContext == null) {
+        return resolveField((Object) editorContext, field);
+    }
+
+    private Object resolveField(Object owner, String field) {
+        if (owner == null) {
             return null;
         }
-        try {
-            Field f = editorContext.getClass().getDeclaredField(field);
-            f.setAccessible(true);
-            return f.get(editorContext);
-        } catch (Exception ignored) {
-            return null;
+        for (Class<?> type = owner.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {
+            try {
+                Field f = type.getDeclaredField(field);
+                f.setAccessible(true);
+                return f.get(owner);
+            } catch (NoSuchFieldException ignored) {
+            } catch (Exception ignored) {
+                return null;
+            }
         }
+        return null;
     }
 
     private Component invokeGetTextArea(Object codeEditor) {
@@ -3951,10 +4147,37 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (DotnetProjectConventions.isInsideHiddenArtifact(projectPath, changed)) {
             return null;
         }
-        if (currentTreeLayout() == TreeLayout.VISUAL_STUDIO) {
+        if (currentTreeLayout() == TreeLayout.VISUAL_STUDIO
+                && needsFullTreeRebuild(changed, currentRoot)) {
             return DotnetProjectConventions.buildVisualStudioTree(projectPath);
         }
         return DotnetProjectConventions.hideRootBuildArtifacts(partialNode);
+    }
+
+    private boolean needsFullTreeRebuild(Path changed, ProjectTreeNode currentRoot) {
+        if (changed == null || currentRoot == null) {
+            return true;
+        }
+        if (DotnetProjectConventions.affectsProjectStructure(changed)) {
+            return true;
+        }
+        return !treeContainsPath(currentRoot, normalizePath(changed));
+    }
+
+    private static boolean treeContainsPath(ProjectTreeNode node, Path target) {
+        if (node == null || target == null) {
+            return false;
+        }
+        Path path = node.getPath();
+        if (path != null && target.equals(normalizePath(path))) {
+            return true;
+        }
+        for (ProjectTreeNode child : node.getChildren()) {
+            if (treeContainsPath(child, target)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private TreeLayout currentTreeLayout() {

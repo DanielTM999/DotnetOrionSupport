@@ -10,11 +10,16 @@ import javax.swing.Icon;
 import javax.swing.UIManager;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -58,6 +63,20 @@ final class DotnetProjectConventions {
     );
 
     private static final int MAX_SCAN_DEPTH = 6;
+
+    private static final int RAZOR_SCAN_DEPTH = 8;
+
+    private static final Set<String> STRUCTURE_EXTENSIONS = Set.of(
+            ".sln", ".slnx", ".csproj", ".vbproj", ".fsproj", ".props", ".targets"
+    );
+
+    private static final Set<String> STRUCTURE_FILES = Set.of(
+            "packages.config",
+            "global.json",
+            "directory.build.props",
+            "directory.build.targets",
+            "directory.packages.props"
+    );
 
     private static final Set<String> HIDDEN_ROOT_BUILD_ARTIFACTS = Set.of(
             "bin",
@@ -157,6 +176,18 @@ final class DotnetProjectConventions {
         return false;
     }
 
+    static boolean affectsProjectStructure(Path filePath) {
+        if (filePath == null || filePath.getFileName() == null) {
+            return false;
+        }
+        String name = filePath.getFileName().toString();
+        if (STRUCTURE_FILES.contains(name) || STRUCTURE_FILES.contains(name.toLowerCase(Locale.ROOT))) {
+            return true;
+        }
+        String extension = extensionOf(filePath);
+        return extension != null && STRUCTURE_EXTENSIONS.contains(extension);
+    }
+
     static boolean isProjectFile(Path filePath) {
         String extension = extensionOf(filePath);
         if (extension == null) {
@@ -193,9 +224,46 @@ final class DotnetProjectConventions {
     private static boolean isInIgnoredDir(Path root, Path file) {
         Path relative = root.relativize(file);
         for (int i = 0; i < relative.getNameCount() - 1; i++) {
-            String part = relative.getName(i).toString();
-            if (part.startsWith(".") || HIDDEN_ROOT_BUILD_ARTIFACTS.contains(part)) {
+            if (isHiddenArtifactName(relative.getName(i).toString())) {
                 return true;
+            }
+        }
+        return false;
+    }
+
+    static boolean isHiddenArtifactName(String name) {
+        return name != null && (name.startsWith(".") || HIDDEN_ROOT_BUILD_ARTIFACTS.contains(name));
+    }
+
+    static boolean containsRazorFile(Path root) {
+        if (root == null || !Files.isDirectory(root)) {
+            return false;
+        }
+        Deque<Path> pending = new ArrayDeque<>();
+        Deque<Integer> depths = new ArrayDeque<>();
+        pending.add(root);
+        depths.add(0);
+        while (!pending.isEmpty()) {
+            Path dir = pending.poll();
+            int depth = depths.poll();
+            try (DirectoryStream<Path> entries = Files.newDirectoryStream(dir)) {
+                for (Path entry : entries) {
+                    Path name = entry.getFileName();
+                    if (name == null) {
+                        continue;
+                    }
+                    if (Files.isDirectory(entry)) {
+                        if (depth + 1 < RAZOR_SCAN_DEPTH && !isHiddenArtifactName(name.toString())) {
+                            pending.add(entry);
+                            depths.add(depth + 1);
+                        }
+                        continue;
+                    }
+                    if (isRazorLike(entry)) {
+                        return true;
+                    }
+                }
+            } catch (Exception ignored) {
             }
         }
         return false;
@@ -262,8 +330,27 @@ final class DotnetProjectConventions {
         if (filesystem == null) {
             return null;
         }
-        ProjectTreeNode reorganized = buildVisualStudioLayout(filesystem);
+        ProjectTreeNode reorganized = buildVisualStudioLayout(filesystem, true);
         return reorganized != null ? reorganized : hideRootBuildArtifacts(filesystem);
+    }
+
+    private static Map<Path, ProjectTreeNode> indexDirectories(ProjectTreeNode root) {
+        Map<Path, ProjectTreeNode> index = new HashMap<>();
+        collectDirectories(root, index);
+        return index;
+    }
+
+    private static void collectDirectories(ProjectTreeNode node, Map<Path, ProjectTreeNode> out) {
+        if (node == null) {
+            return;
+        }
+        Path path = node.getPath();
+        if (path != null && Files.isDirectory(path)) {
+            out.putIfAbsent(path.toAbsolutePath().normalize(), node);
+        }
+        for (ProjectTreeNode child : node.getChildren()) {
+            collectDirectories(child, out);
+        }
     }
 
     static ProjectTreeNode buildFilesystemTree(Path path) {
@@ -307,6 +394,11 @@ final class DotnetProjectConventions {
         }
     }
 
+    static Path findSolutionFile(Path directory) {
+        Path candidate = findSolutionOrProjectFile(directory);
+        return candidate != null && hasExtension(candidate, SOLUTION_EXTENSIONS) ? candidate : null;
+    }
+
     static Path findSolutionOrProjectFile(Path directory) {
         if (directory == null || !Files.isDirectory(directory)) {
             return null;
@@ -334,6 +426,10 @@ final class DotnetProjectConventions {
     }
 
     private static ProjectTreeNode buildVisualStudioLayout(ProjectTreeNode root) {
+        return buildVisualStudioLayout(root, false);
+    }
+
+    private static ProjectTreeNode buildVisualStudioLayout(ProjectTreeNode root, boolean fromDisk) {
         Path rootPath = root.getPath();
         if (rootPath == null) {
             return null;
@@ -351,7 +447,8 @@ final class DotnetProjectConventions {
         if (solutionFile != null) {
             DotnetSolutionModel model = DotnetSolutionModel.parse(solutionFile);
             if (model != null && model.hasProjects()) {
-                return buildFromSolutionModel(rootPath, solutionFile, model, root);
+                Map<Path, ProjectTreeNode> index = fromDisk ? indexDirectories(root) : Map.of();
+                return buildFromSolutionModel(rootPath, solutionFile, model, root, index);
             }
         }
 
@@ -400,13 +497,14 @@ final class DotnetProjectConventions {
     }
 
     private static ProjectTreeNode buildFromSolutionModel(Path rootPath, Path solutionFile,
-                                                          DotnetSolutionModel model, ProjectTreeNode root) {
+                                                          DotnetSolutionModel model, ProjectTreeNode root,
+                                                          Map<Path, ProjectTreeNode> index) {
         ProjectTreeNode newRoot = ProjectTreeNode.of(rootPath, labelOf(solutionFile));
         applyLayoutIcon(newRoot, solutionIcon());
 
         List<ProjectTreeNode> children = new ArrayList<>();
         for (DotnetSolutionModel.Entry entry : model.roots()) {
-            ProjectTreeNode node = buildModelEntry(entry, rootPath, solutionFile);
+            ProjectTreeNode node = buildModelEntry(entry, rootPath, solutionFile, index);
             if (node != null) {
                 children.add(node);
             }
@@ -448,21 +546,22 @@ final class DotnetProjectConventions {
         return false;
     }
 
-    private static ProjectTreeNode buildModelEntry(DotnetSolutionModel.Entry entry, Path rootPath, Path solutionFile) {
+    private static ProjectTreeNode buildModelEntry(DotnetSolutionModel.Entry entry, Path rootPath, Path solutionFile,
+                                                   Map<Path, ProjectTreeNode> index) {
         if (entry.folder) {
-            return buildSolutionFolderNode(entry, rootPath, solutionFile);
+            return buildSolutionFolderNode(entry, rootPath, solutionFile, index);
         }
-        return buildProjectNodeFromFile(entry.projectFile, solutionFile);
+        return buildProjectNodeFromFile(entry.projectFile, solutionFile, index);
     }
 
     private static ProjectTreeNode buildSolutionFolderNode(DotnetSolutionModel.Entry entry, Path rootPath,
-                                                           Path solutionFile) {
+                                                           Path solutionFile, Map<Path, ProjectTreeNode> index) {
         ProjectTreeNode node = ProjectTreeNode.of(solutionFolderPath(rootPath, entry.guid), entry.name, true);
         applyLayoutIcon(node, solutionFolderIcon());
 
         List<ProjectTreeNode> children = new ArrayList<>();
         for (DotnetSolutionModel.Entry child : entry.children) {
-            ProjectTreeNode childNode = buildModelEntry(child, rootPath, solutionFile);
+            ProjectTreeNode childNode = buildModelEntry(child, rootPath, solutionFile, index);
             if (childNode != null) {
                 children.add(childNode);
             }
@@ -477,14 +576,22 @@ final class DotnetProjectConventions {
         return node;
     }
 
-    private static ProjectTreeNode buildProjectNodeFromFile(Path projectFile, Path solutionFile) {
+    private static ProjectTreeNode buildProjectNodeFromFile(Path projectFile, Path solutionFile,
+                                                            Map<Path, ProjectTreeNode> index) {
         if (projectFile == null || !Files.isRegularFile(projectFile)) {
             return null;
         }
         Path projectDir = projectFile.getParent();
-        ProjectTreeNode folderNode = projectDir != null && Files.isDirectory(projectDir)
-                ? buildFilesystemTree(projectDir)
-                : ProjectTreeNode.of(projectFile);
+        ProjectTreeNode folderNode = null;
+        if (projectDir != null && Files.isDirectory(projectDir)) {
+            folderNode = index.get(projectDir.toAbsolutePath().normalize());
+            if (folderNode == null) {
+                folderNode = buildFilesystemTree(projectDir);
+            }
+        }
+        if (folderNode == null) {
+            folderNode = ProjectTreeNode.of(projectFile);
+        }
         return buildProjectNode(folderNode, projectFile, solutionFile);
     }
 
