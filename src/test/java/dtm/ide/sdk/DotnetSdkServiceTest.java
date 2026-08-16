@@ -111,6 +111,38 @@ class DotnetSdkServiceTest {
     }
 
     @Test
+    void omniSharpPathUsesSharedAdapterResource(@TempDir Path dir) throws Exception {
+        Path resourceRoot = dir.resolve("resource");
+        Path sharedRoot = dir.resolve("shared");
+        Path omniSharp = sharedRoot.resolve("sdk")
+                .resolve("omnisharp")
+                .resolve(DotnetSdkService.DEFAULT_OMNISHARP_VERSION)
+                .resolve(isWindows() ? "OmniSharp.exe" : "OmniSharp");
+        Files.createDirectories(omniSharp.getParent());
+        Files.createFile(omniSharp);
+
+        DotnetSdkService service = new DotnetSdkService(new TestResource(resourceRoot, sharedRoot), null);
+
+        assertEquals(omniSharp.toAbsolutePath().normalize(), service.getOmniSharpPath().orElseThrow());
+    }
+
+    @Test
+    void netcoredbgPathUsesSharedAdapterResource(@TempDir Path dir) throws Exception {
+        Path resourceRoot = dir.resolve("resource");
+        Path sharedRoot = dir.resolve("shared");
+        Path netcoredbg = sharedRoot.resolve("sdk")
+                .resolve("netcoredbg")
+                .resolve(DotnetSdkService.DEFAULT_NETCOREDBG_VERSION)
+                .resolve(isWindows() ? "netcoredbg.exe" : "netcoredbg");
+        Files.createDirectories(netcoredbg.getParent());
+        Files.createFile(netcoredbg);
+
+        DotnetSdkService service = new DotnetSdkService(new TestResource(resourceRoot, sharedRoot), null);
+
+        assertEquals(netcoredbg.toAbsolutePath().normalize(), service.getNetcoredbgPath().orElseThrow());
+    }
+
+    @Test
     void razorReadinessRequiresExtensionAndSourceGeneratorButNotDesignTimeTargets(@TempDir Path dir) throws Exception {
         Path roslynRoot = dir.resolve("sdk")
                 .resolve("roslyn")
@@ -210,7 +242,11 @@ class DotnetSdkServiceTest {
         return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 
-    private record TestResource(Path root) implements Resource {
+    private record TestResource(Path root, Path sharedRoot) implements Resource {
+        private TestResource(Path root) {
+            this(root, root);
+        }
+
         @Override
         public Path getResourcePath() {
             return root;
@@ -248,7 +284,7 @@ class DotnetSdkServiceTest {
 
         @Override
         public Path getSharedResourcePath() {
-            return root;
+            return sharedRoot;
         }
 
         @Override

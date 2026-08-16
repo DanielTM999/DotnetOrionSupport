@@ -386,8 +386,10 @@ final class DotnetDapDebugSession {
         }
         synchronized (this) {
             if (hotReloadAgent == null) {
+                Path debugResourceRoot = startupHook == null ? null : startupHook.getParent();
+                Path hotReloadResourceRoot = debugResourceRoot == null ? null : debugResourceRoot.getParent();
                 hotReloadAgent = new DotnetHotReloadAgent(dotnet, projectFile, program, cwd,
-                        targetFramework, configuration, programOut);
+                        targetFramework, configuration, programOut, hotReloadResourceRoot);
             }
             return hotReloadAgent;
         }

@@ -211,11 +211,15 @@ public class DotnetSdkService {
     }
 
     public Optional<Path> getOmniSharpPath() {
+        Optional<Path> bundled = resolveExecutable(omniSharpRoots(DEFAULT_OMNISHARP_VERSION), "OmniSharp");
+        if (bundled.isPresent()) {
+            return bundled;
+        }
         Optional<Path> external = findExternalExecutable("OmniSharp", commonOmniSharpDirs());
         if (external.isPresent()) {
             return external;
         }
-        return resolveExecutable(omniSharpRoot(DEFAULT_OMNISHARP_VERSION), "OmniSharp");
+        return Optional.empty();
     }
 
     public Path ensureOmniSharp(DownloadProgressListener progressListener) {
@@ -326,11 +330,15 @@ public class DotnetSdkService {
     }
 
     public Optional<Path> getNetcoredbgPath() {
+        Optional<Path> bundled = resolveExecutable(netcoredbgRoots(DEFAULT_NETCOREDBG_VERSION), "netcoredbg");
+        if (bundled.isPresent()) {
+            return bundled;
+        }
         Optional<Path> external = findExternalExecutable("netcoredbg", commonNetcoredbgDirs());
         if (external.isPresent()) {
             return external;
         }
-        return resolveExecutable(netcoredbgRoot(DEFAULT_NETCOREDBG_VERSION), "netcoredbg");
+        return Optional.empty();
     }
 
     public boolean isDebuggerReady() {
@@ -522,24 +530,18 @@ public class DotnetSdkService {
 
     private static List<String> commonDotnetDirs() {
         if (isWindows()) {
-            return List.of(
-                    "C:\\Program Files\\dotnet",
-                    System.getProperty("user.home", "") + "\\.dotnet");
+            return List.of("C:\\Program Files\\dotnet");
         }
         return List.of("/usr/bin", "/usr/local/bin", "/usr/share/dotnet",
-                "/usr/lib/dotnet", "/opt/dotnet", "/snap/dotnet-sdk/current",
-                System.getProperty("user.home", "") + "/.dotnet");
+                "/usr/lib/dotnet", "/opt/dotnet", "/snap/dotnet-sdk/current");
     }
 
     private static List<String> commonOmniSharpDirs() {
-        return List.of("/usr/bin", "/usr/local/bin",
-                System.getProperty("user.home", "") + "/.omnisharp",
-                System.getProperty("user.home", "") + "/.vscode/extensions");
+        return List.of("/usr/bin", "/usr/local/bin");
     }
 
     private static List<String> commonNetcoredbgDirs() {
-        return List.of("/usr/bin", "/usr/local/bin", "/opt/netcoredbg",
-                System.getProperty("user.home", "") + "/.netcoredbg");
+        return List.of("/usr/bin", "/usr/local/bin", "/opt/netcoredbg");
     }
 
     private Path sdkRoot() {
@@ -719,6 +721,12 @@ public class DotnetSdkService {
         return sdk == null ? null : sdk.resolve(OMNISHARP_DIR).resolve(version);
     }
 
+    private List<Path> omniSharpRoots(String version) {
+        return sdkRoots().stream()
+                .map(root -> root.resolve(OMNISHARP_DIR).resolve(version))
+                .toList();
+    }
+
     private Path roslynRoot(String version) {
         Path sdk = sdkRoot();
         return sdk == null ? null : sdk.resolve(ROSLYN_DIR).resolve(version);
@@ -752,6 +760,12 @@ public class DotnetSdkService {
     private Path netcoredbgRoot(String version) {
         Path sdk = sdkRoot();
         return sdk == null ? null : sdk.resolve(NETCOREDBG_DIR).resolve(version);
+    }
+
+    private List<Path> netcoredbgRoots(String version) {
+        return sdkRoots().stream()
+                .map(root -> root.resolve(NETCOREDBG_DIR).resolve(version))
+                .toList();
     }
 
     private Optional<Path> findInRoslynBundle(String cacheKey, java.util.function.Predicate<String> nameMatch) {
@@ -861,6 +875,16 @@ public class DotnetSdkService {
         } catch (Exception e) {
             return Optional.empty();
         }
+    }
+
+    private Optional<Path> resolveExecutable(List<Path> roots, String baseName) {
+        for (Path root : roots) {
+            Optional<Path> executable = resolveExecutable(root, baseName);
+            if (executable.isPresent()) {
+                return executable;
+            }
+        }
+        return Optional.empty();
     }
 
 

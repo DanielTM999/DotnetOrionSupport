@@ -9,6 +9,8 @@ import dtm.stools.component.panels.editor.code.autocomplete.AutoCompleteItem;
 import dtm.stools.component.panels.editor.code.diagnostics.Diagnostic;
 import dtm.stools.component.panels.editor.code.diagnostics.DiagnosticSeverity;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.CleanupMode;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.InputStream;
 import java.net.URL;
@@ -31,13 +33,11 @@ class RazorProjectLspIntegrationTest {
 
     private static final Path DEFAULT_PROJECT = Path.of(
             "C:\\Users\\danie\\Documents\\development\\Csharp\\MyDotnetAppRazor");
-    private static final Path DEFAULT_RESOURCE_ROOT = Path.of(
-            System.getProperty("user.home"), "AppData", "Roaming", "Orion", "Resources", "dotnet-orion-support");
 
     @Test
-    void realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml() throws Exception {
+    void realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml(
+            @TempDir(cleanup = CleanupMode.ALWAYS) Path resourceRoot) throws Exception {
         Path project = Path.of(System.getProperty("dotnet.razor.project", DEFAULT_PROJECT.toString()));
-        Path resourceRoot = Path.of(System.getProperty("dotnet.orion.resourceRoot", DEFAULT_RESOURCE_ROOT.toString()));
         Path cshtml = project.resolve("Pages").resolve("Index.cshtml");
         DotnetSdkService sdk = new DotnetSdkService(new TestResource(resourceRoot), new HttpDownloadObserver());
 

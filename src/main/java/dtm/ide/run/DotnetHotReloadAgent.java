@@ -37,13 +37,15 @@ final class DotnetHotReloadAgent implements AutoCloseable {
     private final String targetFramework;
     private final String configuration;
     private final OutputStream output;
+    private final Path resourceRoot;
 
     private Process process;
     private BufferedReader reader;
     private Writer writer;
 
     DotnetHotReloadAgent(Path dotnet, Path projectFile, Path assemblyFile, Path cwd,
-                         String targetFramework, String configuration, OutputStream output) {
+                         String targetFramework, String configuration, OutputStream output,
+                         Path resourceRoot) {
         this.dotnet = dotnet;
         this.projectFile = projectFile;
         this.assemblyFile = assemblyFile;
@@ -51,6 +53,7 @@ final class DotnetHotReloadAgent implements AutoCloseable {
         this.targetFramework = targetFramework == null ? "" : targetFramework;
         this.configuration = configuration == null || configuration.isBlank() ? "Debug" : configuration;
         this.output = output;
+        this.resourceRoot = resourceRoot;
     }
 
     synchronized void prewarm() {
@@ -130,8 +133,11 @@ final class DotnetHotReloadAgent implements AutoCloseable {
     }
 
     private Path ensureBuilt() throws IOException, InterruptedException {
+        if (resourceRoot == null) {
+            throw new IOException("Diretorio de resources indisponivel para o agente de Hot Reload.");
+        }
         SdkLayout sdk = resolveSdkLayout();
-        Path root = Path.of(System.getProperty("user.home", "."), ".orion", "dotnet-orion-support", "hotreload-agent", CACHE_VERSION);
+        Path root = resourceRoot.resolve("hotreload-agent").resolve(CACHE_VERSION);
         Path sourceDir = root.resolve("src");
         Files.createDirectories(sourceDir);
         copyResource("/hotreload/OrionHotReloadAgent/Program.cs", sourceDir.resolve("Program.cs"));
