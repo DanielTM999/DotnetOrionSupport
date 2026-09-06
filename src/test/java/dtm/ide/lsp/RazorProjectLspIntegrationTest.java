@@ -31,12 +31,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class RazorProjectLspIntegrationTest {
 
-    private static final Path DEFAULT_PROJECT = Path.of(
-            "C:\\Users\\danie\\Documents\\development\\Csharp\\MyDotnetAppRazor");
+    private static final Path DEFAULT_PROJECT = Path.of("C:\\Users\\danie\\Documents\\development\\Csharp\\MyDotnetAppRazor");
 
     @Test
-    void realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml(
-            @TempDir(cleanup = CleanupMode.ALWAYS) Path resourceRoot) throws Exception {
+    void realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml(@TempDir(cleanup = CleanupMode.ALWAYS) Path resourceRoot) throws Exception {
         Path project = Path.of(System.getProperty("dotnet.razor.project", DEFAULT_PROJECT.toString()));
         Path cshtml = project.resolve("Pages").resolve("Index.cshtml");
         DotnetSdkService sdk = new DotnetSdkService(new TestResource(resourceRoot), new HttpDownloadObserver());
@@ -59,24 +57,18 @@ class RazorProjectLspIntegrationTest {
             Thread.sleep(6_000);
             String completionText = original + "\n@{\n    var now = DateTime.N\n}\n";
             TextPosition completionPosition = positionAfter(completionText, "DateTime.N");
-            List<AutoCompleteItem> completions = waitForCompletions(
-                    service, cshtml, completionText, completionPosition, "N");
+            List<AutoCompleteItem> completions = waitForCompletions(service, cshtml, completionText, completionPosition, "N");
             assertFalse(completions.isEmpty(), "Esperava autocomplete Razor/C# em Index.cshtml");
-            assertTrue(hasCompletion(completions, "Now"),
-                    "Esperava DateTime.Now entre os autocompletes Razor/C#");
+            assertTrue(hasCompletion(completions, "Now"), "Esperava DateTime.Now entre os autocompletes Razor/C#");
 
             String brokenText = original + "\n@{\n    var broken = DateTime.\n}\n";
             Collection<Diagnostic> diagnostics = waitForDiagnostics(service, cshtml, brokenText);
-            assertTrue(diagnostics.stream().anyMatch(RazorProjectLspIntegrationTest::isError),
-                    "Esperava diagnostico de erro C# para bloco Razor invalido");
+            assertTrue(diagnostics.stream().anyMatch(RazorProjectLspIntegrationTest::isError), "Esperava diagnostico de erro C# para bloco Razor invalido");
 
             String importText = original + "\n@{\n    var rx = new Regex\n}\n";
             TextPosition importPosition = positionAfter(importText, "new Regex");
-            List<AutoCompleteItem> importCompletions = waitForCompletionMatch(
-                    service, cshtml, importText, importPosition, "Regex",
-                    RazorProjectLspIntegrationTest::isRegexImportCompletion);
-            assertTrue(importCompletions.stream().anyMatch(RazorProjectLspIntegrationTest::isRegexImportCompletion),
-                    "Esperava completion de Regex com auto-using de System.Text.RegularExpressions");
+            List<AutoCompleteItem> importCompletions = waitForCompletionMatch(service, cshtml, importText, importPosition, "Regex", RazorProjectLspIntegrationTest::isRegexImportCompletion);
+            assertTrue(importCompletions.stream().anyMatch(RazorProjectLspIntegrationTest::isRegexImportCompletion), "Esperava completion de Regex com auto-using de System.Text.RegularExpressions");
         } finally {
             service.stop();
         }

@@ -175,6 +175,20 @@ class DotnetSdkServiceTest {
     }
 
     @Test
+    void staleRoslynBundleVersionsAreIgnored(@TempDir Path dir) throws Exception {
+        Path staleRoot = dir.resolve("sdk").resolve("roslyn").resolve("5.10.0-1.26356.6");
+        Files.createDirectories(staleRoot);
+        Files.createFile(staleRoot.resolve("Microsoft.CodeAnalysis.LanguageServer.dll"));
+        Files.createFile(staleRoot.resolve("Microsoft.VisualStudioCode.RazorExtension.dll"));
+        Files.createFile(staleRoot.resolve("Microsoft.CodeAnalysis.Razor.Compiler.dll"));
+
+        DotnetSdkService service = new DotnetSdkService(new TestResource(dir), null);
+
+        assertTrue(service.getRoslynLanguageServerPath().isEmpty());
+        assertFalse(service.isRoslynRazorReady());
+    }
+
+    @Test
     void roslynBundleLookupPrefersContentOverLibCopies(@TempDir Path dir) throws Exception {
         Path roslynRoot = dir.resolve("sdk")
                 .resolve("roslyn")

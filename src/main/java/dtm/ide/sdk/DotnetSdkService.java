@@ -260,6 +260,7 @@ public class DotnetSdkService {
     }
 
     public Path ensureRoslyn(DownloadProgressListener progressListener) {
+        pruneStaleRoslynBundles(DEFAULT_ROSLYN_LS_VERSION);
         Optional<Path> existing = getRoslynLanguageServerPath();
         if (existing.isPresent()) {
             return existing.get();
@@ -743,6 +744,11 @@ public class DotnetSdkService {
         for (Path root : roslynRoots(version)) {
             addPath(roots, root);
         }
+        return roots;
+    }
+
+    private List<Path> staleRoslynRoots(String version) {
+        List<Path> roots = new ArrayList<>();
         for (Path sdk : sdkRoots()) {
             Path roslyn = sdk.resolve(ROSLYN_DIR);
             if (!Files.isDirectory(roslyn)) {
@@ -750,11 +756,34 @@ public class DotnetSdkService {
             }
             try (Stream<Path> versions = Files.list(roslyn)) {
                 versions.filter(Files::isDirectory)
+                        .filter(path -> path.getFileName() != null
+                                && !version.equals(path.getFileName().toString()))
                         .forEach(path -> addPath(roots, path));
             } catch (Exception ignored) {
             }
         }
         return roots;
+    }
+
+    private void pruneStaleRoslynBundles(String version) {
+        List<Path> stales = staleRoslynRoots(version);
+        if (stales.isEmpty()) {
+            return;
+        }
+        roslynBundleCache.clear();
+        for (Path stale : stales) {
+            try (Stream<Path> paths = Files.walk(stale)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (Exception ignored) {
+                    }
+                });
+                log.info("Bundle antigo do Roslyn LS removido: {}", stale);
+            } catch (Exception e) {
+                log.debug("Falha ao remover bundle antigo do Roslyn LS {}: {}", stale, e.getMessage());
+            }
+        }
     }
 
     private Path netcoredbgRoot(String version) {

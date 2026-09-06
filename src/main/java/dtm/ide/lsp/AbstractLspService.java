@@ -61,6 +61,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -94,6 +95,7 @@ public abstract class AbstractLspService implements LspService {
     private static final int MAX_IMPORT_CANDIDATES = 25;
 
     private static final long INIT_TIMEOUT_MS = 120000;
+    private static final long INIT_POLL_MS = 500;
     private static final int SYNTHETIC_PROGRESS_CAP = 90;
 
     private static final Set<SymbolKind> CALLABLE_KINDS = EnumSet.of(
@@ -2259,7 +2261,7 @@ public abstract class AbstractLspService implements LspService {
         if (initOptions != null && !initOptions.isEmpty()) {
             initParams.put("initializationOptions", initOptions);
         }
-        JsonNode result = client.sendRequest("initialize", initParams).get(INIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        JsonNode result = awaitInitialize(client.sendRequest("initialize", initParams));
         JsonNode capabilities = result == null ? null : result.get("capabilities");
         definitionSupported = supportsProvider(node(capabilities, "definitionProvider"));
         referencesSupported = supportsProvider(node(capabilities, "referencesProvider"));
@@ -2286,6 +2288,25 @@ public abstract class AbstractLspService implements LspService {
         captureOnTypeFormatting(node(capabilities, "documentOnTypeFormattingProvider"));
         captureSemanticTokensLegend(node(capabilities, "semanticTokensProvider"));
         client.sendNotification("initialized", Map.of());
+    }
+
+    private JsonNode awaitInitialize(CompletableFuture<JsonNode> pending) throws Exception {
+        long deadline = System.currentTimeMillis() + INIT_TIMEOUT_MS;
+        while (true) {
+            try {
+                return pending.get(INIT_POLL_MS, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                Process p = process;
+                if (p != null && !p.isAlive()) {
+                    throw new IllegalStateException(serverName()
+                            + " encerrou durante a inicialização (código " + p.exitValue()
+                            + "). Verifique os argumentos de inicialização do servidor.");
+                }
+                if (System.currentTimeMillis() >= deadline) {
+                    throw e;
+                }
+            }
+        }
     }
 
     private static JsonNode node(JsonNode capabilities, String field) {
