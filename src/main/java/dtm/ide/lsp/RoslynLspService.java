@@ -2,7 +2,7 @@ package dtm.ide.lsp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import dtm.ide.api.extension.Resource;
-import dtm.ide.api.project.editor.DocumentHighlight;
+import dtm.stools.component.panels.editor.code.documenthighlight.DocumentHighlight;
 import dtm.ide.run.TargetFramework;
 import dtm.ide.sdk.DotnetSdkService;
 import dtm.stools.component.panels.editor.code.api.DocumentSymbol;

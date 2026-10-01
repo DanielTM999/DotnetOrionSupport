@@ -3,7 +3,7 @@ package dtm.ide.lsp;
 import com.fasterxml.jackson.databind.JsonNode;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
-import dtm.ide.api.project.editor.DocumentHighlight;
+import dtm.stools.component.panels.editor.code.documenthighlight.DocumentHighlight;
 import dtm.ide.api.project.editor.SemanticToken;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
 import dtm.stools.component.panels.editor.code.api.DocumentSymbol;

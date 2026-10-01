@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import dtm.ide.api.extension.Resource;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
-import dtm.ide.api.project.editor.DocumentHighlight;
+import dtm.stools.component.panels.editor.code.documenthighlight.DocumentHighlight;
 import dtm.ide.api.project.editor.SemanticToken;
 import dtm.ide.project.DotnetProjectConfig;
 import dtm.ide.sdk.DotnetSdkService;

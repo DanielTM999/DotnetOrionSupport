@@ -16,6 +16,7 @@ import dtm.ide.api.extension.settings.PluginSettingsPage;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
 import dtm.ide.api.project.editor.*;
+import dtm.stools.component.panels.editor.code.documenthighlight.DocumentHighlight;
 import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunConfigurationContribution;
 import dtm.ide.iis.AppCmd;
@@ -103,6 +104,7 @@ import dtm.stools.component.panels.editor.code.codelens.CodeLens;
 import dtm.stools.component.panels.editor.code.codelens.CodeLensClickEvent;
 import dtm.stools.component.panels.editor.code.codelens.CodeLensItem;
 import dtm.stools.component.panels.editor.code.codelens.CodeLensPlacement;
+import dtm.stools.component.panels.editor.code.ghost.GhostTextSuggestion;
 import dtm.stools.component.panels.editor.code.hover.HoverInfo;
 import dtm.stools.component.panels.editor.code.inlay.InlayHint;
 import dtm.stools.component.panels.editor.code.prototype.folding.FoldRule;
@@ -1511,6 +1513,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public String getGhostText(IdeGhostTextContext context) {
+        GhostTextSuggestion suggestion = getGhostSuggestion(context);
+        return suggestion == null ? null : suggestion.text();
+    }
+
+    @Override
+    public GhostTextSuggestion getGhostSuggestion(IdeGhostTextContext context) {
         if (debugActive.get()) {
             return null;
         }
@@ -1530,7 +1538,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         List<AutoCompleteItem> items = service.complete(
                 context.filePath(), context.text(), context.caretLine(), context.caretCol());
-        return ghostTextSuffix(items, prefix);
+        return ghostTextSuggestion(items, prefix);
     }
 
     private static String ghostTextPrefix(String currentLine, int caretCol) {
@@ -1544,7 +1552,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return currentLine.substring(start, caretCol);
     }
 
-    private static String ghostTextSuffix(List<AutoCompleteItem> items, String prefix) {
+    static GhostTextSuggestion ghostTextSuggestion(List<AutoCompleteItem> items, String prefix) {
         if (items == null || items.isEmpty()) {
             return null;
         }
@@ -1559,7 +1567,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             if (!insert.startsWith(prefix) || insert.length() <= prefix.length()) {
                 continue;
             }
-            return insert.substring(prefix.length());
+            return new GhostTextSuggestion(insert.substring(prefix.length()), item.additionalTextEdits());
         }
         return null;
     }
