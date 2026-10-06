@@ -3,6 +3,7 @@ package dtm.ide.lsp;
 import com.fasterxml.jackson.databind.JsonNode;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
+import dtm.ide.api.hierarchy.TypeHierarchyItem;
 import dtm.stools.component.panels.editor.code.documenthighlight.DocumentHighlight;
 import dtm.ide.api.project.editor.SemanticToken;
 import dtm.stools.component.panels.editor.code.api.CodeAction;
@@ -63,6 +64,10 @@ public interface LspService {
     void start();
 
     void stop();
+
+    default void closeDocument(Path file) {}
+
+    default void dispose() { stop(); }
 
     List<AutoCompleteItem> complete(Path filePath, String text, int line, int character);
 
@@ -132,4 +137,16 @@ public interface LspService {
     List<CallHierarchyCall> outgoingCalls(CallHierarchyItem item);
 
     void setApplyEditSink(Consumer<DotnetWorkspaceEdit> sink);
+
+    default boolean supportsSelectionRanges() { return false; }
+
+    default List<Range> selectionRanges(Path file, String text, int line, int column) { return List.of(); }
+
+    default boolean supportsTypeHierarchy() { return false; }
+
+    default List<TypeHierarchyItem> prepareTypeHierarchy(Path file, String text, int line, int column) { return List.of(); }
+
+    default List<TypeHierarchyItem> supertypes(TypeHierarchyItem item) { return List.of(); }
+
+    default List<TypeHierarchyItem> subtypes(TypeHierarchyItem item) { return List.of(); }
 }

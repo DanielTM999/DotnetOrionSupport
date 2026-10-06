@@ -25,6 +25,7 @@ class DotnetIdeAdapterTest {
 
         EditorProbe probe = new EditorProbe(file);
         adapter.configureEditor(probe.context());
+        javax.swing.SwingUtilities.invokeAndWait(() -> {});
 
         assertTrue(probe.readOnly, "decompiled editor should be read-only");
         assertFalse(probe.diagnosticsAutoRunEnabled, "decompiled editor should not run diagnostics");

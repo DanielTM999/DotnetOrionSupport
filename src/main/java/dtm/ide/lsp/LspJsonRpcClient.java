@@ -44,9 +44,15 @@ final class LspJsonRpcClient {
     }
 
     CompletableFuture<JsonNode> sendRequest(String method, Object params) {
+        if (closed) return CompletableFuture.failedFuture(new IOException("LSP client closed"));
         long id = nextId.getAndIncrement();
         CompletableFuture<JsonNode> future = new CompletableFuture<>();
         pending.put(id, future);
+        future.whenComplete((result, failure) -> {
+            if (pending.remove(id, future) && (future.isCancelled() || failure instanceof java.util.concurrent.TimeoutException)) {
+                sendNotification("$/cancelRequest", Map.of("id", id));
+            }
+        });
 
         ObjectNode req = MAPPER.createObjectNode();
         req.put("jsonrpc", "2.0");
@@ -107,6 +113,7 @@ final class LspJsonRpcClient {
         byte[] body = MAPPER.writeValueAsBytes(message);
         byte[] header = ("Content-Length: " + body.length + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
         synchronized (writeLock) {
+            if (closed) throw new IOException("LSP client closed");
             out.write(header);
             out.write(body);
             out.flush();
@@ -130,6 +137,10 @@ final class LspJsonRpcClient {
             if (!closed) {
                 log.warn("Loop JSON-RPC do LSP terminou com erro", e);
             }
+        } finally {
+            closed = true;
+            pending.values().forEach(future -> future.completeExceptionally(new IOException("LSP stream ended")));
+            pending.clear();
         }
     }
 

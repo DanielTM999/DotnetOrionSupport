@@ -77,6 +77,10 @@ public final class DotnetRunSupport {
         this.debugView = debugView;
     }
 
+    public void bindBuildObserver(Function<String, Consumer<dtm.ide.build.BuildResult>> observer) {
+        build.bindBuildObserver(observer);
+    }
+
     public void bindProject(Path projectPath) {
         this.projectPath = projectPath == null ? null : projectPath.toAbsolutePath().normalize();
     }

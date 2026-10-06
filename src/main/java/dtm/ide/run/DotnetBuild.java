@@ -1,6 +1,8 @@
 package dtm.ide.run;
 
 import dtm.ide.api.extension.output.OutputPanelHandle;
+import dtm.ide.build.BuildOutputCapture;
+import dtm.ide.build.BuildResult;
 import dtm.ide.api.extension.runconfig.RunBreakpointData;
 import dtm.ide.api.extension.runconfig.RunProcessHandle;
 import dtm.ide.iis.IisAppPool;
@@ -69,6 +71,17 @@ public final class DotnetBuild {
 
     private final Map<String, Process> activeProcesses = new ConcurrentHashMap<>();
     private final AtomicReference<Runnable> activeIisStop = new AtomicReference<>();
+    private volatile Function<String, Consumer<BuildResult>> buildObserver;
+
+    public void bindBuildObserver(Function<String, Consumer<BuildResult>> observer) {
+        buildObserver = observer;
+    }
+
+    private Consumer<BuildResult> observeBuild(List<String> command) {
+        Function<String, Consumer<BuildResult>> observer = buildObserver;
+        if (observer == null || command.size() < 2) return ignored -> {};
+        return observer.apply("test".equals(command.get(1)) ? "test" : "build");
+    }
 
     public RunProcessHandle build(Path project, Path dotnet, String configuration) {
         return build(project, dotnet, configuration, null, null);
@@ -200,6 +213,7 @@ public final class DotnetBuild {
             return "";
         } finally {
             if (process != null) {
+                if (process.isAlive()) destroyQuietly(process);
                 activeProcesses.remove(DotnetRunSupport.TYPE_TEST, process);
             }
         }
@@ -262,8 +276,39 @@ public final class DotnetBuild {
             Process process = builder.start();
             long startedNanos = System.nanoTime();
             registerProcess(type, process);
+            java.io.InputStream output = process.getInputStream();
+            if (!interactive) {
+                Consumer<BuildResult> completed = observeBuild(command);
+                BuildOutputCapture capture = new BuildOutputCapture(OutputStream.nullOutputStream(), project);
+                output = new java.io.FilterInputStream(output) {
+                    private boolean finished;
+
+                    private void finish() {
+                        if (finished) return;
+                        finished = true;
+                        process.onExit().thenAccept(exited -> completed.accept(capture.finish(exited.exitValue())));
+                    }
+
+                    @Override
+                    public int read() throws IOException {
+                        int value = in.read();
+                        if (value < 0) finish();
+                        else capture.write(value);
+                        return value;
+                    }
+
+                    @Override
+                    public int read(byte[] buffer, int offset, int length) throws IOException {
+                        int count = in.read(buffer, offset, length);
+                        if (count < 0) finish();
+                        else capture.write(buffer, offset, count);
+                        return count;
+                    }
+                };
+            }
             return RunProcessHandle.builder()
                     .process(process)
+                    .output(output)
                     .readonly(!interactive)
                     .terminate(() -> destroyQuietly(process))
                     .processPid(DotnetRunSupport.TYPE_RUN.equals(type)
@@ -1308,6 +1353,8 @@ public final class DotnetBuild {
 
     private int runAndStream(List<String> command, Path workingDir, OutputStream out,
                              String type, AtomicReference<Process> currentProcess) throws Exception {
+        Consumer<BuildResult> completed = observeBuild(command);
+        BuildOutputCapture capture = new BuildOutputCapture(out, workingDir);
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         if (workingDir != null) {
             builder.directory(workingDir.toFile());
@@ -1321,8 +1368,10 @@ public final class DotnetBuild {
             activeProcesses.put(type, process);
         }
         try {
-            pump(process.getInputStream(), out);
-            return process.waitFor();
+            pump(process.getInputStream(), capture);
+            int exitCode = process.waitFor();
+            completed.accept(capture.finish(exitCode));
+            return exitCode;
         } finally {
             if (type != null) {
                 activeProcesses.remove(type, process);

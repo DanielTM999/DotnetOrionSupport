@@ -39,6 +39,12 @@ import dtm.ide.api.theme.EditorThemeConfig;
 import dtm.ide.editor.HtmlMarkupCompletionProvider;
 import dtm.ide.editor.HtmlMarkupDiagnosticsProvider;
 import dtm.ide.editor.CSharpSnippetCompletionProvider;
+import dtm.ide.editor.DocumentSnapshots;
+import dtm.stools.component.panels.editor.code.api.Range;
+import dtm.ide.concurrent.EditorQueryCache;
+import dtm.ide.build.BuildOutputCapture;
+import dtm.ide.build.BuildResult;
+import dtm.ide.api.project.diagnostics.IdeProblem;
 import dtm.ide.editor.condition.CSharpConditionAutoCompleteProvider;
 import dtm.ide.editor.condition.CSharpConditionDiagnosticsProvider;
 import dtm.ide.editor.theme.DotnetEditorTheme;
@@ -200,6 +206,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile IisManagerPanel iisManagerPanel;
     private volatile DotnetTestExplorerPanel testPanel;
     private String testToolPanelId;
+    private dtm.ide.ui.DotnetBuildToolsPanel buildToolsPanel;
+    private String buildToolsPanelId;
     private static final int CODE_LENS_LIMIT = 100;
     private final Map<Path, Long> featureRefreshedFiles = new ConcurrentHashMap<>();
     private final Set<Path> highlightSettledFiles = ConcurrentHashMap.newKeySet();
@@ -210,6 +218,16 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile int lspLoadPercent = 0;
     private volatile DotnetProjectConfigPanel projectConfigPanel;
     private volatile DotnetPluginSettings pluginSettings;
+    private final DocumentSnapshots documents = new DocumentSnapshots();
+    private final Map<Path, List<IdeProblem>> liveProblems = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> buildProblemTickets = new ConcurrentHashMap<>();
+    private final Set<Process> menuBuildProcesses = ConcurrentHashMap.newKeySet();
+    private volatile EditorQueryCache<List<AutoCompleteItem>> completionQueries = new EditorQueryCache<>();
+    private volatile EditorQueryCache<List<CodeLens>> lensQueries = new EditorQueryCache<>();
+    private volatile EditorQueryCache<List<Range>> selectionQueries = new EditorQueryCache<>();
+    private record CompletionQuery(DocumentSnapshots.Snapshot snapshot, int line, int column, String prefix,
+                                   LspService service, long session) {}
+    private record LensQuery(DocumentSnapshots.Snapshot snapshot, LspService service, long session) {}
     private final AtomicBoolean toolchainDeclined = new AtomicBoolean(false);
     private volatile Path activeFile;
     private volatile RunConfigurationData selectedRunConfig;
@@ -307,6 +325,22 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public void onProjectClosed(IdeProjectContext context) {
         projectLifecycleTicket.incrementAndGet();
+        completionQueries.close();
+        lensQueries.close();
+        selectionQueries.close();
+        documents.clear();
+        liveProblems.clear();
+        runOnUiThread(() -> {
+            clearProblems("dotnet.lsp");
+            clearProblems("dotnet.build");
+            clearProblems("dotnet.test");
+            if (buildToolsPanel != null) {
+                buildToolsPanel.close();
+                if (buildToolsPanelId != null) unregisterToolPanel(buildToolsPanelId);
+                buildToolsPanel = null;
+                buildToolsPanelId = null;
+            }
+        });
         DotnetSolutionSelection.clear(projectPath);
         DotnetStartupProject.clear(projectPath);
         shutdownProjectProcesses();
@@ -318,6 +352,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
             service.clearMetadataCache();
         }
         stopLanguageServices();
+        if (service != null) service.dispose();
+        lspService = null;
+        shutdownProjectExecutors();
+        DotnetTestExplorerPanel tests = testPanel;
+        if (tests != null) runOnUiThread(tests::resetProject);
         languageServicesStarting.set(false);
         razorToolchainPrompted.set(false);
         editorRegistry.clearProjectEditors();
@@ -341,6 +380,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void clearCaches() {
+        completionQueries.clear();
+        lensQueries.clear();
+        selectionQueries.clear();
         invalidateProjectScans();
         DotnetSdkService sdk = sdkService;
         if (sdk != null) {
@@ -381,6 +423,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void bindProject(IdeProjectContext context) {
+        completionQueries.close();
+        lensQueries.close();
+        selectionQueries.close();
+        completionQueries = new EditorQueryCache<>();
+        lensQueries = new EditorQueryCache<>();
+        selectionQueries = new EditorQueryCache<>();
+        documents.clear();
         this.projectContext = context;
         if (context != null) {
             this.projectPath = context.getProjectPath().map(DotnetProjectConventions::normalizePath).orElse(null);
@@ -389,6 +438,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         invalidateProjectScans();
         projectLifecycleTicket.incrementAndGet();
         runSupport.bindProject(projectPath);
+        runSupport.bindBuildObserver(this::beginBuildProblems);
         runSupport.bindDownloadProgress(progressListener());
         runSupport.bindActiveFile(() -> activeFile);
         runSupport.bindActiveText(() -> currentTextOf(activeFile));
@@ -674,6 +724,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void shutdownProjectProcesses() {
+        for (Process process : menuBuildProcesses) {
+            process.descendants().forEach(ProcessHandle::destroy);
+            process.destroy();
+        }
+        menuBuildProcesses.clear();
         try {
             runSupport.stop(null);
         } catch (Exception e) {
@@ -1087,6 +1142,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Path normalized = normalizePath(context.filePath());
         editorRegistry.trackEditor(normalized, context);
+        documents.update(normalized, context.getText());
         highlightSettledFiles.add(normalized);
         if (applyDecompiledEditorGuards(context)) {
             beginInitialSyntaxHighlight(context, normalized);
@@ -1098,18 +1154,20 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void beginInitialSyntaxHighlight(IdeEditorContext context, Path normalized) {
+        long session = projectLifecycleTicket.get();
         SwingUtilities.invokeLater(() -> {
+            if (session != projectLifecycleTicket.get() || editorRegistry.editorContext(normalized) != context) return;
             applySyntaxHighlightNow(context, normalized);
             scheduleHighlightRetry(context, normalized, INITIAL_HIGHLIGHT_RETRIES);
         });
     }
 
     private void scheduleHighlightRetry(IdeEditorContext context, Path normalized, int remaining) {
-        if (remaining <= 0 || highlightSettled(context)) {
+        if (remaining <= 0 || editorRegistry.editorContext(normalized) != context || highlightSettled(context)) {
             return;
         }
         Timer timer = new Timer(INITIAL_HIGHLIGHT_RETRY_DELAY_MS, e -> {
-            if (highlightSettled(context)) {
+            if (editorRegistry.editorContext(normalized) != context || highlightSettled(context)) {
                 return;
             }
             applySyntaxHighlightNow(context, normalized);
@@ -1220,6 +1278,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
 
+        documents.update(editorContext.filePath(), editorContext.getText());
+        completionQueries.invalidate(editorContext.filePath());
+        lensQueries.invalidate(editorContext.filePath());
+        selectionQueries.invalidate(editorContext.filePath());
         setActiveFile(editorContext.filePath());
     }
 
@@ -1352,6 +1414,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private boolean refreshEditorFeatures(Path file) {
+        lensQueries.invalidate(file);
         requestRefreshCodeLenses(file);
         requestRefreshInlayHints(file);
         IdeEditorContext context = editorRegistry.editorContext(file);
@@ -1381,6 +1444,16 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void forgetHighlightState(Path path) {
+        if (path != null) {
+            liveProblems.remove(normalizePath(path));
+            refreshLiveProblems();
+        }
+        documents.remove(path);
+        completionQueries.invalidate(path);
+        lensQueries.invalidate(path);
+        selectionQueries.invalidate(path);
+        LspService service = lspService;
+        if (service != null && path != null) service.closeDocument(path);
         Path normalized = normalizePath(path);
         if (normalized == null) {
             return;
@@ -1395,21 +1468,51 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public List<AutoCompleteItem> getCompletionSuggestions(IdeCompletionContext context) {
+        var future = getCompletionSuggestionsAsync(context);
+        return future.isDone() && !future.isCompletedExceptionally()
+                ? future.getNow(List.of()) : localCompletions(context, List.of());
+    }
+
+    private synchronized void shutdownProjectExecutors() {
+        if (languageSetupExecutor != null) languageSetupExecutor.shutdownNow();
+        if (navigationExecutor != null) navigationExecutor.shutdownNow();
+        if (restoreExecutor != null) restoreExecutor.shutdownNow();
+        languageSetupExecutor = null;
+        navigationExecutor = null;
+        restoreExecutor = null;
+    }
+
+    @Override
+    public CompletableFuture<List<AutoCompleteItem>> getCompletionSuggestionsAsync(IdeCompletionContext context) {
         if (context == null) {
-            return Collections.emptyList();
+            return CompletableFuture.completedFuture(List.of());
         }
         Path file = resolveEditorFile(context.filePath(), context.text());
-        LspService service = serviceOrStartForEditor(file, context.text(), LSP_COMPLETION_WAIT_MS);
-        List<AutoCompleteItem> lspItems = Collections.emptyList();
-        if (service != null && lspHandlesEditor(file)) {
-            if (!service.isRunning() && isLspLoading(service)) {
-                awaitReadyOffEdt(service, LSP_COMPLETION_WAIT_MS);
-            }
-            if (!DotnetProjectConventions.isRazorLike(file) || service instanceof RoslynLspService) {
-                lspItems = service.completeForEditor(
-                        file, context.text(), context.caretLine(), context.caretCol(), context.prefix());
-            }
+        LspService service = lspService;
+        if (file == null || service == null || !service.isRunning() || !lspHandlesEditor(file)) {
+            return CompletableFuture.completedFuture(localCompletions(context, List.of()));
         }
+        var snapshot = documents.update(file, context.text());
+        long session = projectLifecycleTicket.get();
+        var key = new CompletionQuery(snapshot, context.caretLine(), context.caretCol(), context.prefix(), service, session);
+        return completionQueries.request(file, key, () -> {
+            if (!documents.isCurrent(snapshot) || session != projectLifecycleTicket.get()) return List.of();
+            var items = service.completeForEditor(file, snapshot.text(), key.line(), key.column(), key.prefix());
+            if (!documents.isCurrent(snapshot) || session != projectLifecycleTicket.get()) return List.of();
+            return localCompletions(context, items);
+        }, () -> SwingUtilities.invokeLater(() -> {
+            if (session != projectLifecycleTicket.get() || !documents.isCurrent(snapshot)) return;
+            IdeEditorContext editor = editorRegistry.editorContext(snapshot.file());
+            if (editor != null && Objects.equals(activeFile, snapshot.file())
+                    && editor.getCaretLine() == key.line() && editor.getCaretCol() == key.column()) {
+                requestCodeEditorAutocomplete();
+            }
+        })).exceptionally(error -> List.of());
+    }
+
+    private List<AutoCompleteItem> localCompletions(IdeCompletionContext context, List<AutoCompleteItem> lspItems) {
+        if (context == null) return List.of();
+        Path file = resolveEditorFile(context.filePath(), context.text());
         if (DotnetProjectConventions.isRazorLike(file)) {
             return mergeHtmlCompletions(lspItems, context);
         }
@@ -1955,6 +2058,40 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public Collection<Diagnostic> getDiagnostics(IdeDiagnosticsContext context,
                                                  boolean incremental,
                                                  Collection<Diagnostic> previous) {
+        long session = projectLifecycleTicket.get();
+        Collection<Diagnostic> diagnostics = computeDiagnostics(context);
+        if (context != null && context.getFilePath() != null && session == projectLifecycleTicket.get()) {
+            Path file = normalizePath(context.getFilePath());
+            liveProblems.put(file, diagnostics.stream().map(diagnostic -> new IdeProblem(file,
+                    diagnostic.startLine() + 1, diagnostic.startCol() + 1, diagnostic.severity(),
+                    diagnostic.message(), "C# / Razor", "")).toList());
+            refreshLiveProblems();
+        }
+        return diagnostics;
+    }
+
+    private void refreshLiveProblems() {
+        long session = projectLifecycleTicket.get();
+        runOnUiThread(() -> {
+            if (session == projectLifecycleTicket.get()) {
+                publishProblems("dotnet.lsp", liveProblems.values().stream().flatMap(List::stream).toList());
+            }
+        });
+    }
+
+    private java.util.function.Consumer<BuildResult> beginBuildProblems(String channel) {
+        long session = projectLifecycleTicket.get();
+        AtomicLong generation = buildProblemTickets.computeIfAbsent(channel, ignored -> new AtomicLong());
+        long ticket = generation.incrementAndGet();
+        return result -> runOnUiThread(() -> {
+            if (session != projectLifecycleTicket.get() || ticket != generation.get()) return;
+            publishProblems("dotnet." + channel, result.diagnostics().stream()
+                    .map(dtm.ide.build.BuildDiagnostic::toProblem).toList());
+            if (result.exitCode() != 0) requestOpenProblemsPanel();
+        });
+    }
+
+    private Collection<Diagnostic> computeDiagnostics(IdeDiagnosticsContext context) {
         if (context == null || !isDiagnosableEditorFile(context.getFilePath())) {
             return Collections.emptyList();
         }
@@ -2112,6 +2249,21 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (service == null || context == null || context.filePath() == null || !lspHandlesEditor(context.filePath())) {
             return Collections.emptyList();
         }
+        if (!service.isRunning()) return List.of();
+        var snapshot = documents.update(context.filePath(), context.text());
+        long session = projectLifecycleTicket.get();
+        var future = lensQueries.request(context.filePath(), new LensQuery(snapshot, service, session),
+                () -> documents.isCurrent(snapshot) && session == projectLifecycleTicket.get()
+                        ? computeCodeLenses(service, context) : List.of(),
+                () -> SwingUtilities.invokeLater(() -> {
+                    if (documents.isCurrent(snapshot) && session == projectLifecycleTicket.get()) {
+                        requestRefreshCodeLenses(context.filePath());
+                    }
+                }));
+        return future.isDone() && !future.isCompletedExceptionally() ? future.getNow(List.of()) : List.of();
+    }
+
+    private List<CodeLens> computeCodeLenses(LspService service, IdeCodeLensContext context) {
         List<DocumentSymbol> symbols = service.documentSymbols(context.filePath(), context.text());
         if (symbols.isEmpty()) {
             return Collections.emptyList();
@@ -2394,6 +2546,69 @@ public class DotnetIdeAdapter extends IdeAdapter {
     public boolean isCallHierarchyEnabled() {
 
         return true;
+    }
+
+    @Override
+    public boolean isTypeHierarchyEnabled() {
+        LspService service = lspService;
+        return service != null && service.supportsTypeHierarchy();
+    }
+
+    @Override
+    public List<dtm.ide.api.hierarchy.TypeHierarchyItem> prepareTypeHierarchy(IdeCallHierarchyContext context) {
+        LspService service = lspService;
+        return service == null || context == null ? List.of()
+                : service.prepareTypeHierarchy(context.filePath(), context.text(), context.line(), context.col());
+    }
+
+    @Override
+    public List<dtm.ide.api.hierarchy.TypeHierarchyItem> getSupertypes(dtm.ide.api.hierarchy.TypeHierarchyItem item) {
+        LspService service = lspService;
+        return service == null ? List.of() : service.supertypes(item);
+    }
+
+    @Override
+    public List<dtm.ide.api.hierarchy.TypeHierarchyItem> getSubtypes(dtm.ide.api.hierarchy.TypeHierarchyItem item) {
+        LspService service = lspService;
+        return service == null ? List.of() : service.subtypes(item);
+    }
+
+    private CompletableFuture<List<Range>> selectionRanges(Path file, String text, int offset) {
+        LspService service = lspService;
+        if (file == null || service == null || !service.isRunning() || !service.supportsSelectionRanges()) {
+            return CompletableFuture.completedFuture(List.of());
+        }
+        var snapshot = documents.update(file, text);
+        int bounded = Math.max(0, Math.min(offset, snapshot.text().length()));
+        int[] starts = lineStartOffsets(snapshot.text());
+        int line = 0;
+        while (line + 1 < starts.length && starts[line + 1] <= bounded) line++;
+        int column = bounded - starts[line];
+        long session = projectLifecycleTicket.get();
+        var key = new CompletionQuery(snapshot, line, column, "", service, session);
+        return selectionQueries.request(file, key, () -> {
+            var ranges = service.selectionRanges(file, snapshot.text(), key.line(), key.column());
+            return documents.isCurrent(snapshot) && session == projectLifecycleTicket.get() ? ranges : List.of();
+        }, () -> {}).exceptionally(error -> List.of());
+    }
+
+    @Override
+    public List<Range> getSelectionRanges(IdeSelectionRangeContext context) {
+        if (context == null) return List.of();
+        var future = selectionRanges(context.filePath(), context.text(), context.offset());
+        return future.isDone() && !future.isCompletedExceptionally() ? future.getNow(List.of()) : List.of();
+    }
+
+    @Override
+    public CompletableFuture<List<int[]>> getSelectionRanges(SelectionRangeContext context) {
+        if (context == null) return CompletableFuture.completedFuture(List.of());
+        String text = context.text() == null ? "" : context.text();
+        int[] starts = lineStartOffsets(text);
+        return selectionRanges(context.filePath(), text, context.offset()).thenApply(ranges -> ranges.stream()
+                .map(range -> new int[]{offsetOf(starts, text, range.start().line(), range.start().col()),
+                        offsetOf(starts, text, range.end().line(), range.end().col())})
+                .filter(range -> range[0] >= 0 && range[1] > range[0] && range[1] <= text.length())
+                .toList());
     }
 
     @Override
@@ -3278,6 +3493,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         e -> buildSolution(text("menu.clean", "Clean"), List.of("clean"))));
 
         IdeMenuBarBuilder windowMenu = menu.into("window")
+                .add(MenuNode.item("dotnetBuildTools", text("menu.buildTools", "Build Tools"))
+                        .onClick(e -> openBuildTools()))
+                .add(MenuNode.item("dotnetProblems", text("menu.problems", "Problems"))
+                        .onClick(e -> requestOpenProblemsPanel()))
                 .add(
                         MenuNode.item("dotnetNuget", text("menu.nuget", "Manage NuGet"))
                                 .tooltip(text("menu.nuget.tip", "Manage the project's NuGet packages"))
@@ -3315,6 +3534,26 @@ public class DotnetIdeAdapter extends IdeAdapter {
         } else {
             log.debug("Menu do IIS omitido: sistema não é Windows.");
         }
+    }
+
+    private void openBuildTools() {
+        runOnUiThread(() -> {
+            if (buildToolsPanel == null) {
+                buildToolsPanel = new dtm.ide.ui.DotnetBuildToolsPanel(() -> {
+                    Path root = projectPath;
+                    if (root == null) return List.of();
+                    List<Path> targets = new ArrayList<>();
+                    Path solution = resolveWorkspaceSolution();
+                    if (solution != null) targets.add(solution);
+                    targets.addAll(TargetFramework.findProjectFiles(root));
+                    return targets;
+                }, request -> runDotnetOnTarget(request.target(), request.action(), request.arguments()));
+                buildToolsPanelId = registerToolPanel(DockRegion.RIGHT, text("menu.buildTools", "Build Tools"),
+                        ToolIconType.INFO, buildToolsPanel);
+            }
+            buildToolsPanel.refresh();
+            if (buildToolsPanelId != null) requestOpenToolPanel(buildToolsPanelId);
+        });
     }
 
     private void openIisManager() {
@@ -4992,6 +5231,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void runDotnetOnTarget(Path target, String title, List<String> verbAndArgs) {
+        var completed = beginBuildProblems(verbAndArgs.contains("test") ? "test" : "build");
+        long session = projectLifecycleTicket.get();
         Thread thread = new Thread(() -> {
             DotnetSdkService sdk = ensureSdkService();
             java.util.Optional<Path> dotnet;
@@ -5005,6 +5246,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 SwingUtilities.invokeLater(() -> setStatusBarText(text("status.dotnetNotFoundFor", "dotnet not found for {0}.").replace("{0}", title)));
                 return;
             }
+            if (session != projectLifecycleTicket.get()) return;
             OutputPanelHandle panel = requestOutputPanel("dotnet");
             SwingUtilities.invokeLater(() -> {
                 panel.clear();
@@ -5015,6 +5257,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
             command.addAll(verbAndArgs);
             command.add(target.toString());
             OutputStream out = panel.getOutputStream();
+            BuildOutputCapture capture = new BuildOutputCapture(out, target.getParent());
+            Process process = null;
             try {
                 writeLine(out, "> " + String.join(" ", command));
                 Path workDir = target.getParent() != null ? target.getParent() : projectPath;
@@ -5023,16 +5267,19 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     builder.directory(workDir.toFile());
                 }
                 builder.environment().put("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
-                Process process = builder.start();
+                process = builder.start();
+                menuBuildProcesses.add(process);
+                if (session != projectLifecycleTicket.get()) return;
                 try (var in = process.getInputStream()) {
                     byte[] buffer = new byte[8192];
                     int read;
                     while ((read = in.read(buffer)) != -1) {
-                        out.write(buffer, 0, read);
-                        out.flush();
+                        capture.write(buffer, 0, read);
+                        capture.flush();
                     }
                 }
                 int code = process.waitFor();
+                completed.accept(capture.finish(code));
                 writeLine(out, System.lineSeparator() + "[" + title + "] "
                         + text("output.finishedWithCode", "finished with code ") + code);
                 SwingUtilities.invokeLater(() -> setStatusBarText(
@@ -5040,6 +5287,14 @@ public class DotnetIdeAdapter extends IdeAdapter {
                                 : text("status.failedSuffix", " failed (code {0}).").replace("{0}", String.valueOf(code)))));
             } catch (Exception e) {
                 writeLine(out, System.lineSeparator() + "[erro] " + e.getMessage());
+            } finally {
+                if (process != null) {
+                    menuBuildProcesses.remove(process);
+                    if (process.isAlive()) {
+                        process.descendants().forEach(ProcessHandle::destroy);
+                        process.destroy();
+                    }
+                }
             }
         }, "dotnet-tree-build");
         thread.setDaemon(true);

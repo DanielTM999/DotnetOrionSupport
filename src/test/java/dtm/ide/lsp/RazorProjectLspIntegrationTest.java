@@ -27,20 +27,19 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class RazorProjectLspIntegrationTest {
 
-    private static final Path DEFAULT_PROJECT = Path.of("C:\\Users\\danie\\Documents\\development\\Csharp\\MyDotnetAppRazor");
-
     @Test
     void realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml(@TempDir(cleanup = CleanupMode.ALWAYS) Path resourceRoot) throws Exception {
-        Path project = Path.of(System.getProperty("dotnet.razor.project", DEFAULT_PROJECT.toString()));
+        String projectPath = System.getProperty("dotnet.razor.project", "");
+        assertFalse(projectPath.isBlank(), "Informe -Ddotnet.razor.project com um projeto Razor de teste");
+        Path project = Path.of(projectPath);
         Path cshtml = project.resolve("Pages").resolve("Index.cshtml");
         DotnetSdkService sdk = new DotnetSdkService(new TestResource(resourceRoot), new HttpDownloadObserver());
 
-        assumeTrue(Files.isDirectory(project), "Projeto Razor de teste nao encontrado: " + project);
-        assumeTrue(Files.isRegularFile(cshtml), "Arquivo Index.cshtml nao encontrado: " + cshtml);
+        assertTrue(Files.isDirectory(project), "Projeto Razor de teste nao encontrado: " + project);
+        assertTrue(Files.isRegularFile(cshtml), "Arquivo Index.cshtml nao encontrado: " + cshtml);
 
         sdk.ensureRoslynRuntime(DotnetSdkService.DownloadProgressListener.NOOP);
         sdk.ensureRoslyn(DotnetSdkService.DownloadProgressListener.NOOP);

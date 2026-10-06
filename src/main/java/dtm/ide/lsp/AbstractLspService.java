@@ -151,6 +151,8 @@ public abstract class AbstractLspService implements LspService {
     private volatile boolean rangeFormattingSupported;
     private volatile boolean documentHighlightSupported;
     private volatile boolean callHierarchySupported;
+    private volatile boolean selectionRangeSupported;
+    private volatile boolean typeHierarchySupported;
     private volatile boolean codeActionSupported;
     private volatile boolean codeActionResolveSupported;
     private volatile boolean executeCommandSupported;
@@ -352,6 +354,16 @@ public abstract class AbstractLspService implements LspService {
         } catch (Exception e) {
             return Collections.emptyList();
         }
+    }
+
+    @Override
+    public void dispose() {
+        stop();
+        executor.shutdownNow();
+        progressExecutor.shutdownNow();
+        diagnosticsPublishedListeners.clear();
+        loadProgressListeners.clear();
+        applyEditSink = null;
     }
 
     public List<AutoCompleteItem> completeForEditor(Path filePath, String text, int line, int character, String prefix) {
@@ -1676,6 +1688,91 @@ public abstract class AbstractLspService implements LspService {
         return Math.max(0, line) * 1_000_000 + Math.max(0, col);
     }
 
+    @Override
+    public boolean supportsSelectionRanges() { return selectionRangeSupported; }
+
+    @Override
+    public List<Range> selectionRanges(Path file, String text, int line, int column) {
+        if (!selectionRangeSupported || !canUseLsp(file)) return List.of();
+        try {
+            String uri = toUri(file);
+            syncDocument(uri, file, text);
+            JsonNode result = client.sendRequest("textDocument/selectionRange", Map.of(
+                    "textDocument", Map.of("uri", uri), "positions", List.of(LspJsonRpcClient.position(line, column))))
+                    .orTimeout(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS).get();
+            return parseSelectionRanges(result);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return List.of();
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    static List<Range> parseSelectionRanges(JsonNode result) {
+        if (result == null || !result.isArray() || result.isEmpty()) return List.of();
+        List<Range> ranges = new ArrayList<>();
+        JsonNode item = result.get(0);
+        for (int depth = 0; item != null && item.isObject() && depth < 128; depth++) {
+            Range range = parseRange(item.get("range"));
+            if (range != null && !ranges.contains(range)) ranges.add(range);
+            item = item.get("parent");
+        }
+        return List.copyOf(ranges);
+    }
+
+    @Override
+    public boolean supportsTypeHierarchy() { return typeHierarchySupported; }
+
+    @Override
+    public List<dtm.ide.api.hierarchy.TypeHierarchyItem> prepareTypeHierarchy(Path file, String text, int line, int column) {
+        if (!typeHierarchySupported || !canUseLsp(file)) return List.of();
+        syncDocument(toUri(file), file, text);
+        return typeHierarchyRequest("textDocument/prepareTypeHierarchy", Map.of(
+                "textDocument", Map.of("uri", toUri(file)), "position", LspJsonRpcClient.position(line, column)));
+    }
+
+    @Override
+    public List<dtm.ide.api.hierarchy.TypeHierarchyItem> supertypes(dtm.ide.api.hierarchy.TypeHierarchyItem item) {
+        return item == null || item.data() == null ? List.of()
+                : typeHierarchyRequest("typeHierarchy/supertypes", Map.of("item", item.data()));
+    }
+
+    @Override
+    public List<dtm.ide.api.hierarchy.TypeHierarchyItem> subtypes(dtm.ide.api.hierarchy.TypeHierarchyItem item) {
+        return item == null || item.data() == null ? List.of()
+                : typeHierarchyRequest("typeHierarchy/subtypes", Map.of("item", item.data()));
+    }
+
+    private List<dtm.ide.api.hierarchy.TypeHierarchyItem> typeHierarchyRequest(String method, Object parameters) {
+        LspJsonRpcClient rpc = client;
+        if (!typeHierarchySupported || rpc == null || !isRunning()) return List.of();
+        try {
+            JsonNode response = rpc.sendRequest(method, parameters).orTimeout(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS).get();
+            return parseTypeHierarchy(response);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return List.of();
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    static List<dtm.ide.api.hierarchy.TypeHierarchyItem> parseTypeHierarchy(JsonNode response) {
+        if (response == null || !response.isArray()) return List.of();
+        List<dtm.ide.api.hierarchy.TypeHierarchyItem> items = new ArrayList<>();
+        for (JsonNode node : response) {
+            Path file = pathFromUri(node.path("uri").asText());
+            Range range = parseRange(node.get("range"));
+            Range selection = parseRange(node.get("selectionRange"));
+            if (file != null && range != null && selection != null) {
+                items.add(new dtm.ide.api.hierarchy.TypeHierarchyItem(node.path("name").asText(),
+                        node.path("detail").asText(), node.path("kind").asInt(), file, range, selection, node.deepCopy()));
+            }
+        }
+        return List.copyOf(items);
+    }
+
     public boolean isCallHierarchySupported() {
         return referencesSupported && documentSymbolSupported;
     }
@@ -2209,6 +2306,8 @@ public abstract class AbstractLspService implements LspService {
         rangeFormattingSupported = false;
         documentHighlightSupported = false;
         callHierarchySupported = false;
+        selectionRangeSupported = false;
+        typeHierarchySupported = false;
         codeActionSupported = false;
         codeActionResolveSupported = false;
         executeCommandSupported = false;
@@ -2273,6 +2372,8 @@ public abstract class AbstractLspService implements LspService {
         rangeFormattingSupported = supportsProvider(node(capabilities, "documentRangeFormattingProvider"));
         documentHighlightSupported = supportsProvider(node(capabilities, "documentHighlightProvider"));
         callHierarchySupported = supportsProvider(node(capabilities, "callHierarchyProvider"));
+        selectionRangeSupported = supportsProvider(node(capabilities, "selectionRangeProvider"));
+        typeHierarchySupported = supportsProvider(node(capabilities, "typeHierarchyProvider"));
         codeActionSupported = supportsProvider(node(capabilities, "codeActionProvider"));
         codeActionResolveSupported = node(capabilities, "codeActionProvider") != null
                 && node(capabilities, "codeActionProvider").path("resolveProvider").asBoolean(false);
@@ -2406,6 +2507,8 @@ public abstract class AbstractLspService implements LspService {
                 "formats", List.of("relative")));
         textDocument.put("inlayHint", Map.of("dynamicRegistration", true));
         textDocument.put("callHierarchy", Map.of("dynamicRegistration", true));
+        textDocument.put("selectionRange", Map.of("dynamicRegistration", false));
+        textDocument.put("typeHierarchy", Map.of("dynamicRegistration", false));
         textDocument.put("publishDiagnostics", Map.of("relatedInformation", false));
         textDocument.putAll(extraTextDocumentCapabilities());
         Map<String, Object> workspace = Map.of(
@@ -2616,6 +2719,18 @@ public abstract class AbstractLspService implements LspService {
         if (firstOpen) {
             prewarmImportCompletion(uri, safeText);
         }
+    }
+
+    @Override
+    public synchronized void closeDocument(Path file) {
+        if (file == null) return;
+        String uri = toUri(file);
+        if (openedContent.remove(uri) != null) {
+            LspJsonRpcClient rpc = client;
+            if (rpc != null) rpc.sendNotification("textDocument/didClose", Map.of("textDocument", Map.of("uri", uri)));
+        }
+        documentVersions.remove(uri);
+        diagnosticsByUri.remove(normalizeUriKey(uri));
     }
 
     protected synchronized void resyncDocuments(Predicate<String> uriFilter) {

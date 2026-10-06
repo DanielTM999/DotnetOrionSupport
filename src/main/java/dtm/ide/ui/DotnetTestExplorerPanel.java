@@ -115,11 +115,36 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private final JButton stopButton = new JButton(text("button.stop", "Stop"));
     private final JTextField filterField = new JTextField(20);
 
-    private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
+    private final java.util.concurrent.atomic.AtomicLong operation = new java.util.concurrent.atomic.AtomicLong();
+    private volatile java.util.concurrent.Future<?> pending;
+    private ExecutorService worker = newWorker();
+
+    private static ExecutorService newWorker() {
+        return Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "dotnet-test-explorer");
         t.setDaemon(true);
         return t;
-    });
+        });
+    }
+
+    public void resetProject() {
+        operation.incrementAndGet();
+        if (pending != null) pending.cancel(true);
+        build.stopTests();
+        worker.shutdownNow();
+        worker = newWorker();
+        autoDiscovered = false;
+        statuses.clear();
+        populateTree(List.of());
+        clearConsole();
+        setBusy(false, text("status.ready", "Ready."));
+    }
+
+    private void post(long ticket, Runnable update) {
+        SwingUtilities.invokeLater(() -> {
+            if (ticket == operation.get()) update.run();
+        });
+    }
     private volatile boolean busy;
     private boolean autoDiscovered;
 
@@ -277,7 +302,8 @@ public final class DotnetTestExplorerPanel extends JPanel {
         clearConsole();
         appendConsole("> dotnet test --list-tests" + System.lineSeparator());
         String configuration = config();
-        worker.execute(() -> {
+        long ticket = operation.incrementAndGet();
+        pending = worker.submit(() -> {
             List<String> tests;
             try {
                 tests = build.listTests(project, dotnet.get(), configuration);
@@ -286,7 +312,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
                 log.debug("Falha ao listar testes: {}", ex.getMessage());
             }
             List<String> found = tests;
-            SwingUtilities.invokeLater(() -> {
+            post(ticket, () -> {
                 populateTree(found);
                 setBusy(false, found.isEmpty()
                         ? text("status.noTestsFound", "No tests found (is there a test project in the folder?).")
@@ -394,11 +420,16 @@ public final class DotnetTestExplorerPanel extends JPanel {
                 + System.lineSeparator() + System.lineSeparator());
         markRunning(scope);
         String configuration = config();
-        worker.execute(() -> {
+        long ticket = operation.incrementAndGet();
+        pending = worker.submit(() -> {
             int exit = -1;
             List<String> failed = new ArrayList<>();
             try {
                 Process process = build.launchTest(project, dotnet.get(), configuration, filter, debug);
+                if (ticket != operation.get() || Thread.currentThread().isInterrupted()) {
+                    process.destroyForcibly();
+                    return;
+                }
                 boolean debuggerAttached = false;
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -408,12 +439,12 @@ public final class DotnetTestExplorerPanel extends JPanel {
                             Long pid = debugProcessId(line);
                             if (pid != null && debugProcessHandler != null) {
                                 debuggerAttached = true;
-                                debugProcessHandler.accept(pid);
+                                if (ticket == operation.get()) debugProcessHandler.accept(pid);
                             }
                         }
                         if (!WARNING_LINE.matcher(line).find()) {
                             String consoleLine = shortenPaths(prettifyTestLine(line));
-                            SwingUtilities.invokeLater(() -> appendConsole(consoleLine + System.lineSeparator()));
+                            post(ticket, () -> appendConsole(consoleLine + System.lineSeparator()));
                         }
                         Matcher matcher = RESULT_LINE.matcher(line.strip());
                         if (matcher.find()) {
@@ -421,9 +452,9 @@ public final class DotnetTestExplorerPanel extends JPanel {
                             String name = matcher.group(2);
                             if ("Failed".equals(verb)) {
                                 failed.add(name);
-                                SwingUtilities.invokeLater(() -> applyStatus(name, Status.FAILED));
+                                post(ticket, () -> applyStatus(name, Status.FAILED));
                             } else if ("Passed".equals(verb)) {
-                                SwingUtilities.invokeLater(() -> applyStatus(name, Status.PASSED));
+                                post(ticket, () -> applyStatus(name, Status.PASSED));
                             }
                         }
                     }
@@ -433,7 +464,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
                 log.debug("Falha ao executar testes: {}", ex.getMessage());
             }
             int finalExit = exit;
-            SwingUtilities.invokeLater(() -> {
+            post(ticket, () -> {
                 finalizeRun(scope, failed, finalExit);
                 setBusy(false, runSummary(failed, finalExit));
             });
@@ -441,6 +472,8 @@ public final class DotnetTestExplorerPanel extends JPanel {
     }
 
     private void stop() {
+        operation.incrementAndGet();
+        if (pending != null) pending.cancel(true);
         build.stopTests();
         setBusy(false, text("status.stopped", "Run stopped."));
     }

@@ -108,6 +108,16 @@ public final class DotnetRunConfigurationForm implements RunConfigurationForm {
     @Override
     public RunConfigurationData getData() {
         Map<String, Object> properties = new LinkedHashMap<>();
+        if (current != null && current.getProperties() != null) properties.putAll(current.getProperties());
+        for (String key : List.of(DotnetRunSupport.PROP_PROJECT, DotnetRunSupport.PROP_CONFIGURATION,
+                DotnetRunSupport.PROP_TARGET_FRAMEWORK, DotnetRunSupport.PROP_LAUNCH_PROFILE,
+                DotnetRunSupport.PROP_PROGRAM_ARGS, DotnetRunSupport.PROP_WORKING_DIRECTORY,
+                DotnetRunSupport.PROP_ENVIRONMENT)) properties.remove(key);
+        if (isIisType()) {
+            for (String key : List.of(DotnetRunSupport.PROP_IIS_SITE, DotnetRunSupport.PROP_IIS_APP_PATH,
+                    DotnetRunSupport.PROP_IIS_APP_POOL, DotnetRunSupport.PROP_IIS_LAUNCH_URL,
+                    DotnetRunSupport.PROP_IIS_LAUNCH_BROWSER)) properties.remove(key);
+        }
         Path project = (Path) projectCombo.getSelectedItem();
         if (project != null) {
             properties.put(DotnetRunSupport.PROP_PROJECT, project.toString());
