@@ -45,6 +45,13 @@ class LspAutocompleteTest {
             assertTrue(filtered.get(0).label().startsWith("Wr"),
                     "com prefixo 'Wr' o primeiro item deveria começar por 'Wr', veio: " + filtered.get(0).label());
             assertTrue(hasLabel(filtered, "WriteLine"), "esperava 'WriteLine' entre os autocompletes filtrados");
+            var unresolved = filtered.getFirst();
+            var resolved = service.resolveCompletion(unresolved).get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertFalse(unresolved.equals(resolved), "selected completion should be resolved on demand");
+            var folds = service.foldingRanges(program, text).get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(1, folds.size());
+            assertFalse(service.referencesForDelete(program, text, 0, caret).complete(),
+                    "null results must never authorize safe deletion");
         } finally {
             service.stop();
         }

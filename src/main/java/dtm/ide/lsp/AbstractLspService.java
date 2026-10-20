@@ -1,6 +1,7 @@
 package dtm.ide.lsp;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import dtm.ide.api.extension.Resource;
 import dtm.ide.api.hierarchy.CallHierarchyCall;
 import dtm.ide.api.hierarchy.CallHierarchyItem;
@@ -85,7 +86,6 @@ public abstract class AbstractLspService implements LspService {
 
     private static final long REQUEST_TIMEOUT_MS = 4000;
     private static final long COMPLETION_TIMEOUT_MS = 10000;
-    private static final long COMPLETION_RESOLVE_BUDGET_MS = 2500;
     private static final int MAX_COMPLETION_ITEMS = 50;
     private static final int COMPLETION_WARMUP_RETRIES = 4;
     private static final long COMPLETION_WARMUP_DELAY_MS = 150;
@@ -164,6 +164,9 @@ public abstract class AbstractLspService implements LspService {
     private volatile boolean inlayHintSupported;
     private volatile boolean onTypeFormattingSupported;
     private volatile boolean completionResolveSupported;
+    private record CompletionResolution(JsonNode raw, String uri, String content) {}
+    private final Map<AutoCompleteItem, CompletionResolution> completionData = java.util.Collections.synchronizedMap(new java.util.IdentityHashMap<>());
+    private volatile boolean foldingRangesSupported;
     private final AtomicBoolean importCompletionWarm = new AtomicBoolean(false);
     private final Set<String> importWarmupInFlight = ConcurrentHashMap.newKeySet();
     private volatile Set<Character> onTypeTriggerCharacters = Set.of();
@@ -389,7 +392,7 @@ public abstract class AbstractLspService implements LspService {
             if (isIncompleteCompletion(best)) {
                 warmImportCompletionAsync(uri, line, character);
             }
-            List<AutoCompleteItem> items = parseAndResolveCompletions(best, prefix);
+            List<AutoCompleteItem> items = parseAndResolveCompletions(best, prefix, uri, text);
             List<AutoCompleteItem> merged = mergeImportCandidates(items, text, prefix);
             return prioritizeByPrefix(merged, prefix);
         } catch (Exception e) {
@@ -967,6 +970,60 @@ public abstract class AbstractLspService implements LspService {
         } catch (Exception e) {
             return Collections.emptyList();
         }
+    }
+
+    @Override public ReferenceSearch referencesForDelete(Path file, String text, int line, int column) {
+        if (!canUseLsp(file) || !referencesSupported) return new ReferenceSearch(List.of(), false);
+        try {
+            String uri = toUri(file);
+            syncDocument(uri, file, text);
+            var result = client.sendRequest("textDocument/references", Map.of(
+                    "textDocument", Map.of("uri", uri), "position", LspJsonRpcClient.position(line, column),
+                    "context", Map.of("includeDeclaration", false))).get(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return new ReferenceSearch(parseLocations(result), result != null && result.isArray());
+        } catch (Exception e) { return new ReferenceSearch(List.of(), false); }
+    }
+
+    @Override public void workspaceFileChanged(Path file, int type) {
+        var rpc = client;
+        if (file == null || !isRunning() || rpc == null || type < 1 || type > 3) return;
+        rpc.sendNotification("workspace/didChangeWatchedFiles", Map.of("changes", List.of(Map.of("uri", toUri(file), "type", type))));
+    }
+
+    @Override public void updateDocument(Path file, String text) {
+        if (canUseLsp(file)) syncDocument(toUri(file), file, text);
+    }
+
+    @Override public CompletableFuture<AutoCompleteItem> resolveCompletion(AutoCompleteItem item) {
+        CompletionResolution resolution = completionData.get(item);
+        if (!isRunning() || !completionResolveSupported || resolution == null
+                || !Objects.equals(openedContent.get(resolution.uri()), resolution.content())) return CompletableFuture.completedFuture(item);
+        return client.sendRequest("completionItem/resolve", resolution.raw()).orTimeout(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                .thenApply(result -> {
+                    if (result == null || !result.isObject() || !Objects.equals(openedContent.get(resolution.uri()), resolution.content())) return item;
+                    var merged = (ObjectNode) resolution.raw().deepCopy();
+                    merged.setAll((ObjectNode) result);
+                    return toAutoCompleteItem(merged);
+                })
+                .exceptionally(error -> item);
+    }
+
+    @Override public CompletableFuture<List<dtm.stools.component.panels.editor.code.prototype.folding.FoldRange>> foldingRanges(Path file, String text) {
+        if (!canUseLsp(file) || !foldingRangesSupported) return CompletableFuture.completedFuture(List.of());
+        try {
+            syncDocument(toUri(file), file, text);
+            return client.sendRequest("textDocument/foldingRange", Map.of("textDocument", Map.of("uri", toUri(file))))
+                    .orTimeout(REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS).thenApply(result -> {
+                        List<dtm.stools.component.panels.editor.code.prototype.folding.FoldRange> ranges = new ArrayList<>();
+                        if (result != null && result.isArray()) for (JsonNode node : result) {
+                            int start = node.path("startLine").asInt(-1), end = node.path("endLine").asInt(-1);
+                            String kind = node.path("kind").asText("region");
+                            if (start >= 0 && end > start) ranges.add(new dtm.stools.component.panels.editor.code.prototype.folding.FoldRange(
+                                    start, end, kind, "imports".equals(kind)));
+                        }
+                        return List.copyOf(ranges);
+                    }).exceptionally(error -> List.of());
+        } catch (Exception e) { return CompletableFuture.completedFuture(List.of()); }
     }
 
     public List<DocumentHighlight> documentHighlights(Path filePath, String text, int line, int character) {
@@ -2299,6 +2356,8 @@ public abstract class AbstractLspService implements LspService {
         importWarmupInFlight.clear();
         definitionSupported = false;
         referencesSupported = false;
+        foldingRangesSupported = false;
+        completionData.clear();
         documentSymbolSupported = false;
         renameSupported = false;
         prepareRenameSupported = false;
@@ -2364,6 +2423,7 @@ public abstract class AbstractLspService implements LspService {
         JsonNode capabilities = result == null ? null : result.get("capabilities");
         definitionSupported = supportsProvider(node(capabilities, "definitionProvider"));
         referencesSupported = supportsProvider(node(capabilities, "referencesProvider"));
+        foldingRangesSupported = supportsProvider(node(capabilities, "foldingRangeProvider"));
         documentSymbolSupported = supportsProvider(node(capabilities, "documentSymbolProvider"));
         renameSupported = supportsProvider(node(capabilities, "renameProvider"));
         prepareRenameSupported = node(capabilities, "renameProvider") != null
@@ -2508,12 +2568,14 @@ public abstract class AbstractLspService implements LspService {
         textDocument.put("inlayHint", Map.of("dynamicRegistration", true));
         textDocument.put("callHierarchy", Map.of("dynamicRegistration", true));
         textDocument.put("selectionRange", Map.of("dynamicRegistration", false));
+        textDocument.put("foldingRange", Map.of("dynamicRegistration", false, "lineFoldingOnly", true));
         textDocument.put("typeHierarchy", Map.of("dynamicRegistration", false));
         textDocument.put("publishDiagnostics", Map.of("relatedInformation", false));
         textDocument.putAll(extraTextDocumentCapabilities());
         Map<String, Object> workspace = Map.of(
                 "symbol", Map.of("dynamicRegistration", false),
                 "configuration", true,
+                "didChangeWatchedFiles", Map.of("dynamicRegistration", false),
                 "didChangeConfiguration", Map.of("dynamicRegistration", true),
                 "applyEdit", true,
                 "executeCommand", Map.of("dynamicRegistration", false));
@@ -2907,7 +2969,7 @@ public abstract class AbstractLspService implements LspService {
         return out;
     }
 
-    private List<AutoCompleteItem> parseAndResolveCompletions(JsonNode result, String prefix) {
+    private List<AutoCompleteItem> parseAndResolveCompletions(JsonNode result, String prefix, String uri, String content) {
         if (result == null || result.isNull()) {
             return Collections.emptyList();
         }
@@ -2926,10 +2988,13 @@ public abstract class AbstractLspService implements LspService {
         if (ordered.size() > MAX_COMPLETION_ITEMS) {
             ordered = ordered.subList(0, MAX_COMPLETION_ITEMS);
         }
-        List<JsonNode> resolved = resolveCompletionItems(ordered);
+        List<JsonNode> resolved = ordered;
         List<AutoCompleteItem> out = new ArrayList<>(resolved.size());
+        synchronized (completionData) { if (completionData.size() >= MAX_COMPLETION_ITEMS * 8) completionData.clear(); }
         for (JsonNode item : resolved) {
-            out.add(toAutoCompleteItem(item));
+            var completion = toAutoCompleteItem(item);
+            completionData.put(completion, new CompletionResolution(item, uri, content));
+            out.add(completion);
         }
         return out;
     }
@@ -2954,40 +3019,6 @@ public abstract class AbstractLspService implements LspService {
         }
         starts.addAll(contains);
         return starts;
-    }
-
-    private List<JsonNode> resolveCompletionItems(List<JsonNode> items) {
-        if (!completionResolveSupported || items.isEmpty()) {
-            return items;
-        }
-        List<CompletableFuture<JsonNode>> futures = new ArrayList<>(items.size());
-        for (JsonNode item : items) {
-            if (!needsCompletionResolve(item)) {
-                futures.add(CompletableFuture.completedFuture(item));
-                continue;
-            }
-            futures.add(client.sendRequest("completionItem/resolve", item)
-                    .handle((res, err) -> err == null && res != null && !res.isNull() ? res : item));
-        }
-        List<JsonNode> out = new ArrayList<>(items.size());
-        long deadline = System.currentTimeMillis() + COMPLETION_RESOLVE_BUDGET_MS;
-        for (int i = 0; i < futures.size(); i++) {
-            try {
-                long remaining = Math.max(1, deadline - System.currentTimeMillis());
-                out.add(futures.get(i).get(remaining, TimeUnit.MILLISECONDS));
-            } catch (Exception e) {
-                out.add(items.get(i));
-            }
-        }
-        return out;
-    }
-
-    private static boolean needsCompletionResolve(JsonNode item) {
-        JsonNode existing = item.get("additionalTextEdits");
-        if (existing != null && existing.isArray() && !existing.isEmpty()) {
-            return false;
-        }
-        return item.hasNonNull("data");
     }
 
     private AutoCompleteItem toAutoCompleteItem(JsonNode item) {

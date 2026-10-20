@@ -231,6 +231,9 @@ class DotnetSdkServiceTest {
                 + DotnetSdkService.DEFAULT_ROSLYN_RAZOR_VERSION.toLowerCase()
                 + ".nupkg");
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            zip.putNextEntry(new ZipEntry("Microsoft.VisualStudioCode.RazorExtension.nuspec"));
+            zip.write("<package><metadata><license type='expression'>MIT</license></metadata></package>".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
             zip.putNextEntry(new ZipEntry("lib/net472/Microsoft.VisualStudioCode.RazorExtension.dll"));
             zip.write(new byte[]{1, 2, 3});
             zip.closeEntry();

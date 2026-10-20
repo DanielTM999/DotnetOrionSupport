@@ -106,7 +106,10 @@ public class DotnetSdkService {
 
     public Optional<Path> getDotnetPath(String sdkVersion) {
         String version = normalizeSdkVersion(sdkVersion);
-        return dotnetPathCache.computeIfAbsent(version, this::resolveDotnetPath);
+        return dotnetPathCache.computeIfAbsent(version, this::resolveDotnetPath).map(path -> {
+            try { return path.toRealPath(); }
+            catch (java.io.IOException ignored) { return path.toAbsolutePath().normalize(); }
+        });
     }
 
     private Optional<Path> resolveDotnetPath(String version) {
@@ -1127,6 +1130,9 @@ public class DotnetSdkService {
     }
 
     private static void installArchive(Path archive, Path targetDir) throws Exception {
+        if (archive.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".nupkg")) {
+            PermissiveNugetLicense.verify(archive);
+        }
         String name = archive.getFileName().toString().toLowerCase(Locale.ROOT);
         if (name.endsWith(".tar.gz") || name.endsWith(".tgz")) {
             extractTarGz(archive, targetDir);

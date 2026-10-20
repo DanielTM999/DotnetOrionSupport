@@ -66,6 +66,8 @@ public interface LspService {
     void stop();
 
     default void closeDocument(Path file) {}
+    default void workspaceFileChanged(Path file, int type) {}
+    default void updateDocument(Path file, String text) {}
 
     default void dispose() { stop(); }
 
@@ -92,6 +94,19 @@ public interface LspService {
     }
 
     List<Location> references(Path filePath, String text, int line, int character);
+
+    record ReferenceSearch(List<Location> locations, boolean complete) {}
+    default ReferenceSearch referencesForDelete(Path file, String text, int line, int column) {
+        return new ReferenceSearch(List.of(), false);
+    }
+
+    default java.util.concurrent.CompletableFuture<AutoCompleteItem> resolveCompletion(AutoCompleteItem item) {
+        return java.util.concurrent.CompletableFuture.completedFuture(item);
+    }
+
+    default java.util.concurrent.CompletableFuture<List<dtm.stools.component.panels.editor.code.prototype.folding.FoldRange>> foldingRanges(Path file, String text) {
+        return java.util.concurrent.CompletableFuture.completedFuture(List.of());
+    }
 
     List<DocumentHighlight> documentHighlights(Path filePath, String text, int line, int character);
 

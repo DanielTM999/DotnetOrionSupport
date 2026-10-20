@@ -38,17 +38,25 @@ public final class FakeLspServerMain {
             ObjectNode response = MAPPER.createObjectNode();
             response.put("jsonrpc", "2.0");
             response.set("id", idNode);
-            response.set("result", resultFor(method));
+            response.set("result", resultFor(method, message.path("params")));
             writeMessage(out, response);
         }
     }
 
-    private static JsonNode resultFor(String method) {
+    private static JsonNode resultFor(String method, JsonNode params) {
         switch (method) {
             case "initialize":
                 return initializeResult();
             case "textDocument/completion":
                 return completionResult();
+            case "completionItem/resolve":
+                var item = (ObjectNode) params.deepCopy();
+                item.put("documentation", "Resolved documentation");
+                return item;
+            case "textDocument/foldingRange":
+                var ranges = MAPPER.createArrayNode();
+                ranges.addObject().put("startLine", 0).put("endLine", 4).put("kind", "imports");
+                return ranges;
             case "shutdown":
                 return MAPPER.nullNode();
             default:
@@ -60,11 +68,13 @@ public final class FakeLspServerMain {
         ObjectNode capabilities = MAPPER.createObjectNode();
         capabilities.put("textDocumentSync", 1);
         ObjectNode completion = MAPPER.createObjectNode();
-        completion.put("resolveProvider", false);
+        completion.put("resolveProvider", true);
         ArrayNode triggers = completion.putArray("triggerCharacters");
         triggers.add(".");
         capabilities.set("completionProvider", completion);
         capabilities.put("definitionProvider", true);
+        capabilities.put("foldingRangeProvider", true);
+        capabilities.put("referencesProvider", true);
         ObjectNode result = MAPPER.createObjectNode();
         result.set("capabilities", capabilities);
         return result;
@@ -80,6 +90,7 @@ public final class FakeLspServerMain {
             item.put("kind", 2);
             item.put("insertText", member);
             item.put("detail", "void Console." + member + "()");
+            item.putObject("data").put("member", member);
             items.add(item);
         }
         return result;

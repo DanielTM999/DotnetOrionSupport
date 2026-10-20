@@ -233,6 +233,21 @@
                         <phase>package</phase>
                         <goals><goal>shade</goal></goals>
                         <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>META-INF/NOTICE</resource>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>META-INF/NOTICE.txt</resource>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>META-INF/LICENSE</resource>
+                                </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>META-INF/LICENSE.txt</resource>
+                                </transformer>
+                            </transformers>
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
@@ -281,6 +296,26 @@
                             <outputDirectory>${project.build.outputDirectory}/licenses</outputDirectory>
                             <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
                             <excludedScopes>test,provided</excludedScopes>
+                            <useMissingFile>true</useMissingFile>
+                            <missingFile>${project.build.directory}/license-overrides/THIRD-PARTY.properties</missingFile>
+                            <deployMissingFile>false</deployMissingFile>
+                            <failOnMissing>true</failOnMissing>
+                            <failOnBlacklist>true</failOnBlacklist>
+                            <force>true</force>
+                            <includedLicenses>
+                                <includedLicense>MIT</includedLicense>
+                                <includedLicense>MIT License</includedLicense>
+                                <includedLicense>Apache-2.0</includedLicense>
+                                <includedLicense>The Apache Software License, Version 2.0</includedLicense>
+                                <includedLicense>The Apache License, Version 2.0</includedLicense>
+                                <includedLicense>Apache License, Version 2.0</includedLicense>
+                                <includedLicense>BSD-2-Clause</includedLicense>
+                                <includedLicense>BSD-3-Clause</includedLicense>
+                                <includedLicense>The BSD 2-Clause License</includedLicense>
+                                <includedLicense>The BSD 3-Clause License</includedLicense>
+                                <includedLicense>ISC</includedLicense>
+                                <includedLicense>Public Domain</includedLicense>
+                            </includedLicenses>
                         </configuration>
                     </execution>
                 </executions>
@@ -290,6 +325,20 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>3.3.1</version>
                 <executions>
+                    <execution>
+                        <id>prepare-license-overrides</id>
+                        <phase>initialize</phase>
+                        <goals><goal>copy-resources</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/license-overrides</outputDirectory>
+                            <overwrite>true</overwrite>
+                            <resources><resource>
+                                <directory>${project.basedir}/src/license</directory>
+                                <filtering>false</filtering>
+                                <includes><include>THIRD-PARTY.properties</include></includes>
+                            </resource></resources>
+                        </configuration>
+                    </execution>
                     <execution>
                         <id>copy-project-license-to-jar</id>
                         <phase>generate-resources</phase>

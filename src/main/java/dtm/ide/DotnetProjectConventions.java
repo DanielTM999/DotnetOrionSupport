@@ -11,6 +11,12 @@ import javax.swing.UIManager;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileVisitOption;
+import java.nio.file.FileVisitResult;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.EnumSet;
+import java.util.function.Predicate;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -63,6 +69,18 @@ final class DotnetProjectConventions {
     );
 
     private static final int MAX_SCAN_DEPTH = 6;
+
+    private static final int MAX_SCANNED_FILES = 5000;
+
+    private static final Set<String> SKIPPED_SCAN_DIRECTORIES = Set.of(
+            "node_modules",
+            "target",
+            "build",
+            "out",
+            "dist",
+            "vendor",
+            "__pycache__"
+    );
 
     private static final int RAZOR_SCAN_DEPTH = 8;
 
@@ -201,34 +219,62 @@ final class DotnetProjectConventions {
     }
 
     private static boolean hasCSharpMajority(Path projectDir) {
-        try (Stream<Path> entries = Files.walk(projectDir, MAX_SCAN_DEPTH)) {
-            long csLike = 0;
-            long otherSource = 0;
-            for (Path entry : (Iterable<Path>) entries::iterator) {
-                if (!Files.isRegularFile(entry) || entry.getFileName() == null
-                        || isInIgnoredDir(projectDir, entry)) {
-                    continue;
-                }
-                if (isCSharpLike(entry)) {
-                    csLike++;
-                } else if (isOtherSource(entry)) {
-                    otherSource++;
-                }
-            }
-            return csLike > 0 && csLike >= otherSource;
-        } catch (Exception e) {
-            return false;
-        }
+        long[] counts = countScannedSources(
+                projectDir,
+                DotnetProjectConventions::isCSharpLike,
+                DotnetProjectConventions::isOtherSource,
+                false
+        );
+        return counts[0] > 0 && counts[0] >= counts[1];
     }
 
-    private static boolean isInIgnoredDir(Path root, Path file) {
-        Path relative = root.relativize(file);
-        for (int i = 0; i < relative.getNameCount() - 1; i++) {
-            if (isHiddenArtifactName(relative.getName(i).toString())) {
-                return true;
-            }
+    private static long[] countScannedSources(Path root, Predicate<Path> primary, Predicate<Path> other, boolean stopAtFirstPrimary) {
+        long[] counts = new long[2];
+        int[] scanned = new int[1];
+        try {
+            Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), MAX_SCAN_DEPTH, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    if (!dir.equals(root) && isSkippedScanDirectory(dir)) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (attrs.isRegularFile() && file.getFileName() != null) {
+                        if (primary.test(file)) {
+                            counts[0]++;
+                            if (stopAtFirstPrimary) {
+                                return FileVisitResult.TERMINATE;
+                            }
+                        } else if (other.test(file)) {
+                            counts[1]++;
+                        }
+                    }
+                    scanned[0]++;
+                    return scanned[0] >= MAX_SCANNED_FILES ? FileVisitResult.TERMINATE : FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException | RuntimeException e) {
+            return counts;
         }
-        return false;
+        return counts;
+    }
+
+    private static boolean isSkippedScanDirectory(Path dir) {
+        Path fileName = dir.getFileName();
+        if (fileName == null) {
+            return false;
+        }
+        String name = fileName.toString();
+        return name.startsWith(".") || HIDDEN_ROOT_BUILD_ARTIFACTS.contains(name) || SKIPPED_SCAN_DIRECTORIES.contains(name);
     }
 
     static boolean isHiddenArtifactName(String name) {

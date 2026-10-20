@@ -152,6 +152,11 @@ public final class DotnetBuild {
 
     public Process launchTest(Path project, Path dotnet, String configuration,
                               String filter, boolean waitForDebugger) throws IOException {
+        return launchTest(project, dotnet, configuration, filter, waitForDebugger, List.of());
+    }
+
+    public Process launchTest(Path project, Path dotnet, String configuration,
+                              String filter, boolean waitForDebugger, List<String> reportArguments) throws IOException {
         List<String> command = new ArrayList<>();
         command.add(dotnet.toAbsolutePath().toString());
         command.add("test");
@@ -162,6 +167,12 @@ public final class DotnetBuild {
             command.add("--filter");
             command.add(filter);
         }
+        command.addAll(reportArguments);
+        return launchTestCommand(project, dotnet, command, waitForDebugger);
+    }
+
+    public Process launchTestCommand(Path project, Path dotnet, List<String> command, boolean waitForDebugger) throws IOException {
+        if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Test execution cancelled");
         ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(project.toFile());
         builder.redirectErrorStream(true);
@@ -172,7 +183,31 @@ public final class DotnetBuild {
         }
         Process process = builder.start();
         registerProcess(DotnetRunSupport.TYPE_TEST, process);
+        if (Thread.currentThread().isInterrupted()) {
+            destroyQuietly(process);
+            throw new java.io.InterruptedIOException("Test execution cancelled");
+        }
         return process;
+    }
+
+    public String captureTestCommand(Path project, Path dotnet, List<String> command) throws IOException {
+        Process process = launchTestCommand(project, dotnet, command, false);
+        var output = new ByteArrayOutputStream();
+        Thread reader = Thread.ofVirtual().start(() -> {
+            try { process.getInputStream().transferTo(output); } catch (IOException ignored) { }
+        });
+        try {
+            if (!process.waitFor(240, TimeUnit.SECONDS)) throw new IOException("Test discovery timed out");
+            reader.join(2000);
+            String text = output.toString(StandardCharsets.UTF_8);
+            if (process.exitValue() != 0) throw new IOException(text);
+            return text;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); throw new IOException("Test discovery cancelled", e);
+        } finally {
+            if (process.isAlive()) destroyQuietly(process);
+            activeProcesses.remove(DotnetRunSupport.TYPE_TEST, process);
+        }
     }
 
     public void stopTests() {
@@ -1464,7 +1499,9 @@ public final class DotnetBuild {
         if (dotnet == null) {
             return;
         }
-        Path root = dotnet.toAbsolutePath().normalize().getParent();
+        Path executable = dotnet.toAbsolutePath().normalize();
+        try { executable = executable.toRealPath(); } catch (IOException ignored) { }
+        Path root = executable.getParent();
         if (root == null) {
             return;
         }
@@ -1472,7 +1509,7 @@ public final class DotnetBuild {
         env.put("DOTNET_ROOT", value);
         env.put("DOTNET_ROOT_X64", value);
         env.put("DOTNET_ROOT(x86)", value);
-        env.put("DOTNET_HOST_PATH", dotnet.toAbsolutePath().normalize().toString());
+        env.put("DOTNET_HOST_PATH", executable.toString());
         String pathKey = pathEnvName(env);
         String path = env.get(pathKey);
         env.put(pathKey, value + java.io.File.pathSeparator + (path == null ? "" : path));

@@ -28,6 +28,18 @@ public final class DotnetBuildToolsPanel extends JPanel implements AutoCloseable
     private final JTextField target = new JTextField();
     private final JLabel status = new JLabel(" ");
     private final JButton execute = new JButton(text("run", "Run"));
+    private dtm.ide.project.WorkspaceTarget preferred;
+    private boolean loadingSelection;
+    private Consumer<dtm.ide.project.WorkspaceTarget> selectionChanged = ignored -> {};
+
+    public void setSelectionChangedListener(Consumer<dtm.ide.project.WorkspaceTarget> listener) { selectionChanged = listener; }
+
+    public void setSelection(dtm.ide.project.WorkspaceTarget selection) {
+        loadingSelection = true;
+        preferred = selection;
+        if (selection != null) configuration.setSelectedItem(selection.configuration());
+        loadingSelection = false;
+    }
 
     public DotnetBuildToolsPanel(Supplier<List<Path>> projects, Consumer<BuildRequest> run) {
         super(new BorderLayout(8, 8));
@@ -42,6 +54,8 @@ public final class DotnetBuildToolsPanel extends JPanel implements AutoCloseable
         target.setEnabled(false);
         action.addActionListener(event -> target.setEnabled("msbuild".equals(action.getSelectedItem())));
         project.addActionListener(event -> refreshFrameworks());
+        configuration.addActionListener(event -> publishSelection());
+        framework.addActionListener(event -> publishSelection());
         JButton refresh = new JButton(text("refresh", "Refresh"));
         refresh.addActionListener(event -> refresh());
         execute.addActionListener(event -> execute());
@@ -57,11 +71,15 @@ public final class DotnetBuildToolsPanel extends JPanel implements AutoCloseable
     private static String text(String key, String fallback) { return I18n.getText(DotnetBuildToolsPanel.class, key, fallback); }
 
     private static void addField(JPanel form, String key, String fallback, JComponent component) {
-        form.add(new JLabel(text(key, fallback)));
+        JLabel label = new JLabel(text(key, fallback));
+        label.setLabelFor(component);
+        form.add(label);
         form.add(component);
     }
 
     public void refresh() {
+        Path previous = preferred != null ? preferred.target() : (Path) project.getSelectedItem();
+        loadingSelection = true;
         long ticket = revision.incrementAndGet();
         frameworkRevision.incrementAndGet();
         project.removeAllItems();
@@ -74,12 +92,14 @@ public final class DotnetBuildToolsPanel extends JPanel implements AutoCloseable
                 SwingUtilities.invokeLater(() -> {
                     if (ticket != revision.get()) return;
                     found.forEach(project::addItem);
+                    if (previous != null && found.contains(previous)) project.setSelectedItem(previous);
+                    loadingSelection = false;
                     execute.setEnabled(!found.isEmpty());
                     status.setText(found.isEmpty() ? text("empty", "No projects found.") : " ");
                 });
             } catch (Exception failure) {
                 SwingUtilities.invokeLater(() -> {
-                    if (ticket == revision.get()) status.setText(failure.getMessage());
+                    if (ticket == revision.get()) { loadingSelection = false; status.setText(failure.getMessage()); }
                 });
             }
         });
@@ -87,14 +107,27 @@ public final class DotnetBuildToolsPanel extends JPanel implements AutoCloseable
 
     private void refreshFrameworks() {
         long ticket = frameworkRevision.incrementAndGet();
+        Path selected = (Path) project.getSelectedItem();
+        String desired = preferred != null && java.util.Objects.equals(preferred.target(), selected) ? preferred.framework() : "";
+        boolean wasLoading = loadingSelection;
+        loadingSelection = true;
+        framework.setEnabled(false);
         framework.removeAllItems();
         framework.addItem("");
-        Path selected = (Path) project.getSelectedItem();
+        loadingSelection = wasLoading;
         if (selected == null || worker.isShutdown()) return;
         worker.submit(() -> {
             var frameworks = TargetFramework.resolveTfms(selected);
             SwingUtilities.invokeLater(() -> {
-                if (ticket == frameworkRevision.get()) frameworks.forEach(framework::addItem);
+                if (ticket == frameworkRevision.get()) {
+                    boolean previouslyLoading = loadingSelection;
+                    loadingSelection = true;
+                    frameworks.forEach(framework::addItem);
+                    if (frameworks.contains(desired)) framework.setSelectedItem(desired);
+                    loadingSelection = previouslyLoading;
+                    framework.setEnabled(true);
+                    publishSelection();
+                }
             });
         });
     }
@@ -107,6 +140,13 @@ public final class DotnetBuildToolsPanel extends JPanel implements AutoCloseable
         } catch (IllegalArgumentException failure) {
             status.setText(text("invalid", "Select a project and a valid MSBuild target."));
         }
+    }
+
+    private void publishSelection() {
+        if (loadingSelection || !framework.isEnabled() || project.getSelectedItem() == null) return;
+        preferred = new dtm.ide.project.WorkspaceTarget((Path) project.getSelectedItem(),
+                (String) configuration.getSelectedItem(), (String) framework.getSelectedItem());
+        selectionChanged.accept(preferred);
     }
 
     @Override

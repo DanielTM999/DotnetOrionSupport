@@ -5,6 +5,18 @@ projetos, editor C#/Razor, IntelliSense C#/Razor, build/run/test via `dotnet`, d
 `netcoredbg`, gerenciador NuGet, wizards de projeto e painéis de
 configuração.
 
+## Ferramentas integradas
+
+- **Janela → ASP.NET Core**: endpoints convencionais Minimal APIs/MVC, registros de serviços, perfis e chaves de configuração. Duplo clique navega ao código; usos de configuração permitem escolher o arquivo de ambiente. Construções dinâmicas aparecem como não resolvidas.
+- **Testes → Resultados**: casos individuais com duração, falha e stack trace a partir de TRX; duplo clique em uma falha abre seu fonte. O console preserva a saída completa.
+- **Repetir falhas**, **Executar com cobertura**, **Importar cobertura** e **Limpar cobertura** ficam no Test Explorer. A cobertura marca linhas no editor e é invalidada ao editar o arquivo.
+- **Configurar cobertura** abre o NuGet para escolher o coletor; nenhum pacote é instalado sem uma ação do usuário.
+- O alvo, a configuração e o framework selecionados em Build Tools são usados pelo Test Explorer. Configurações de execução salvas continuam preservadas.
+- O editor oferece postfix C# (`valor.var`, `condicao.if`, `itens.foreach`, `valor.return`, `valor.cw`) e sugestões contextuais nos arquivos de projeto MSBuild.
+- **Gerar / Refatorar** mostra as ações disponíveis do servidor. **Excluir símbolo com segurança** consulta referências e cancela quando a análise é incompleta ou há possíveis usos.
+
+Os avisos de componentes externos acompanham o JAR em `licenses/`. As bibliotecas de runtime devem possuir licença permissiva; novas funcionalidades usam a biblioteca padrão e as dependências existentes. SDK .NET e ferramentas de teste têm termos próprios e não são classificados como bibliotecas permissivas distribuídas.
+
 > Abra uma solução ou projeto C# e a Orion prepara a toolchain necessária. O plugin detecta
 > SDKs instalados e baixa componentes faltantes sob demanda.
 

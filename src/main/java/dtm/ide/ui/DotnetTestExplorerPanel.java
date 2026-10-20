@@ -1,6 +1,15 @@
 package dtm.ide.ui;
 
-import dtm.ide.run.DotnetBuild;
+import dtm.ide.test.DotnetTestService;
+import dtm.ide.test.TestResult;
+import dtm.ide.coverage.CoverageReport;
+import dtm.ide.coverage.CoberturaReportReader;
+import java.nio.file.Files;
+import java.util.function.Consumer;
+import javax.swing.JFileChooser;
+import javax.swing.JTable;
+import javax.swing.JTabbedPane;
+import javax.swing.table.DefaultTableModel;
 import dtm.ide.sdk.DotnetSdkService;
 import dtm.stools.i18n.I18n;
 import lombok.extern.slf4j.Slf4j;
@@ -46,13 +55,11 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Supplier;
@@ -63,19 +70,14 @@ import java.util.regex.Pattern;
 @Slf4j
 public final class DotnetTestExplorerPanel extends JPanel {
 
-    private enum Status { UNKNOWN, RUNNING, PASSED, FAILED }
+    private enum Status { UNKNOWN, RUNNING, PASSED, FAILED, SKIPPED }
 
     private static String text(String key, String def) {
         return I18n.getText(DotnetTestExplorerPanel.class, key, def);
     }
 
-    private static final Pattern RESULT_LINE = Pattern.compile("^(Passed|Failed|Skipped)\\s+(\\S+)");
-    private static final Pattern WARNING_LINE = Pattern.compile(":\\s*warning\\s+[A-Z]{2}\\d+", Pattern.CASE_INSENSITIVE);
-    private static final Pattern WIN_PATH = Pattern.compile("[A-Za-z]:\\\\[^\\s\"]+");
     private static final Pattern FAIL_COUNT =
             Pattern.compile("(?:com falha|failed)\\D*(\\d+)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern DEBUG_PROCESS_ID =
-            Pattern.compile("(?:process(?:o)?\\s*(?:id|pid)|pid)\\D+(\\d+)", Pattern.CASE_INSENSITIVE);
     private static final int RUN_ICON_WIDTH = 22;
 
     private static final Color C_ACCENT = new Color(0x4FB6FF);
@@ -87,7 +89,31 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private final Supplier<DotnetSdkService> sdkSupplier;
     private final Supplier<String> configSupplier;
     private final LongConsumer debugProcessHandler;
-    private final DotnetBuild build = new DotnetBuild();
+    private final DotnetTestService tests = new DotnetTestService();
+    private Consumer<CoverageReport> coverageSink = ignored -> {};
+    private Consumer<List<TestResult>> resultSink = ignored -> {};
+    private Runnable configureCoverage = () -> {};
+    private Supplier<dtm.ide.project.WorkspaceTarget> targetSelection = () -> new dtm.ide.project.WorkspaceTarget(null, config(), "");
+    private java.util.function.BiConsumer<Path, Integer> navigation = (path, line) -> {};
+    private List<TestResult> lastResults = List.of();
+    private final DefaultTableModel resultsModel = new DefaultTableModel(new String[]{
+            text("result.test", "Test"), text("result.outcome", "Outcome"), text("result.duration", "Duration"),
+            text("result.report", "Report")}, 0) {
+        @Override public boolean isCellEditable(int row, int col) { return false; }
+    };
+    private final JTable resultsTable = new JTable(resultsModel);
+    private final javax.swing.JTextArea details = new javax.swing.JTextArea();
+    private final JButton rerunFailedButton = new JButton(text("button.rerunFailed", "Rerun failed"));
+    private final JButton coverageButton = new JButton(text("button.coverage", "Run with coverage"));
+    private final JButton importCoverageButton = new JButton(text("button.importCoverage", "Import coverage..."));
+    private final JButton clearCoverageButton = new JButton(text("button.clearCoverage", "Clear coverage"));
+    private final JButton configureCoverageButton = new JButton(text("button.configureCoverage", "Configure coverage..."));
+
+    public void setCoverageSink(Consumer<CoverageReport> sink) { coverageSink = sink; }
+    public void setResultSink(Consumer<List<TestResult>> sink) { resultSink = sink; }
+    public void setConfigureCoverage(Runnable action) { configureCoverage = action; }
+    public void setTargetSelection(Supplier<dtm.ide.project.WorkspaceTarget> supplier) { targetSelection = supplier; }
+    public void setNavigation(java.util.function.BiConsumer<Path, Integer> sink) { navigation = sink; }
 
     private final DefaultMutableTreeNode root = new DefaultMutableTreeNode(text("tree.root", "Tests"));
     private final DefaultTreeModel treeModel = new DefaultTreeModel(root);
@@ -105,6 +131,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private final JLabel runningLabel = new JLabel("0", new StatusIcon(Status.RUNNING, 13), SwingConstants.LEADING);
     private final JLabel totalLabel = new JLabel();
     private final JPanel summary = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+    private final JPanel treeCards = new JPanel(new java.awt.CardLayout());
     private final Map<String, Status> statuses = new LinkedHashMap<>();
     private final List<String> allTests = new ArrayList<>();
 
@@ -130,10 +157,14 @@ public final class DotnetTestExplorerPanel extends JPanel {
     public void resetProject() {
         operation.incrementAndGet();
         if (pending != null) pending.cancel(true);
-        build.stopTests();
+        tests.stop();
         worker.shutdownNow();
         worker = newWorker();
         autoDiscovered = false;
+        lastResults = List.of();
+        resultSink.accept(lastResults);
+        resultsModel.setRowCount(0);
+        details.setText("");
         statuses.clear();
         populateTree(List.of());
         clearConsole();
@@ -171,15 +202,22 @@ public final class DotnetTestExplorerPanel extends JPanel {
     private void buildUi() {
         setBorder(BorderFactory.createEmptyBorder(8, 8, 6, 8));
 
-        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
+        JPanel toolbar = new JPanel(new WrappingFlowLayout());
         toolbar.add(runAllButton);
         toolbar.add(runSelectedButton);
         toolbar.add(debugSelectedButton);
+        toolbar.add(rerunFailedButton);
+        toolbar.add(coverageButton);
+        toolbar.add(importCoverageButton);
+        toolbar.add(clearCoverageButton);
+        toolbar.add(configureCoverageButton);
         toolbar.add(stopButton);
         toolbar.add(refreshButton);
-        toolbar.add(new JLabel(text("label.filter", "Filter:")));
+        JPanel filterControls = new JPanel(new FlowLayout(FlowLayout.LEADING, 4, 0));
+        filterControls.add(new JLabel(text("label.filter", "Filter:")));
         filterField.putClientProperty("JTextField.placeholderText", text("filter.placeholder", "FullyQualifiedName~... or trait"));
-        toolbar.add(filterField);
+        filterControls.add(filterField);
+        toolbar.add(filterControls);
         toolbar.add(Box.createHorizontalStrut(12));
         summary.setOpaque(false);
         passedLabel.setToolTipText(text("tooltip.passed", "Passed"));
@@ -193,6 +231,12 @@ public final class DotnetTestExplorerPanel extends JPanel {
         toolbar.add(summary);
         refreshButton.addActionListener(e -> refresh());
         runAllButton.addActionListener(e -> runAll());
+        rerunFailedButton.addActionListener(e -> rerunFailed());
+        coverageButton.addActionListener(e -> runFilter(filterField.getText().strip(), List.copyOf(allTests),
+                text("status.runningCoverage", "Running tests with coverage..."), false, true));
+        importCoverageButton.addActionListener(e -> importCoverage());
+        clearCoverageButton.addActionListener(e -> coverageSink.accept(new CoverageReport(Map.of())));
+        configureCoverageButton.addActionListener(e -> configureCoverage.run());
         runSelectedButton.addActionListener(e -> runSelected());
         debugSelectedButton.addActionListener(e -> debugSelected());
         stopButton.addActionListener(e -> stop());
@@ -239,11 +283,35 @@ public final class DotnetTestExplorerPanel extends JPanel {
 
         JPanel treePanel = new JPanel(new BorderLayout());
         treePanel.add(sectionHeader(text("tree.root", "Tests")), BorderLayout.NORTH);
-        treePanel.add(treeScroll, BorderLayout.CENTER);
+        JLabel empty = new JLabel("<html><center>" + text("tree.empty", "Use Refresh to discover tests, or Run all.") + "</center></html>", SwingConstants.CENTER);
+        treeCards.add(empty, "empty"); treeCards.add(treeScroll, "tests");
+        treePanel.add(treeCards, BorderLayout.CENTER);
+        treePanel.setMinimumSize(new Dimension(180, 0));
+        treePanel.setPreferredSize(new Dimension(280, 250));
 
         JPanel consolePanel = new JPanel(new BorderLayout());
-        consolePanel.add(sectionHeader(text("section.output", "Output")), BorderLayout.NORTH);
-        consolePanel.add(consoleScroll, BorderLayout.CENTER);
+        consolePanel.setMinimumSize(new Dimension(220, 0));
+        consolePanel.setPreferredSize(new Dimension(360, 250));
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab(text("section.output", "Output"), consoleScroll);
+        details.setEditable(false);
+        details.setLineWrap(true);
+        resultsTable.getSelectionModel().addListSelectionListener(event -> {
+            int row = resultsTable.getSelectedRow();
+            if (row >= 0 && row < lastResults.size()) {
+                var result = lastResults.get(row);
+                details.setText(result.displayName() + "\n" + result.message() + "\n" + result.stackTrace());
+            }
+        });
+        resultsTable.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) {
+                if (event.getClickCount() == 2) navigateToFailure();
+            }
+        });
+        var resultSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, new JScrollPane(resultsTable), new JScrollPane(details));
+        resultSplit.setResizeWeight(.6);
+        tabs.addTab(text("section.results", "Results"), resultSplit);
+        consolePanel.add(tabs, BorderLayout.CENTER);
 
         JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, treePanel, consolePanel);
         split.setBorder(BorderFactory.createEmptyBorder());
@@ -301,15 +369,23 @@ public final class DotnetTestExplorerPanel extends JPanel {
         setBusy(true, text("status.discovering", "Discovering tests..."));
         clearConsole();
         appendConsole("> dotnet test --list-tests" + System.lineSeparator());
-        String configuration = config();
+        var selected = targetSelection.get();
+        String configuration = selected.configuration();
         long ticket = operation.incrementAndGet();
         pending = worker.submit(() -> {
             List<String> tests;
             try {
-                tests = build.listTests(project, dotnet.get(), configuration);
+                var discovery = this.tests.discoverDetailed(project, dotnet.get(), configuration, selected.target(), selected.framework());
+                tests = discovery.names();
+                post(ticket, () -> appendConsole(discovery.output()));
             } catch (Exception ex) {
-                tests = List.of();
                 log.debug("Falha ao listar testes: {}", ex.getMessage());
+                post(ticket, () -> {
+                    autoDiscovered = false;
+                    appendConsole(ex.getMessage() + System.lineSeparator());
+                    setBusy(false, text("status.discoveryFailed", "Test discovery failed. See output."));
+                });
+                return;
             }
             List<String> found = tests;
             post(ticket, () -> {
@@ -322,10 +398,6 @@ public final class DotnetTestExplorerPanel extends JPanel {
     }
 
     private void runAll() {
-        if (allTests.isEmpty()) {
-            setStatus(text("status.noneDiscovered", "No tests discovered. Use Refresh first."));
-            return;
-        }
         String filter = filterField.getText() == null ? "" : filterField.getText().trim();
         runFilter(filter.isEmpty() ? null : filter,
                 filter.isEmpty() ? new ArrayList<>(allTests) : List.of(), text("status.runningAll", "Running all tests..."));
@@ -373,7 +445,11 @@ public final class DotnetTestExplorerPanel extends JPanel {
             return;
         }
         String type = String.valueOf(treeNode.getUserObject());
-        runFilter("FullyQualifiedName~" + filterValue(type), scope,
+        String filter = "(global)".equals(type)
+                ? scope.stream().map(DotnetTestExplorerPanel::filterValue).filter(name -> !name.isBlank())
+                    .distinct().map(name -> "FullyQualifiedName~" + name).collect(java.util.stream.Collectors.joining("|"))
+                : "FullyQualifiedName~" + filterValue(type);
+        runFilter(filter, scope,
                 text("status.runningNode", "Running {0}...").replace("{0}", shortName(type)));
     }
 
@@ -405,6 +481,10 @@ public final class DotnetTestExplorerPanel extends JPanel {
     }
 
     private void runFilter(String filter, List<String> scope, String message, boolean debug) {
+        runFilter(filter, scope, message, debug, false);
+    }
+
+    private void runFilter(String filter, List<String> scope, String message, boolean debug, boolean coverage) {
         if (busy) {
             return;
         }
@@ -416,16 +496,18 @@ public final class DotnetTestExplorerPanel extends JPanel {
         }
         setBusy(true, message);
         clearConsole();
-        appendConsole("> dotnet test" + (filter == null ? "" : " --filter \"" + filter + "\"")
-                + System.lineSeparator() + System.lineSeparator());
         markRunning(scope);
-        String configuration = config();
+        var selected = targetSelection.get();
+        String configuration = selected.configuration();
         long ticket = operation.incrementAndGet();
         pending = worker.submit(() -> {
             int exit = -1;
-            List<String> failed = new ArrayList<>();
             try {
-                Process process = build.launchTest(project, dotnet.get(), configuration, filter, debug);
+                var run = tests.start(project, dotnet.get(), configuration, filter, debug, coverage, selected.target(), selected.framework());
+                String command = run.command().stream().map(arg -> arg.chars().anyMatch(Character::isWhitespace) ? "\"" + arg + "\"" : arg)
+                        .collect(java.util.stream.Collectors.joining(" "));
+                post(ticket, () -> appendConsole("> " + command + System.lineSeparator()));
+                Process process = run.process();
                 if (ticket != operation.get() || Thread.currentThread().isInterrupted()) {
                     process.destroyForcibly();
                     return;
@@ -442,45 +524,50 @@ public final class DotnetTestExplorerPanel extends JPanel {
                                 if (ticket == operation.get()) debugProcessHandler.accept(pid);
                             }
                         }
-                        if (!WARNING_LINE.matcher(line).find()) {
-                            String consoleLine = shortenPaths(prettifyTestLine(line));
-                            post(ticket, () -> appendConsole(consoleLine + System.lineSeparator()));
-                        }
-                        Matcher matcher = RESULT_LINE.matcher(line.strip());
-                        if (matcher.find()) {
-                            String verb = matcher.group(1);
-                            String name = matcher.group(2);
-                            if ("Failed".equals(verb)) {
-                                failed.add(name);
-                                post(ticket, () -> applyStatus(name, Status.FAILED));
-                            } else if ("Passed".equals(verb)) {
-                                post(ticket, () -> applyStatus(name, Status.PASSED));
-                            }
-                        }
+                        String consoleLine = line;
+                        post(ticket, () -> appendConsole(consoleLine + System.lineSeparator()));
                     }
                 }
                 exit = process.waitFor();
+                var report = tests.read(run, project);
+                int finalExit = exit;
+                post(ticket, () -> {
+                    applyResults(report.tests(), scope);
+                    report.warnings().forEach(warning -> appendConsole(warning + System.lineSeparator()));
+                    if (coverage) {
+                        coverageSink.accept(report.coverage());
+                        appendConsole(report.coverage().lines() == 0
+                                ? text("coverage.missing", "No coverage report. Configure a coverage collector in the test project or import an existing Cobertura report.") + "\n"
+                                : String.format(java.util.Locale.ROOT, "%.1f%% (%d/%d)\n", report.coverage().percent(), report.coverage().covered(), report.coverage().lines()));
+                    }
+                    long failures = report.tests().stream().filter(r -> r.outcome() == TestResult.Outcome.FAILED).count();
+                    setBusy(false, report.tests().size() + " " + text("result.test", "Test") + "; "
+                            + failures + " " + text("result.failed", "failed") + "; exit=" + finalExit);
+                });
             } catch (Exception ex) {
                 log.debug("Falha ao executar testes: {}", ex.getMessage());
+                post(ticket, () -> {
+                    scope.forEach(name -> applyStatus(name, Status.UNKNOWN));
+                    appendConsole(ex.getMessage() + System.lineSeparator());
+                    setBusy(false, text("status.executionFailed", "Test execution failed. See output."));
+                });
             }
-            int finalExit = exit;
-            post(ticket, () -> {
-                finalizeRun(scope, failed, finalExit);
-                setBusy(false, runSummary(failed, finalExit));
-            });
         });
     }
 
     private void stop() {
         operation.incrementAndGet();
         if (pending != null) pending.cancel(true);
-        build.stopTests();
+        tests.stop();
+        statuses.replaceAll((name, value) -> value == Status.RUNNING ? Status.UNKNOWN : value);
+        tree.repaint(); updateSummary();
         setBusy(false, text("status.stopped", "Run stopped."));
     }
 
     private void populateTree(List<String> tests) {
         allTests.clear();
         allTests.addAll(tests);
+        ((java.awt.CardLayout) treeCards.getLayout()).show(treeCards, tests.isEmpty() ? "empty" : "tests");
         statuses.clear();
         for (String test : tests) {
             statuses.put(test, Status.UNKNOWN);
@@ -500,6 +587,7 @@ public final class DotnetTestExplorerPanel extends JPanel {
             return;
         }
         allTests.add(full);
+        ((java.awt.CardLayout) treeCards.getLayout()).show(treeCards, "tests");
         statuses.put(full, Status.UNKNOWN);
         Map<String, DefaultMutableTreeNode> typeNodes = new LinkedHashMap<>();
         for (int i = 0; i < root.getChildCount(); i++) {
@@ -556,29 +644,69 @@ public final class DotnetTestExplorerPanel extends JPanel {
         }
     }
 
-    private void finalizeRun(List<String> scope, List<String> failed, int exit) {
-        Set<String> failedKeys = new HashSet<>();
-        for (String name : failed) {
-            String key = resolveTestKey(name);
-            if (key != null) {
-                failedKeys.add(key);
-            }
+    private void applyResults(List<TestResult> results, List<String> scope) {
+        lastResults = List.copyOf(results);
+        resultSink.accept(lastResults);
+        details.setText("");
+        resultsModel.setRowCount(0);
+        for (var result : results) resultsModel.addRow(new Object[]{result.displayName(), text("outcome." + result.outcome(), result.outcome().toString()), result.duration(), result.report()});
+        scope.forEach(name -> applyStatus(name, Status.UNKNOWN));
+        Map<String, Status> aggregate = new LinkedHashMap<>();
+        for (var result : results) {
+            String key = resolveTestKey(result.displayName());
+            if (key == null) key = resolveTestKey(result.name());
+            if (key == null) { ensureTestVisible(result.name()); key = result.name(); }
+            Status next = switch (result.outcome()) {
+                case PASSED -> Status.PASSED;
+                case FAILED -> Status.FAILED;
+                case SKIPPED -> Status.SKIPPED;
+                case UNKNOWN -> Status.UNKNOWN;
+            };
+            aggregate.merge(key, next, (old, value) -> old == Status.FAILED || value == Status.FAILED ? Status.FAILED
+                    : old == Status.UNKNOWN || value == Status.UNKNOWN ? Status.UNKNOWN
+                    : old == Status.SKIPPED || value == Status.SKIPPED ? Status.SKIPPED : Status.PASSED);
         }
-        for (String test : scope) {
-            String key = resolveTestKey(test);
-            if (key == null) {
-                continue;
-            }
-            if (failedKeys.contains(key)) {
-                statuses.put(key, Status.FAILED);
-            } else if (exit == 0) {
-                statuses.put(key, Status.PASSED);
-            } else if (statuses.get(key) == Status.RUNNING) {
-                statuses.put(key, Status.UNKNOWN);
-            }
-        }
+        aggregate.forEach(statuses::put);
         tree.repaint();
         updateSummary();
+    }
+
+    private void rerunFailed() {
+        var failed = lastResults.stream().filter(r -> r.outcome() == TestResult.Outcome.FAILED)
+                .map(TestResult::name).distinct().toList();
+        if (failed.isEmpty()) return;
+        String filter = failed.stream().map(name -> "FullyQualifiedName=" + filterValue(name))
+                .collect(java.util.stream.Collectors.joining("|"));
+        runFilter(filter, failed, text("status.rerunning", "Rerunning failed tests..."));
+    }
+
+    private void importCoverage() {
+        Path project = projectSupplier.get();
+        if (project == null || busy) return;
+        JFileChooser chooser = new JFileChooser(project.toFile());
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Cobertura XML", "xml"));
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        Path file = chooser.getSelectedFile().toPath();
+        long ticket = operation.incrementAndGet();
+        setBusy(true, text("coverage.loading", "Loading coverage..."));
+        pending = worker.submit(() -> {
+            try {
+                var report = new CoberturaReportReader().read(file, project);
+                post(ticket, () -> {
+                    coverageSink.accept(report);
+                    setBusy(false, String.format(java.util.Locale.ROOT, "%.1f%% (%d/%d)", report.percent(), report.covered(), report.lines()));
+                });
+            } catch (Exception error) {
+                post(ticket, () -> setBusy(false, error.getMessage()));
+            }
+        });
+    }
+
+    private void navigateToFailure() {
+        int row = resultsTable.getSelectedRow();
+        if (row < 0 || row >= lastResults.size()) return;
+        dtm.ide.test.TestProblems.source(lastResults.get(row), projectSupplier.get())
+                .ifPresent(source -> navigation.accept(source.file(), source.line() - 1));
     }
 
     private String resolveTestKey(String name) {
@@ -635,6 +763,10 @@ public final class DotnetTestExplorerPanel extends JPanel {
         runAllButton.setEnabled(!value);
         runSelectedButton.setEnabled(!value);
         debugSelectedButton.setEnabled(!value && debugProcessHandler != null);
+        rerunFailedButton.setEnabled(!value && lastResults.stream().anyMatch(r -> r.outcome() == TestResult.Outcome.FAILED));
+        coverageButton.setEnabled(!value);
+        importCoverageButton.setEnabled(!value);
+        configureCoverageButton.setEnabled(!value);
         stopButton.setEnabled(value);
         if (message != null) {
             setStatus(message);
@@ -737,70 +869,16 @@ public final class DotnetTestExplorerPanel extends JPanel {
         return false;
     }
 
-    private static String shortenPaths(String line) {
-        Matcher matcher = WIN_PATH.matcher(line);
-        StringBuilder sb = new StringBuilder();
-        while (matcher.find()) {
-            String path = matcher.group();
-            int slash = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
-            String name = slash >= 0 ? path.substring(slash + 1) : path;
-            matcher.appendReplacement(sb, Matcher.quoteReplacement(name));
-        }
-        matcher.appendTail(sb);
-        return sb.toString();
-    }
-
-    private static String prettifyTestLine(String line) {
-        String stripped = line.strip();
-        if (!isSummaryLine(stripped) || !stripped.contains(" - ")) {
-            return line;
-        }
-        int dash = stripped.lastIndexOf(" - ");
-        if (dash > 0) {
-            String tail = stripped.substring(dash + 3);
-            if (tail.contains(".dll") || tail.contains("(")) {
-                stripped = stripped.substring(0, dash);
-            }
-        }
-        return stripped.replaceAll("\\s{2,}", " ");
-    }
-
     private static String filterValue(String name) {
         return name.contains("(") ? name.substring(0, name.indexOf('(')) : name;
     }
 
-    static Long debugProcessId(String line) {
-        if (line == null) {
-            return null;
-        }
-        Matcher matcher = DEBUG_PROCESS_ID.matcher(line);
-        if (!matcher.find()) {
-            return null;
-        }
-        try {
-            return Long.parseLong(matcher.group(1));
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
+    static Long debugProcessId(String line) { return DotnetTestService.debugProcessId(line); }
 
     private static String shortName(String qualified) {
         String core = qualified.contains("(") ? qualified.substring(0, qualified.indexOf('(')) : qualified;
         int dot = core.lastIndexOf('.');
         return dot >= 0 && dot + 1 < core.length() ? core.substring(dot + 1) : core;
-    }
-
-    private static String runSummary(List<String> failed, int exit) {
-        if (exit == 0) {
-            return text("summary.allPassed", "Done: all passed.");
-        }
-        if (!failed.isEmpty()) {
-            return text("summary.failures", "Done: {0} failure(s).").replace("{0}", String.valueOf(failed.size()));
-        }
-        if (exit < 0) {
-            return text("summary.runFailed", "Failed to run (see console).");
-        }
-        return text("summary.doneWithErrors", "Done with errors (code {0}).").replace("{0}", String.valueOf(exit));
     }
 
     private static Color color(Status state) {

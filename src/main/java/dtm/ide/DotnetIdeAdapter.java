@@ -205,6 +205,13 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private volatile NuGetManagerPanel nugetPanel;
     private volatile IisManagerPanel iisManagerPanel;
     private volatile DotnetTestExplorerPanel testPanel;
+    private final dtm.ide.coverage.CoverageSupport coverageSupport = new dtm.ide.coverage.CoverageSupport();
+    private dtm.ide.ui.AspNetExplorerPanel aspNetPanel;
+    private String aspNetPanelId;
+    private volatile dtm.ide.aspnet.AspNetIndex.Snapshot aspNetSnapshot = new dtm.ide.aspnet.AspNetIndex.Snapshot(List.of(), List.of());
+    private volatile EditorQueryCache<dtm.ide.aspnet.AspNetIndex.Snapshot> aspNetQueries = new EditorQueryCache<>();
+    private Timer aspNetRefreshTimer;
+    private long aspNetRevision;
     private String testToolPanelId;
     private dtm.ide.ui.DotnetBuildToolsPanel buildToolsPanel;
     private String buildToolsPanelId;
@@ -231,6 +238,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private final AtomicBoolean toolchainDeclined = new AtomicBoolean(false);
     private volatile Path activeFile;
     private volatile RunConfigurationData selectedRunConfig;
+    private volatile dtm.ide.project.WorkspaceTarget workspaceTarget;
+    private volatile Map<String, dtm.ide.test.TestResult.Outcome> testOutcomes = Map.of();
     private final AtomicLong projectLifecycleTicket = new AtomicLong();
     private volatile long razorScanTicket = -1L;
     private volatile Path razorScanRoot;
@@ -328,9 +337,19 @@ public class DotnetIdeAdapter extends IdeAdapter {
         completionQueries.close();
         lensQueries.close();
         selectionQueries.close();
+        aspNetQueries.close();
         documents.clear();
+        runOnUiThread(coverageSupport::clear);
         liveProblems.clear();
         runOnUiThread(() -> {
+            if (aspNetRefreshTimer != null) aspNetRefreshTimer.stop();
+            if (aspNetPanel != null) {
+                aspNetPanel.close();
+                if (aspNetPanelId != null) unregisterToolPanel(aspNetPanelId);
+                aspNetPanel = null;
+                aspNetPanelId = null;
+            }
+            aspNetSnapshot = new dtm.ide.aspnet.AspNetIndex.Snapshot(List.of(), List.of());
             clearProblems("dotnet.lsp");
             clearProblems("dotnet.build");
             clearProblems("dotnet.test");
@@ -367,6 +386,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         this.projectPath = null;
         this.activeFile = null;
         this.selectedRunConfig = null;
+        this.workspaceTarget = null;
         runSupport.bindProject(null);
         runSupport.bindSdk(null);
         runSupport.bindDebugSessionStateListener(null);
@@ -411,13 +431,19 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (DotnetProjectConventions.affectsProjectStructure(filePath)
                 || DotnetProjectConventions.isRazorLike(filePath)) {
             invalidateProjectScans();
+            notifyWorkspaceFiles(List.of(filePath), 2);
         }
+        scheduleAspNetRefresh();
     }
 
     @Override
     public Collection<FileAssociated> getFileAssociations() {
         return List.of(
                 new FileAssociated("csproj",  NativeEditorType.XML),
+                new FileAssociated("vbproj", NativeEditorType.XML),
+                new FileAssociated("fsproj", NativeEditorType.XML),
+                new FileAssociated("props", NativeEditorType.XML),
+                new FileAssociated("targets", NativeEditorType.XML),
                 new FileAssociated("slnx",  NativeEditorType.XML)
         );
     }
@@ -426,9 +452,11 @@ public class DotnetIdeAdapter extends IdeAdapter {
         completionQueries.close();
         lensQueries.close();
         selectionQueries.close();
+        aspNetQueries.close();
         completionQueries = new EditorQueryCache<>();
         lensQueries = new EditorQueryCache<>();
         selectionQueries = new EditorQueryCache<>();
+        aspNetQueries = new EditorQueryCache<>();
         documents.clear();
         this.projectContext = context;
         if (context != null) {
@@ -437,6 +465,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
         ensureSolutionSelection();
         invalidateProjectScans();
         projectLifecycleTicket.incrementAndGet();
+        workspaceTarget = null;
+        scheduleAspNetRefresh();
         runSupport.bindProject(projectPath);
         runSupport.bindBuildObserver(this::beginBuildProblems);
         runSupport.bindDownloadProgress(progressListener());
@@ -852,6 +882,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private Path resolveEditorFile(Path filePath, String text) {
+        if (filePath != null && filePath.toString().matches("(?i).*\\.(csproj|vbproj|fsproj|props|targets)")) return normalizePath(filePath);
         if (isLspSupportedFile(filePath)) {
             return normalizePath(filePath);
         }
@@ -1142,6 +1173,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
         Path normalized = normalizePath(context.filePath());
         editorRegistry.trackEditor(normalized, context);
+        coverageSupport.attach(context);
         documents.update(normalized, context.getText());
         highlightSettledFiles.add(normalized);
         if (applyDecompiledEditorGuards(context)) {
@@ -1278,10 +1310,12 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
 
+        coverageSupport.edited(editorContext);
         documents.update(editorContext.filePath(), editorContext.getText());
         completionQueries.invalidate(editorContext.filePath());
         lensQueries.invalidate(editorContext.filePath());
         selectionQueries.invalidate(editorContext.filePath());
+        scheduleAspNetRefresh();
         setActiveFile(editorContext.filePath());
     }
 
@@ -1427,23 +1461,29 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public void onEditorClose(Path filePath) {
+        if (filePath != null) coverageSupport.close(filePath);
         editorRegistry.close(filePath);
         forgetHighlightState(filePath);
     }
 
     @Override
     public void onPathDeleted(Path path) {
+        notifyWorkspaceFiles(path == null ? List.of() : List.of(path), 3);
+        if (path != null) coverageSupport.close(path);
         editorRegistry.delete(path);
         forgetHighlightState(path);
     }
 
     @Override
     public void onPathRenamed(Path oldPath, Path newPath) {
+        if (oldPath != null) { notifyWorkspaceFiles(List.of(oldPath), 3); coverageSupport.close(oldPath); }
+        if (newPath != null) notifyWorkspaceFiles(List.of(newPath), 1);
         editorRegistry.rename(oldPath, newPath);
         forgetHighlightState(oldPath);
     }
 
     private void forgetHighlightState(Path path) {
+        scheduleAspNetRefresh();
         if (path != null) {
             liveProblems.remove(normalizePath(path));
             refreshLiveProblems();
@@ -1495,7 +1535,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         var snapshot = documents.update(file, context.text());
         long session = projectLifecycleTicket.get();
         var key = new CompletionQuery(snapshot, context.caretLine(), context.caretCol(), context.prefix(), service, session);
-        return completionQueries.request(file, key, () -> {
+        var pending = completionQueries.request(file, key, () -> {
             if (!documents.isCurrent(snapshot) || session != projectLifecycleTicket.get()) return List.of();
             var items = service.completeForEditor(file, snapshot.text(), key.line(), key.column(), key.prefix());
             if (!documents.isCurrent(snapshot) || session != projectLifecycleTicket.get()) return List.of();
@@ -1507,18 +1547,46 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     && editor.getCaretLine() == key.line() && editor.getCaretCol() == key.column()) {
                 requestCodeEditorAutocomplete();
             }
-        })).exceptionally(error -> List.of());
+        })).exceptionally(error -> localCompletions(context, List.of()));
+        return pending.isDone() ? pending : CompletableFuture.completedFuture(localCompletions(context, List.of()));
+    }
+
+    @Override public CompletableFuture<AutoCompleteItem> resolveCompletionItem(AutoCompleteItem item) {
+        LspService service = lspService;
+        long session = projectLifecycleTicket.get();
+        return service == null ? CompletableFuture.completedFuture(item) : service.resolveCompletion(item)
+                .thenApply(resolved -> session == projectLifecycleTicket.get() ? resolved : item);
+    }
+
+    @Override public CompletableFuture<List<dtm.stools.component.panels.editor.code.prototype.folding.FoldRange>> resolveFoldRanges(
+            Path file, String text, long documentVersion) {
+        LspService service = lspService;
+        if (service == null || !lspHandlesEditor(file)) return CompletableFuture.completedFuture(List.of());
+        var snapshot = documents.update(file, text);
+        long session = projectLifecycleTicket.get();
+        return service.foldingRanges(file, text).thenApply(ranges -> session == projectLifecycleTicket.get()
+                && documents.isCurrent(snapshot) ? ranges : List.of());
     }
 
     private List<AutoCompleteItem> localCompletions(IdeCompletionContext context, List<AutoCompleteItem> lspItems) {
         if (context == null) return List.of();
         Path file = resolveEditorFile(context.filePath(), context.text());
+        if (file != null && file.getFileName().toString().matches("(?i).*\\.(csproj|vbproj|fsproj|props|targets)")) {
+            return new dtm.ide.editor.MsBuildCompletionProvider().suggestions(context.text(), context.caretOffset());
+        }
         if (DotnetProjectConventions.isRazorLike(file)) {
             return mergeHtmlCompletions(lspItems, context);
         }
-        return DotnetProjectConventions.isCSharpLike(file)
-                ? mergeCSharpSnippets(lspItems, context.prefix())
-                : lspItems;
+        if (DotnetProjectConventions.isCSharpLike(file)) {
+            var configuration = new dtm.ide.editor.ConfigurationCompletionProvider().suggestions(
+                    context.text(), context.caretOffset(), aspNetSnapshot.entries());
+            if (!configuration.isEmpty()) return configuration;
+            if (context.text() == null || !dtm.ide.editor.CSharpLexical.codeAt(context.text(), context.caretOffset())) return lspItems;
+            List<AutoCompleteItem> items = new ArrayList<>(lspItems);
+            items.addAll(new dtm.ide.editor.CSharpPostfixCompletionProvider().suggestions(context.text(), context.caretOffset()));
+            return mergeCSharpSnippets(items, context.prefix());
+        }
+        return lspItems;
     }
 
     private List<AutoCompleteItem> mergeCSharpSnippets(List<AutoCompleteItem> lspItems, String prefix) {
@@ -1526,18 +1594,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (snippets.isEmpty()) {
             return lspItems;
         }
-        Set<String> seen = new HashSet<>();
-        List<AutoCompleteItem> merged = new ArrayList<>(snippets.size() + lspItems.size());
-        for (AutoCompleteItem item : snippets) {
-            if (item != null && item.label() != null && seen.add(item.label().toLowerCase(Locale.ROOT))) {
-                merged.add(item);
-            }
-        }
-        for (AutoCompleteItem item : lspItems) {
-            if (item != null && item.label() != null && seen.add(item.label().toLowerCase(Locale.ROOT))) {
-                merged.add(item);
-            }
-        }
+        List<AutoCompleteItem> merged = new ArrayList<>(lspItems);
+        Set<String> labels = new HashSet<>();
+        lspItems.forEach(item -> { if (item != null && item.label() != null) labels.add(item.label()); });
+        snippets.stream().filter(item -> !labels.contains(item.label())).forEach(merged::add);
         return merged;
     }
 
@@ -1592,9 +1652,10 @@ public class DotnetIdeAdapter extends IdeAdapter {
 
     @Override
     public boolean shouldAutoTriggerCompletion(IdeCompletionContext context) {
-        if (context == null || !lspHandlesEditor(resolveEditorFile(context.filePath(), context.text()))) {
-            return false;
-        }
+        if (context == null) return false;
+        Path file = resolveEditorFile(context.filePath(), context.text());
+        boolean msbuild = file != null && file.toString().matches("(?i).*\\.(csproj|vbproj|fsproj|props|targets)");
+        if (!msbuild && !lspHandlesEditor(file)) return false;
         String line = context.currentLine();
         int col = context.caretCol();
         if (line == null || col <= 0 || col > line.length()) {
@@ -1759,12 +1820,16 @@ public class DotnetIdeAdapter extends IdeAdapter {
         boolean enabled = debugActive.get();
         String expression = expressionAtEditorContext(editorContext);
         menu.separator()
+                .item(text("editor.generate", "Generate / Refactor..."), isRenameAvailable(editorContext),
+                        e -> requestShowCodeActions(editorContext.filePath()))
                 .item(text("editor.goToImplementation", "Go to Implementation"), isImplementationAvailable(editorContext),
                         e -> onGoToImplementation(editorContext))
                 .item(text("editor.goToTypeDefinition", "Go to Type Definition"), isTypeDefinitionAvailable(editorContext),
                         e -> onGoToTypeDefinition(editorContext))
                 .item(text("editor.renameSymbol", "Rename Symbol..."), isRenameAvailable(editorContext),
                         e -> showRenameSymbolDialog(editorContext))
+                .item(text("editor.safeDelete", "Safe Delete Symbol..."), isRenameAvailable(editorContext),
+                        e -> safeDeleteSymbol(editorContext))
                 .item(text("editor.runToCursor", "Run to Cursor"), enabled,
                         e -> runToCursor(editorContext))
                 .item(text("editor.setNextStatement", "Set Next Statement"), enabled,
@@ -1835,6 +1900,79 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 && identifierAt(context.getText(), context.getCaretOffset()) != null;
     }
 
+    private void safeDeleteSymbol(IdeEditorContext context) {
+        if (context.isReadOnly()) return;
+        Path root = projectPath;
+        LspService service = lspService;
+        if (root == null || service == null) return;
+        String source = context.getText();
+        int caret = context.getCaretOffset();
+        int line = context.getCaretLine(), column = context.getCaretCol();
+        long session = projectLifecycleTicket.get();
+        Map<Path, String> open = openDocumentTexts();
+        navigationExecutor().execute(() -> {
+            try {
+                open.forEach(service::updateDocument);
+                DocumentSymbol symbol = declarationAt(service.documentSymbols(context.filePath(), source), source, caret);
+                if (symbol == null || symbol.range() == null || symbol.selectionRange() == null) {
+                    runOnUiThread(() -> setStatusBarText(text("delete.declaration", "Place the cursor on a symbol declaration.")));
+                    return;
+                }
+                var position = symbol.selectionRange().start();
+                var references = service.referencesForDelete(context.filePath(), source, position.line(), position.col());
+                int[] lines = lineStartOffsets(source);
+                int start = offsetOf(lines, source, symbol.range().start().line(), symbol.range().start().col());
+                int end = offsetOf(lines, source, symbol.range().end().line(), symbol.range().end().col());
+                if (end <= start) return;
+                String name = identifierAt(source, offsetOf(lines, source, position.line(), position.col()));
+                if (name == null) return;
+                var local = new dtm.ide.editor.SafeDeleteSupport().check(root, context.filePath(), start, end, name, open);
+                runOnUiThread(() -> {
+                    if (session != projectLifecycleTicket.get() || !source.equals(context.getText()) || !open.equals(openDocumentTexts())) return;
+                    if (!references.complete() || !local.complete()) {
+                        setStatusBarText(text("delete.incomplete", "Reference analysis is incomplete. Deletion was cancelled.")); return;
+                    }
+                    var outside = references.locations().stream().filter(location -> {
+                        Path file = DotnetProjectConventions.pathFromUri(location.uri());
+                        if (!DotnetProjectConventions.samePath(file, context.filePath()) || location.range() == null) return true;
+                        int offset = offsetOf(lines, source, location.range().start().line(), location.range().start().col());
+                        return offset < start || offset >= end;
+                    }).toList();
+                    if (!outside.isEmpty() || local.possibleUses()) {
+                        setStatusBarText(text("delete.used", "References or possible textual uses remain. Deletion was cancelled."));
+                        if (!outside.isEmpty()) showUsagesPopup(outside, context.filePath(), source, resolveEditorComponent(context), null);
+                        return;
+                    }
+                    int answer = createModernDialogBuilder().title(text("editor.safeDelete", "Safe Delete Symbol..."))
+                            .message(text("delete.confirm", "Delete this declaration after checking workspace references?") + "\n" + name)
+                            .option(text("action.delete", "Delete"), 0).option(text("action.cancel", "Cancel"), 1)
+                            .type(ModernDialog.Type.QUESTION).show();
+                    if (answer == 0 && source.equals(context.getText()) && session == projectLifecycleTicket.get()) {
+                        context.setText(source.substring(0, start) + source.substring(end));
+                        requestRefreshDiagnostics(context.filePath());
+                    }
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> setStatusBarText(text("delete.incomplete", "Reference analysis is incomplete. Deletion was cancelled.")));
+            }
+        });
+    }
+
+    private DocumentSymbol declarationAt(List<DocumentSymbol> symbols, String source, int caret) {
+        if (symbols == null) return null;
+        int[] lines = lineStartOffsets(source);
+        for (var symbol : symbols) {
+            var nested = declarationAt(symbol.children(), source, caret);
+            if (nested != null) return nested;
+            if (symbol.selectionRange() == null || symbol.range() == null) continue;
+            var range = symbol.selectionRange();
+            int start = offsetOf(lines, source, range.start().line(), range.start().col());
+            int end = offsetOf(lines, source, range.end().line(), range.end().col());
+            if (caret >= start && caret <= end) return symbol;
+        }
+        return null;
+    }
+
     private boolean isImplementationAvailable(IdeEditorContext context) {
         LspService service = lspService;
         return service != null && service.isRunning()
@@ -1890,21 +2028,32 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         Path file = normalizePath(context.filePath());
+        String source = context.getText();
+        int line = context.getCaretLine(), column = context.getCaretCol();
+        Map<Path, String> openDocuments = openDocumentTexts();
+        long session = projectLifecycleTicket.get();
         navigationExecutor().execute(() -> {
             SwingUtilities.invokeLater(() -> showProgress(NAV_PROGRESS_ID, text("progress.renaming", "Renaming symbol...")));
             try {
+                openDocuments.forEach(service::updateDocument);
                 DotnetWorkspaceEdit workspaceEdit = service.renameWorkspace(
-                        file, context.getText(), context.getCaretLine(), context.getCaretCol(), newName);
+                        file, source, line, column, newName);
+                if (session != projectLifecycleTicket.get() || !source.equals(currentTextOf(file))) return;
                 if (workspaceEdit.isEmpty()) {
                     SwingUtilities.invokeLater(() -> setStatusBarText(text("status.renameNoChanges", "Rename returned no changes.")));
                     return;
                 }
-                Map<Path, String> updated = computeWorkspaceEditTexts(workspaceEdit);
+                var prepared = dtm.ide.editor.WorkspaceEdits.prepare(workspaceEdit, this::currentTextOf);
+                Map<Path, String> updated = prepared.after();
                 if (!confirmRenamePreview(workspaceEdit, newName)) {
                     SwingUtilities.invokeLater(() -> setStatusBarText(text("status.renameCancelled", "Rename cancelled.")));
                     return;
                 }
-                SwingUtilities.invokeAndWait(() -> applyWorkspaceEditTexts(updated));
+                SwingUtilities.invokeAndWait(() -> {
+                    if (session != projectLifecycleTicket.get() || !openDocuments.equals(openDocumentTexts()))
+                        throw new IllegalStateException("Workspace changed during rename");
+                    applyPreparedWorkspaceEdit(prepared);
+                });
                 SwingUtilities.invokeLater(() -> {
                     updated.keySet().forEach(this::requestRefreshDiagnostics);
                 });
@@ -1955,33 +2104,31 @@ public class DotnetIdeAdapter extends IdeAdapter {
         }
     }
 
-    private Map<Path, String> computeWorkspaceEditTexts(DotnetWorkspaceEdit workspaceEdit) throws Exception {
-        Map<Path, String> updated = new LinkedHashMap<>();
-        for (Map.Entry<Path, List<TextEdit>> entry : workspaceEdit.changes().entrySet()) {
-            Path file = normalizePath(entry.getKey());
-            String original = currentTextOf(file);
-            if (original == null) {
-                throw new IllegalStateException(text("error.couldNotRead", "Could not read ") + file);
-            }
-            updated.put(file, applyTextEdits(original, entry.getValue()));
+    private void applyPreparedWorkspaceEdit(dtm.ide.editor.WorkspaceEdits.Prepared prepared) {
+        for (Path file : prepared.after().keySet()) {
+            IdeEditorContext editor = editorRegistry.editorContext(file);
+            if (editor != null && editor.isReadOnly()) throw new IllegalStateException("Read-only editor: " + file);
+            if (editor == null && !Files.isWritable(file)) throw new IllegalStateException("Read-only file: " + file);
         }
-        return updated;
+        prepared.commit(this::currentTextOf, this::writeWorkspaceText);
     }
 
-    private void applyWorkspaceEditTexts(Map<Path, String> updated) {
-        for (Map.Entry<Path, String> entry : updated.entrySet()) {
-            Path file = normalizePath(entry.getKey());
-            String text = entry.getValue();
-            IdeEditorContext open = editorRegistry.editorContext(file);
-            if (open != null) {
-                open.setText(text);
-            } else {
-                try {
-                    Files.writeString(file, text, StandardCharsets.UTF_8);
-                } catch (Exception e) {
-                    throw new RuntimeException(text("error.couldNotWrite", "Failed to write ") + file.getFileName() + ": " + e.getMessage(), e);
-                }
+    private void writeWorkspaceText(Path file, String content) {
+        IdeEditorContext editor = editorRegistry.editorContext(file);
+        if (editor != null) { editor.setText(content); return; }
+        Path temporary = null;
+        try {
+            temporary = Files.createTempFile(file.getParent(), ".orion-edit-", ".tmp");
+            Files.writeString(temporary, content, StandardCharsets.UTF_8);
+            try { Files.setPosixFilePermissions(temporary, Files.getPosixFilePermissions(file)); }
+            catch (UnsupportedOperationException ignored) { }
+            try { Files.move(temporary, file, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING); }
+            catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             }
+        } catch (IOException failure) { throw new java.io.UncheckedIOException("Failed to write " + file, failure); }
+        finally {
+            if (temporary != null) try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
         }
     }
 
@@ -2160,8 +2307,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
             try {
                 DotnetWorkspaceEdit edit = service.resolveCodeActionEdit(rawAction);
                 if (!edit.isEmpty()) {
-                    Map<Path, String> updated = computeWorkspaceEditTexts(edit);
-                    SwingUtilities.invokeAndWait(() -> applyWorkspaceEditTexts(updated));
+                    var prepared = dtm.ide.editor.WorkspaceEdits.prepare(edit, this::currentTextOf);
+                    Map<Path, String> updated = prepared.after();
+                    SwingUtilities.invokeAndWait(() -> { applyPreparedWorkspaceEdit(prepared); });
                     SwingUtilities.invokeLater(() -> updated.keySet().forEach(this::requestRefreshDiagnostics));
                 } else if (file != null) {
                     SwingUtilities.invokeLater(() -> requestRefreshDiagnostics(file));
@@ -2180,8 +2328,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
             return;
         }
         try {
-            Map<Path, String> updated = computeWorkspaceEditTexts(edit);
-            SwingUtilities.invokeAndWait(() -> applyWorkspaceEditTexts(updated));
+            var prepared = dtm.ide.editor.WorkspaceEdits.prepare(edit, this::currentTextOf);
+                    Map<Path, String> updated = prepared.after();
+            SwingUtilities.invokeAndWait(() -> { applyPreparedWorkspaceEdit(prepared); });
             SwingUtilities.invokeLater(() -> updated.keySet().forEach(this::requestRefreshDiagnostics));
         } catch (Exception e) {
             log.debug("Falha ao aplicar edição vinda do servidor: {}", e.getMessage());
@@ -2271,7 +2420,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         List<CodeLens> lenses = new ArrayList<>();
         int[] budget = {CODE_LENS_LIMIT};
         String[] sourceLines = context.text() == null ? new String[0] : context.text().split("\n", -1);
-        collectTestLenses(symbols, "", sourceLines, lenses);
+        collectTestLenses(symbols, "", sourceLines, lenses, context.filePath());
         collectCodeLenses(service, symbols, context.filePath(), context.text(), lenses, budget);
         return mergeInlineLenses(lenses);
     }
@@ -2295,7 +2444,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
         return result;
     }
 
-    private void collectTestLenses(List<DocumentSymbol> symbols, String container, String[] lines, List<CodeLens> out) {
+    private void collectTestLenses(List<DocumentSymbol> symbols, String container, String[] lines, List<CodeLens> out, Path sourceFile) {
         for (DocumentSymbol symbol : symbols) {
             if (symbol == null || symbol.name() == null) {
                 continue;
@@ -2305,16 +2454,20 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     && symbol.selectionRange().start() != null
                     && isTestMethod(lines, symbol.selectionRange().start().line())) {
                 String testId = stripSignature(qualified);
+                var outcome = testOutcomes.get(testId);
+                String marker = outcome == null ? "▶ " : switch (outcome) {
+                    case PASSED -> "✓ "; case FAILED -> "✕ "; case SKIPPED -> "○ "; case UNKNOWN -> "▶ ";
+                };
                 CodeLensItem run = CodeLensItem.builder()
-                        .text("▶ " + text("lens.run", "Run"))
+                        .text(marker + text("lens.run", "Run"))
                         .tooltip(text("lens.runTooltip", "Run {0}").replace("{0}", testId))
                         .cursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
-                        .onClick(event -> showTestLensActionPopup(testId, event))
+                        .onClick(event -> showTestLensActionPopup(testId, event, sourceFile))
                         .build();
                 out.add(CodeLens.inline(symbol.selectionRange().start().line(), run));
             }
             if (symbol.children() != null && !symbol.children().isEmpty()) {
-                collectTestLenses(symbol.children(), qualified, lines, out);
+                collectTestLenses(symbol.children(), qualified, lines, out, sourceFile);
             }
         }
     }
@@ -3493,6 +3646,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
                         e -> buildSolution(text("menu.clean", "Clean"), List.of("clean"))));
 
         IdeMenuBarBuilder windowMenu = menu.into("window")
+                .add(MenuNode.item("dotnetAspNet", text("menu.aspnet", "ASP.NET Core"))
+                        .onClick(e -> openAspNetExplorer()))
                 .add(MenuNode.item("dotnetBuildTools", text("menu.buildTools", "Build Tools"))
                         .onClick(e -> openBuildTools()))
                 .add(MenuNode.item("dotnetProblems", text("menu.problems", "Problems"))
@@ -3547,13 +3702,68 @@ public class DotnetIdeAdapter extends IdeAdapter {
                     if (solution != null) targets.add(solution);
                     targets.addAll(TargetFramework.findProjectFiles(root));
                     return targets;
-                }, request -> runDotnetOnTarget(request.target(), request.action(), request.arguments()));
+                }, request -> {
+                    workspaceTarget = new dtm.ide.project.WorkspaceTarget(request.target(), request.configuration(), request.framework());
+                    runDotnetOnTarget(request.target(), request.action(), request.arguments());
+                });
+                buildToolsPanel.setSelectionChangedListener(selection -> {
+                    boolean changed = !selection.equals(workspaceTarget);
+                    workspaceTarget = selection;
+                    if (changed && testPanel != null) testPanel.resetProject();
+                });
                 buildToolsPanelId = registerToolPanel(DockRegion.RIGHT, text("menu.buildTools", "Build Tools"),
                         ToolIconType.INFO, buildToolsPanel);
             }
+            buildToolsPanel.setSelection(selectedWorkspaceTarget());
             buildToolsPanel.refresh();
             if (buildToolsPanelId != null) requestOpenToolPanel(buildToolsPanelId);
         });
+    }
+
+    private Map<Path, String> openDocumentTexts() {
+        Map<Path, String> result = new LinkedHashMap<>();
+        for (Path file : editorRegistry.openPathsSnapshot()) {
+            var editor = editorRegistry.editorContext(file);
+            if (editor != null) result.put(file, editor.getText());
+        }
+        return Map.copyOf(result);
+    }
+
+    private void openAspNetExplorer() {
+        runOnUiThread(() -> {
+            if (aspNetPanel == null) {
+                aspNetPanel = new dtm.ide.ui.AspNetExplorerPanel(() -> projectPath, this::openDocumentTexts,
+                        (file, line) -> openOrReuseEditor(file, line, 0), snapshot -> aspNetSnapshot = snapshot);
+                aspNetPanelId = registerToolPanel(DockRegion.RIGHT, text("menu.aspnet", "ASP.NET Core"), ToolIconType.INFO, aspNetPanel);
+            }
+            aspNetPanel.refresh();
+            if (aspNetPanelId != null) requestOpenToolPanel(aspNetPanelId);
+        });
+    }
+
+    private void scheduleAspNetRefresh() {
+        runOnUiThread(() -> {
+            if (projectPath == null) return;
+            if (aspNetRefreshTimer == null) {
+                aspNetRefreshTimer = new Timer(700, event -> refreshAspNetIndex());
+                aspNetRefreshTimer.setRepeats(false);
+            }
+            aspNetRefreshTimer.restart();
+        });
+    }
+
+    private void refreshAspNetIndex() {
+        Path root = projectPath;
+        if (root == null) return;
+        long session = projectLifecycleTicket.get();
+        long revision = ++aspNetRevision;
+        Map<Path, String> open = openDocumentTexts();
+        aspNetQueries.request(root, revision, () -> {
+            try { return new dtm.ide.aspnet.AspNetIndex().scan(root, open); }
+            catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+        }, () -> {}).thenAccept(snapshot -> runOnUiThread(() -> {
+            if (session == projectLifecycleTicket.get() && revision == aspNetRevision) aspNetSnapshot = snapshot;
+        })).exceptionally(error -> null);
     }
 
     private void openIisManager() {
@@ -3574,6 +3784,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
     private void openNuGetManager(Path target) {
         if (nugetPanel == null) {
             nugetPanel = new NuGetManagerPanel(() -> projectPath, this::ensureSdkService);
+            nugetPanel.setWorkspaceChangedListener((root, files) -> {
+                if (DotnetProjectConventions.samePath(root, projectPath)) notifyWorkspaceFiles(files, 2);
+            });
         }
         if (target != null) {
             nugetPanel.focusProject(target);
@@ -3662,6 +3875,39 @@ public class DotnetIdeAdapter extends IdeAdapter {
         if (testPanel == null) {
             testPanel = new DotnetTestExplorerPanel(() -> projectPath, this::ensureSdkService,
                     () -> ensurePluginSettings().getDefaultConfiguration(), this::attachTestProcess);
+            testPanel.setCoverageSink(coverageSupport::publish);
+            testPanel.setNavigation((file, line) -> openOrReuseEditor(file, line, 0));
+            testPanel.setTargetSelection(this::selectedWorkspaceTarget);
+            testPanel.setConfigureCoverage(() -> {
+                Path target = selectedWorkspaceTarget().target();
+                if (target == null || !Files.isRegularFile(target) || !target.toString().endsWith("proj")) {
+                    openBuildTools();
+                    setStatusBarText(text("status.selectCoverageProject", "Select a test project in Build Tools, then configure coverage."));
+                    return;
+                }
+                try {
+                    boolean mtp = dtm.ide.test.DotnetTestService.platform(projectPath) == dtm.ide.test.DotnetTestService.Platform.MTP;
+                    openNuGetManager(target);
+                    nugetPanel.searchPackage(mtp ? "coverlet.MTP" : "coverlet.collector");
+                } catch (IOException error) { setStatusBarText(error.getMessage()); }
+            });
+            testPanel.setResultSink(results -> {
+                Map<String, dtm.ide.test.TestResult.Outcome> outcomes = new LinkedHashMap<>();
+                for (var result : results) outcomes.merge(stripSignature(result.name()), result.outcome(), (a, b) ->
+                        a == dtm.ide.test.TestResult.Outcome.FAILED || b == dtm.ide.test.TestResult.Outcome.FAILED
+                                ? dtm.ide.test.TestResult.Outcome.FAILED : b);
+                if (!results.isEmpty()) {
+                    var previous = new LinkedHashMap<>(testOutcomes);
+                    previous.putAll(outcomes);
+                    outcomes = previous;
+                }
+                testOutcomes = Map.copyOf(outcomes);
+                editorRegistry.openPathsSnapshot().forEach(file -> { lensQueries.invalidate(file); requestRefreshCodeLenses(file); });
+                var problems = dtm.ide.test.TestProblems.diagnostics(results, projectPath).stream()
+                        .map(dtm.ide.build.BuildDiagnostic::toProblem).toList();
+                publishProblems("dotnet.test", problems);
+                if (!problems.isEmpty()) requestOpenProblemsPanel();
+            });
             testToolPanelId = registerToolPanel(DockRegion.BOTTOM, text("panel.tests", "Tests"), ToolIconType.INFO, testPanel);
         }
     }
@@ -3673,37 +3919,55 @@ public class DotnetIdeAdapter extends IdeAdapter {
         });
     }
 
-    private void runTestFromLens(String fullyQualifiedName) {
+    private void runTestFromLens(String fullyQualifiedName, Path sourceFile) {
         runOnUiThread(() -> {
             ensureTestPanel();
             if (testToolPanelId != null && !testToolPanelId.isBlank()) {
                 requestOpenToolPanel(testToolPanelId);
             }
+            selectTestOwner(sourceFile);
             testPanel.runTest(fullyQualifiedName);
         });
     }
 
-    private void debugTestFromLens(String fullyQualifiedName) {
+    private void debugTestFromLens(String fullyQualifiedName, Path sourceFile) {
         runOnUiThread(() -> {
             ensureTestPanel();
             if (testToolPanelId != null && !testToolPanelId.isBlank()) {
                 requestOpenToolPanel(testToolPanelId);
             }
+            selectTestOwner(sourceFile);
             testPanel.debugTest(fullyQualifiedName);
         });
     }
 
-    private void showTestLensActionPopup(String fullyQualifiedName, CodeLensClickEvent event) {
+    private void selectTestOwner(Path sourceFile) {
+        if (sourceFile == null || projectPath == null) return;
+        Path owner = TargetFramework.findProjectFileForSource(sourceFile, projectPath);
+        if (owner == null) return;
+        var selected = selectedWorkspaceTarget();
+        var frameworks = TargetFramework.readTfms(owner);
+        String framework = frameworks.contains(selected.framework()) ? selected.framework()
+                : frameworks.size() == 1 ? frameworks.getFirst() : "";
+        var next = new dtm.ide.project.WorkspaceTarget(owner, selected.configuration(), framework);
+        if (!next.equals(workspaceTarget)) {
+            workspaceTarget = next;
+            testPanel.resetProject();
+            if (buildToolsPanel != null) { buildToolsPanel.setSelection(next); buildToolsPanel.refresh(); }
+        }
+    }
+
+    private void showTestLensActionPopup(String fullyQualifiedName, CodeLensClickEvent event, Path sourceFile) {
         runOnUiThread(() -> {
             MouseEvent mouse = event == null ? null : event.mouseEvent();
             Component invoker = mouse == null ? null : mouse.getComponent();
             if (invoker == null) {
-                runTestFromLens(fullyQualifiedName);
+                runTestFromLens(fullyQualifiedName, sourceFile);
                 return;
             }
             ActionPopupMenu.create(text("lens.testActionTitle", "Test"))
-                    .item(text("lens.run", "Run"), e -> runTestFromLens(fullyQualifiedName))
-                    .item(text("lens.debug", "Debug"), e -> debugTestFromLens(fullyQualifiedName))
+                    .item(text("lens.run", "Run"), e -> runTestFromLens(fullyQualifiedName, sourceFile))
+                    .item(text("lens.debug", "Debug"), e -> debugTestFromLens(fullyQualifiedName, sourceFile))
                     .showAt(invoker, mouse.getX(), mouse.getY());
         });
     }
@@ -3729,46 +3993,19 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void restorePackages() {
-        Path project = projectPath;
-        if (project == null) {
-            return;
-        }
-        languageSetupExecutor().execute(() -> {
-            DotnetSdkService sdk = ensureSdkService();
-            if (sdk == null) {
-                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.dotnetNotFoundRestore", "dotnet not found to restore packages.")));
-                return;
-            }
-            SwingUtilities.invokeLater(() -> showProgress("dotnetRestore", "dotnet restore..."));
-            Process process = null;
-            try {
-                process = new ProcessBuilder(
-                        sdk.ensureDotnet(project, progressListener()).toString(), "restore")
-                        .directory(project.toFile())
-                        .redirectErrorStream(true)
-                        .start();
-                Process started = process;
-                Thread drain = new Thread(() -> drainQuietly(started.getInputStream()), "dotnet-restore-drain");
-                drain.setDaemon(true);
-                drain.start();
-                if (process.waitFor(RESTORE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                    int code = process.exitValue();
-                    SwingUtilities.invokeLater(() -> setStatusBarText(
-                            code == 0 ? text("status.packagesRestored", "Packages restored.")
-                                    : text("status.restoreFailed", "dotnet restore failed (code {0}).").replace("{0}", String.valueOf(code))));
-                } else {
-                    process.destroyForcibly();
-                    SwingUtilities.invokeLater(() -> setStatusBarText(
-                            text("status.restoreTimeout", "dotnet restore timed out and was aborted.")));
-                }
-            } catch (Exception e) {
-                SwingUtilities.invokeLater(() -> setStatusBarText(text("status.restoreError", "Restore failed: ") + e.getMessage()));
-            } finally {
-                if (process != null && process.isAlive()) {
-                    process.destroyForcibly();
-                }
-                SwingUtilities.invokeLater(() -> hideProgress("dotnetRestore"));
-            }
+        Path target = resolveBuildTarget();
+        if (target == null) target = projectPath;
+        if (target != null) runDotnetOnTarget(target, text("menu.restore", "Restore packages (dotnet restore)"), List.of("restore"));
+    }
+
+    private void notifyWorkspaceFiles(List<Path> paths, int type) {
+        LspService service = lspService;
+        if (service != null) paths.forEach(path -> service.workspaceFileChanged(path, type));
+        invalidateProjectScans();
+        scheduleAspNetRefresh();
+        runOnUiThread(() -> {
+            requestProjectTreeViewRefresh();
+            if (buildToolsPanel != null) buildToolsPanel.refresh();
         });
     }
 
@@ -4320,6 +4557,8 @@ public class DotnetIdeAdapter extends IdeAdapter {
     @Override
     public void onRunConfigurationChanged(RunConfigurationData data) {
         this.selectedRunConfig = data;
+        workspaceTarget = null;
+        if (testPanel != null) runOnUiThread(testPanel::resetProject);
 
         if (DotnetRunSupport.isCurrentFileType(data)) {
             refreshRunButtonsForCurrentFile();
@@ -5061,12 +5300,31 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private Path resolveBuildTarget() {
+        if (workspaceTarget != null && workspaceTarget.target() != null && Files.isRegularFile(workspaceTarget.target())) return workspaceTarget.target();
         Path solution = resolveWorkspaceSolution();
         if (solution != null) {
             return solution;
         }
         Path root = projectPath;
         return root == null ? null : TargetFramework.findPrimaryProjectFile(root);
+    }
+
+    private dtm.ide.project.WorkspaceTarget selectedWorkspaceTarget() {
+        var selected = workspaceTarget;
+        if (selected != null && selected.target() != null && Files.isRegularFile(selected.target())) return selected;
+        RunConfigurationData data = selectedRunConfig;
+        Map<String, Object> props = data == null || data.getProperties() == null ? Map.of() : data.getProperties();
+        Path target = resolveBuildTarget();
+        Object file = props.get(DotnetRunSupport.PROP_PROJECT);
+        if (file != null && !file.toString().isBlank() && projectPath != null) {
+            try {
+                Path explicit = projectPath.resolve(file.toString()).normalize();
+                if (Files.isRegularFile(explicit)) target = explicit;
+            } catch (RuntimeException ignored) { }
+        }
+        String configuration = String.valueOf(props.getOrDefault(DotnetRunSupport.PROP_CONFIGURATION, ensurePluginSettings().getDefaultConfiguration()));
+        String framework = String.valueOf(props.getOrDefault(DotnetRunSupport.PROP_TARGET_FRAMEWORK, ""));
+        return new dtm.ide.project.WorkspaceTarget(target, configuration, framework);
     }
 
     private Path resolveWorkspaceSolution() {
@@ -5188,6 +5446,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
     }
 
     private void applyProjectReferences(Path csproj, List<Path> candidates, Set<Path> before, Set<Path> after) {
+        Path root = projectPath;
         Thread thread = new Thread(() -> {
             DotnetSdkService sdk = ensureSdkService();
             Path dotnet;
@@ -5220,6 +5479,7 @@ public class DotnetIdeAdapter extends IdeAdapter {
             }
             int total = changes;
             SwingUtilities.invokeLater(() -> {
+                if (DotnetProjectConventions.samePath(root, projectPath)) notifyWorkspaceFiles(List.of(csproj), 2);
                 requestProjectTreeViewRefresh();
                 setStatusBarText(total == 0
                         ? text("status.noReferenceChanges", "No reference changes.")
@@ -5280,6 +5540,9 @@ public class DotnetIdeAdapter extends IdeAdapter {
                 }
                 int code = process.waitFor();
                 completed.accept(capture.finish(code));
+                if (code == 0 && verbAndArgs.contains("restore")) SwingUtilities.invokeLater(() -> {
+                    if (session == projectLifecycleTicket.get()) notifyWorkspaceFiles(List.of(target), 2);
+                });
                 writeLine(out, System.lineSeparator() + "[" + title + "] "
                         + text("output.finishedWithCode", "finished with code ") + code);
                 SwingUtilities.invokeLater(() -> setStatusBarText(

@@ -108,6 +108,8 @@ public final class NuGetManagerPanel extends JPanel {
     private final JLabel statusLabel = new JLabel(" ");
 
     private Tab currentTab = Tab.BROWSE;
+    private java.util.function.BiConsumer<Path, List<Path>> workspaceChanged = (root, files) -> {};
+    public void setWorkspaceChangedListener(java.util.function.BiConsumer<Path, List<Path>> listener) { workspaceChanged = listener; }
     private volatile boolean multiProject;
     private volatile Map<String, List<InstalledPackage>> installedIndex = Map.of();
 
@@ -353,6 +355,11 @@ public final class NuGetManagerPanel extends JPanel {
         }
     }
 
+    public void searchPackage(String query) {
+        searchField.setText(query);
+        switchTab(Tab.BROWSE);
+    }
+
     public void focusProject(Path target) {
         reloadProjects();
         if (target != null && isSolutionFile(target)) {
@@ -556,7 +563,7 @@ public final class NuGetManagerPanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 setBusy(false);
                 setStatus(message);
-                afterOperation();
+                afterOperation(project, targets);
             });
         });
     }
@@ -612,12 +619,14 @@ public final class NuGetManagerPanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 setBusy(false);
                 setStatus(message);
-                afterOperation();
+                afterOperation(project, targets);
             });
         });
     }
 
-    private void afterOperation() {
+    private void afterOperation(Path root, List<Path> targets) {
+        workspaceChanged.accept(root, List.copyOf(targets));
+        if (!java.util.Objects.equals(root, project())) return;
         if (currentTab == Tab.BROWSE) {
             refreshInstalledIndex();
         } else {

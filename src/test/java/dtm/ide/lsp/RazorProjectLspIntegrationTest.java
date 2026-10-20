@@ -33,23 +33,32 @@ class RazorProjectLspIntegrationTest {
     @Test
     void realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml(@TempDir(cleanup = CleanupMode.ALWAYS) Path resourceRoot) throws Exception {
         String projectPath = System.getProperty("dotnet.razor.project", "");
-        assertFalse(projectPath.isBlank(), "Informe -Ddotnet.razor.project com um projeto Razor de teste");
-        Path project = Path.of(projectPath);
+        Path project = projectPath.isBlank() ? createProject(resourceRoot.resolve("Razor project")) : Path.of(projectPath);
+        String cachedResources = System.getProperty("dotnet.resources", "");
+        Path toolchain = cachedResources.isBlank() ? resourceRoot : Path.of(cachedResources);
         Path cshtml = project.resolve("Pages").resolve("Index.cshtml");
-        DotnetSdkService sdk = new DotnetSdkService(new TestResource(resourceRoot), new HttpDownloadObserver());
+        DotnetSdkService sdk = new DotnetSdkService(new TestResource(toolchain), new HttpDownloadObserver());
 
         assertTrue(Files.isDirectory(project), "Projeto Razor de teste nao encontrado: " + project);
         assertTrue(Files.isRegularFile(cshtml), "Arquivo Index.cshtml nao encontrado: " + cshtml);
+
+        Path dotnet = sdk.ensureDotnet(project, DotnetSdkService.DownloadProgressListener.NOOP);
+        Process build = new ProcessBuilder(dotnet.toString(), "build", dtm.ide.run.TargetFramework.findPrimaryProjectFile(project).toString(), "--nologo")
+                .directory(project.toFile()).redirectErrorStream(true).start();
+        Thread drain = Thread.ofVirtual().start(() -> { try { build.getInputStream().transferTo(System.out); } catch (Exception ignored) {} });
+        assertTrue(build.waitFor(120, java.util.concurrent.TimeUnit.SECONDS), "Razor project build timed out");
+        drain.join(3000);
+        org.junit.jupiter.api.Assertions.assertEquals(0, build.exitValue(), "Razor fixture must build");
 
         sdk.ensureRoslynRuntime(DotnetSdkService.DownloadProgressListener.NOOP);
         sdk.ensureRoslyn(DotnetSdkService.DownloadProgressListener.NOOP);
         sdk.ensureRoslynRazor(DotnetSdkService.DownloadProgressListener.NOOP);
 
-        RoslynLspService service = new RoslynLspService(new TestResource(resourceRoot), sdk);
+        RoslynLspService service = new RoslynLspService(new TestResource(toolchain), sdk);
         try {
             service.bindProject(project);
             service.start();
-            assertTrue(service.awaitReady(30_000), "Roslyn LS nao ficou pronto: " + service.getLastError());
+            assertTrue(service.awaitReady(90_000), "Roslyn LS nao ficou pronto: " + service.getLastError());
 
             String original = Files.readString(cshtml);
             service.diagnose(cshtml, original);
@@ -68,9 +77,25 @@ class RazorProjectLspIntegrationTest {
             TextPosition importPosition = positionAfter(importText, "new Regex");
             List<AutoCompleteItem> importCompletions = waitForCompletionMatch(service, cshtml, importText, importPosition, "Regex", RazorProjectLspIntegrationTest::isRegexImportCompletion);
             assertTrue(importCompletions.stream().anyMatch(RazorProjectLspIntegrationTest::isRegexImportCompletion), "Esperava completion de Regex com auto-using de System.Text.RegularExpressions");
+
+            Path component = project.resolve("Components/Counter.razor");
+            String componentText = Files.readString(component) + "\n@code { private void Update() { var now = DateTime.N; } }\n";
+            var componentPosition = positionAfter(componentText, "DateTime.N");
+            var componentCompletions = waitForCompletions(service, component, componentText, componentPosition, "N");
+            assertTrue(hasCompletion(componentCompletions, "Now"), "Expected semantic completion in a Blazor component");
         } finally {
             service.stop();
         }
+    }
+
+    private static Path createProject(Path project) throws Exception {
+        Files.createDirectories(project.resolve("Pages"));
+        Files.createDirectories(project.resolve("Components"));
+        Files.writeString(project.resolve("Razor.csproj"), "<Project Sdk='Microsoft.NET.Sdk.Web'><PropertyGroup><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>");
+        Files.writeString(project.resolve("Program.cs"), "var builder = WebApplication.CreateBuilder(args); builder.Services.AddRazorPages(); var app = builder.Build(); app.MapRazorPages(); app.Run();");
+        Files.writeString(project.resolve("Pages/Index.cshtml"), "@page\n@using System\n<h1>Hello</h1>\n");
+        Files.writeString(project.resolve("Components/Counter.razor"), "@using System\n<h1>Counter</h1>\n");
+        return project;
     }
 
     private static boolean isRegexImportCompletion(AutoCompleteItem item) {
@@ -95,6 +120,12 @@ class RazorProjectLspIntegrationTest {
         List<AutoCompleteItem> last = List.of();
         for (int i = 0; i < 60; i++) {
             last = service.completeForEditor(file, text, position.line(), position.col(), prefix);
+            if ("Regex".equals(prefix)) {
+                List<AutoCompleteItem> resolved = new java.util.ArrayList<>();
+                for (var item : last) resolved.add("Regex".equals(item.label())
+                        ? service.resolveCompletion(item).get(10, java.util.concurrent.TimeUnit.SECONDS) : item);
+                last = resolved;
+            }
             if (last.stream().anyMatch(match)) {
                 return last;
             }

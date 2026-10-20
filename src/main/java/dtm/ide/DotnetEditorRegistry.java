@@ -81,6 +81,8 @@ final class DotnetEditorRegistry {
         return !editorPaths.isEmpty();
     }
 
+    Set<Path> openPathsSnapshot() { return Set.copyOf(editorPaths); }
+
     boolean hasOpenRazorEditors() {
         return editorPaths.stream()
                 .filter(Objects::nonNull)

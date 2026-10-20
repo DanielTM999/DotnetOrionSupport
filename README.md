@@ -1,5 +1,13 @@
 # DotnetOrionSupport
 
+Esta versão amplia a integração com relatórios de testes TRX, repetição de falhas,
+cobertura Cobertura no editor, templates postfix C#, autocomplete MSBuild e um painel
+ASP.NET Core com endpoints, serviços e configurações navegáveis. As novas funcionalidades
+usam a biblioteca padrão e as dependências já existentes.
+
+Consulte a [matriz de recursos e validação](docs/PARIDADE.md) e a
+[política de licenças permissivas](docs/LICENCAS.md).
+
 Plugin de suporte a **.NET / C#** para a **Orion IDE**. Ele adiciona reconhecimento
 de projetos .NET, edição C# e Razor, IntelliSense via Roslyn LS/OmniSharp, build/run/test com `dotnet`,
 depuração com `netcoredbg`, gerenciador NuGet, criação de projetos
