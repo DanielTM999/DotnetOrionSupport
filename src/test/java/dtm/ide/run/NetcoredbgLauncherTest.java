@@ -60,6 +60,7 @@ class NetcoredbgLauncherTest {
         Path tricky = Path.of("C:", "src", "O'Brien App");
         String script = NetcoredbgLauncher.serverScript(NETCOREDBG, DOTNET_ROOT, tricky, 4711, PID_FILE);
 
-        assertTrue(script.contains("Set-Location -LiteralPath 'C:\\src\\O''Brien App'"), script);
+        Path escaped = Path.of("C:", "src", "O''Brien App");
+        assertTrue(script.contains("Set-Location -LiteralPath '" + escaped + "'"), script);
     }
 }

@@ -63,8 +63,8 @@ class DotnetSdkServiceTest {
 
         DotnetSdkService service = new DotnetSdkService(new TestResource(dir), null);
 
-        assertEquals(dotnet.toAbsolutePath().normalize(),
-                service.getDotnetPath(DotnetSdkService.DOTNET_10_SDK_VERSION).orElseThrow());
+        assertTrue(Files.isSameFile(dotnet,
+                service.getDotnetPath(DotnetSdkService.DOTNET_10_SDK_VERSION).orElseThrow()));
     }
 
     @Test
@@ -107,7 +107,7 @@ class DotnetSdkServiceTest {
 
         DotnetSdkService service = new DotnetSdkService(new TestResource(dir), null);
 
-        assertEquals(dotnet.toAbsolutePath().normalize(), service.getDotnetPath(project).orElseThrow());
+        assertTrue(Files.isSameFile(dotnet, service.getDotnetPath(project).orElseThrow()));
     }
 
     @Test

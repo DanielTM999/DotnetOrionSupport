@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: DanielTM999/RequestActions
-          ref: '7665cc5bb98ab3f693ad0942d4c673f4f39ac931'
+          ref: '0e116fd0dbb074a19dc11805621e262f2ee60841' # RequestActions 1.0.8
           path: .deps/RequestActions
           token: ${{ secrets.RELEASE_PAT != '' && secrets.RELEASE_PAT || github.token }}
           persist-credentials: false

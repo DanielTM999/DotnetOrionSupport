@@ -49,9 +49,9 @@
   "manualRuntimeNotices": [
     {
       "name": "RequestActions",
-      "version": "1.0.7",
+      "version": "1.0.8",
       "license": "MIT",
-      "source": "https://github.com/DanielTM999/RequestActions/blob/7665cc5bb98ab3f693ad0942d4c673f4f39ac931/LICENSE",
+      "source": "https://github.com/DanielTM999/RequestActions/blob/0e116fd0dbb074a19dc11805621e262f2ee60841/LICENSE",
       "notice": "licenses/externals/RequestActions-MIT.txt"
     },
     {

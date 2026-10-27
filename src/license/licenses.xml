@@ -4,12 +4,12 @@
     <dependency>
       <groupId>\Qdtm.request_actions\E</groupId>
       <artifactId>\Qrequest_actions\E</artifactId>
-      <version>\Q1.0.7\E</version>
+      <version>\Q1.0.8\E</version>
       <matchLicenses />
       <licenses>
         <license>
           <name>MIT</name>
-          <url>https://raw.githubusercontent.com/DanielTM999/RequestActions/7665cc5bb98ab3f693ad0942d4c673f4f39ac931/LICENSE</url>
+          <url>https://raw.githubusercontent.com/DanielTM999/RequestActions/0e116fd0dbb074a19dc11805621e262f2ee60841/LICENSE</url>
         </license>
       </licenses>
     </dependency>
