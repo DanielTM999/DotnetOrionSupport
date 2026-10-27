@@ -15,7 +15,7 @@ class DotnetWorkflowIntegrationTest {
         Path dotnet = Path.of(System.getProperty("dotnet.path", "dotnet"));
         // A bare command must stay on PATH; absolute paths are supplied by CI/local validation.
         assertTrue(Files.isRegularFile(dotnet), "Set -Ddotnet.path to the dotnet executable");
-        Path root = Files.createDirectories(dir.resolve("solution with spaces"));
+        Path root = Files.createDirectories(dir.resolve("solution with spaces")).toRealPath();
         Path library = Files.createDirectories(root.resolve("Library"));
         Path tests = Files.createDirectories(root.resolve("Tests"));
         Files.writeString(root.resolve("global.json"), "{\"sdk\":{\"version\":\"8.0.100\",\"rollForward\":\"latestFeature\"}}");
@@ -82,7 +82,7 @@ class DotnetWorkflowIntegrationTest {
     @Test void nativeMtpProducesStructuredResults() throws Exception {
         Path dotnet = Path.of(System.getProperty("dotnet.path", "dotnet"));
         assertTrue(Files.isRegularFile(dotnet), "Set -Ddotnet.path");
-        Path root = Files.createDirectories(dir.resolve("MTP project"));
+        Path root = Files.createDirectories(dir.resolve("MTP project")).toRealPath();
         Path library = Files.createDirectories(root.resolve("Library"));
         Path tests = Files.createDirectories(root.resolve("Tests"));
         Files.writeString(library.resolve("Library.csproj"), "<Project Sdk='Microsoft.NET.Sdk'><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
@@ -138,7 +138,7 @@ class DotnetWorkflowIntegrationTest {
     @Test void nunitParameterizedCasesProduceSeparateResults() throws Exception {
         Path dotnet = Path.of(System.getProperty("dotnet.path", "dotnet"));
         assertTrue(Files.isRegularFile(dotnet), "Set -Ddotnet.path");
-        Path root = Files.createDirectories(dir.resolve("NUnit project"));
+        Path root = Files.createDirectories(dir.resolve("NUnit project")).toRealPath();
         Path project = root.resolve("NUnitTests.csproj");
         Files.writeString(project, """
             <Project Sdk="Microsoft.NET.Sdk">

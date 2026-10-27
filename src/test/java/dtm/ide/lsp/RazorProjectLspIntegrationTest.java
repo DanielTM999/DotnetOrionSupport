@@ -33,7 +33,8 @@ class RazorProjectLspIntegrationTest {
     @Test
     void realRazorProjectProvidesAutocompleteAndDiagnosticsForCshtml(@TempDir(cleanup = CleanupMode.ALWAYS) Path resourceRoot) throws Exception {
         String projectPath = System.getProperty("dotnet.razor.project", "");
-        Path project = projectPath.isBlank() ? createProject(resourceRoot.resolve("Razor project")) : Path.of(projectPath);
+        // Match the canonical paths emitted by MSBuild, Coverlet and Roslyn on Windows.
+        Path project = (projectPath.isBlank() ? createProject(resourceRoot.resolve("Razor project")) : Path.of(projectPath)).toRealPath();
         String cachedResources = System.getProperty("dotnet.resources", "");
         Path toolchain = cachedResources.isBlank() ? resourceRoot : Path.of(cachedResources);
         Path cshtml = project.resolve("Pages").resolve("Index.cshtml");
